@@ -686,8 +686,20 @@
     window.__mmTimerInstalled = true;
     const sp = window.__SP__;
     if (!sp || !sp.store || !sp.store.subscribe) return;
-    const LIMIT = 15 * 60 * 1000;
+    let LIMIT = 15 * 60 * 1000;
+    // 同盟解散时间由后台配置（分钟），每 60 秒同步一次
+    const syncTtl = async () => {
+      try {
+        const r = await fetch('/mm/api/room-ttl', { cache: 'no-store' });
+        const j = await r.json();
+        const m = Number(j.minutes);
+        if (Number.isFinite(m) && m >= 1 && m <= 1440) { LIMIT = Math.round(m * 60000); window.__mmTtlMs = LIMIT; }
+      } catch { /* ignore */ }
+    };
+    syncTtl(); setInterval(syncTtl, 5000);
     const fallbackCreated = new Map();
+    let srvSkew = 0;
+    let srvSeen = null;
 
     const tick = () => {
       const s = sp.store.get();
@@ -697,6 +709,9 @@
         if (dead) dead.remove();
         return;
       }
+      // 用服务器时间换算偏移，避免本机与服务器时钟不一致导致提前/延后解散
+      const srvNow = Number(room.serverNow) || 0;
+      if (srvNow && srvSeen !== srvNow) { srvSeen = srvNow; srvSkew = srvNow - Date.now(); }
       let createdAt = Number(room.createdAt) || 0;
       if (!createdAt) {
         const code = room.code || '(none)';
@@ -704,7 +719,8 @@
         createdAt = fallbackCreated.get(code);
       }
       if (createdAt > Date.now()) createdAt = Date.now();
-      const left = Math.max(0, Math.min(LIMIT, createdAt + LIMIT - Date.now()));
+      const lim = Number(room.ttlMs) > 0 ? Number(room.ttlMs) : LIMIT;
+      const left = Math.max(0, Math.min(lim, createdAt + lim - (Date.now() + srvSkew)));
       const mm = Math.floor(left / 60000);
       const ss = Math.floor((left % 60000) / 1000);
       const timeText = String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
@@ -719,6 +735,14 @@
       }
       box.innerHTML = '<span class="mm-timer-time">' + timeText + '</span>'
         + '<span class="mm-timer-label">后同盟将自动销毁</span>';
+
+      // 干员调配 / 干员持有 / 自选编队 等全屏面板打开时隐藏倒计时
+      try {
+        const loadoutOpen = [...document.querySelectorAll('button,[role="tab"]')]
+          .some((b) => b.offsetParent && /自选编队|干员持有/.test((b.textContent || '').trim()));
+        if (loadoutOpen) { box.style.display = 'none'; return; }
+        box.style.display = 'flex';
+      } catch { /* ignore */ }
 
       // 找到同盟密钥面板（用「复制密钥」按钮定位），尺寸/位置完全跟随它
       try {
@@ -771,10 +795,11 @@
     };
 
     sp.store.subscribe(tick);
-    setInterval(tick, 500);
+    setInterval(tick, 200);
     setTimeout(tick, 50);
     setTimeout(tick, 300);
     window.addEventListener('resize', tick);
+    document.addEventListener('click', tick, true);
     tick();
   }
 
@@ -1087,6 +1112,7 @@
 .announcement-date { font-size: max(calc(.14 * var(--t)), 12px); color: var(--text-lo); }
 .announcement-entry p { white-space: pre-wrap; font-size: max(calc(.18 * var(--t)), 14px); line-height: 1.7; }
 .announcement-entry p + p { margin-top: .12rem; }
+.announcement-tag { color: var(--mint-400); font-weight: 700; margin-right: .06rem; }
 .announcement-state { display: flex; flex-direction: column; align-items: center; gap: .14rem; padding-block: .36rem; text-align: center; }
 .announcement-state h3 { color: var(--text-hi); font-size: max(calc(.22 * var(--t)), 16px); }
 .announcement-state p { font-size: max(calc(.17 * var(--t)), 14px); line-height: 1.6; }
@@ -1129,7 +1155,17 @@
           art.appendChild(head);
           for (const para of (en.paragraphs || [])) {
             const pn = document.createElement('p');
-            pn.textContent = String(para);
+            const text = String(para);
+            const m = /^【([^】]{1,20})】/.exec(text);
+            if (m) {
+              const strong = document.createElement('strong');
+              strong.className = 'announcement-tag';
+              strong.textContent = '【' + m[1] + '】';
+              pn.appendChild(strong);
+              pn.appendChild(document.createTextNode(text.slice(m[0].length)));
+            } else {
+              pn.textContent = text;
+            }
             art.appendChild(pn);
           }
           listEl.appendChild(art);
@@ -1143,8 +1179,9 @@
       });
       document.body.appendChild(veil);
       try { localStorage.setItem('mm.annDismissed', revision); } catch { /* ignore */ }
+      dotPending = false; // 立即清除未读，避免 1.2s 后的 ensure() 重新点亮
       const dot = document.querySelector('#mm-notice-btn .mm-dot');
-      if (dot) dot.style.display = 'none';
+      if (dot) dot.remove();
     };
 
     const ensure = () => {
