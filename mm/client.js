@@ -1,8 +1,3 @@
-/* 卫戍协议：盟约 · 萝卜喵公益服 — 客户端注入脚本
- * 由 nginx sub_filter 注入到游戏页面末尾（<script src="/mm/client.js"></script>），不修改游戏本体文件。
- * 包含：节点状态角标、临时公告、更新公告、同盟密钥倒计时、匹配队友入口、界面精简。
- * 最后更新：2026-10-19（修复匹配成功后无法进入对局、有 AI 队友时禁止匹配、匹配界面兜底返回）
- */
 'use strict';
 // 由 nginx 注入到游戏首页的「匹配衔接脚本」（不改动任何游戏本体文件）。
 //
@@ -82,7 +77,48 @@
     } catch (e) { /* ignore */ }
   }
 
+  const __mmResponsiveCss = `
+/* mm-responsive-v1：注入元素的尺寸随窗口缩放 */
+#mm-nodes:not(.topbar) .chip{height:clamp(26px,2.2vw,32px);padding:0 clamp(9px,0.9vw,14px) 0 clamp(7px,0.75vw,11px)}
+#mm-nodes:not(.topbar) .chip .num,#mm-nodes:not(.topbar) .chip span{font-size:clamp(11px,1.05vw,14px)}
+#mm-room-timer{--bk-c:var(--mint-500);background:rgba(0,0,0,.38);border:1px solid var(--line);box-sizing:border-box;overflow:hidden}
+#mm-room-timer .mm-timer-time{color:#7ff0cf;font-weight:700;font-family:"Noto Sans SC",system-ui,sans-serif;line-height:1.1}
+#mm-room-timer .mm-timer-label{color:#a8c0b9;letter-spacing:.5px}
+#mm-ticker{height:clamp(26px,2.2vw,32px)!important}
+#mm-ticker .line{font-size:clamp(11px,1.05vw,15px)!important}
+`;
+
+  // ---------------------------------------------------------------- 底栏「已就绪」自动避让
+
+
+
+  // ---------------------------------------------------------------- 底栏保持游戏默认
+
+  function installRoomBarShrink() {
+    // 说明：按需求，底栏文字与按钮都保持游戏默认布局（整体居中），
+    // 不做任何位移/缩放，因此这里只清理早期版本可能留下的内联样式。
+    const clear = () => {
+      const center = document.querySelector('.room-bar__center');
+      if (!center) return;
+      center.style.position = '';
+      center.style.left = '';
+      center.style.top = '';
+      center.style.transform = '';
+      center.style.width = '';
+    };
+    clear();
+    setInterval(clear, 1500);
+  }
+
   function boot(sp) {
+    try {
+      if (!document.getElementById('mm-responsive-css')) {
+        const s = document.createElement('style');
+        s.id = 'mm-responsive-css';
+        s.textContent = __mmResponsiveCss;
+        document.head.appendChild(s);
+      }
+    } catch { /* ignore */ }
     const { store, net } = sp;
     installInviteCopy();
     installOverlayStyle();
@@ -111,8 +147,11 @@
     warnUnpinnedRoom();
     installJoinRedirect();
     installNodeBadge();
-    installAnnouncement();
-    installUpdateNotice();
+  installQQGroup();
+  setInterval(cleanTopExtras, 1200);
+  installAnnouncement();
+  installTempNotice();
+  installRoomBarShrink();
 
   installUnifiedStyle();
 
@@ -339,11 +378,26 @@
         anchor.id = 'mm-room-anchor';
         anchor.className = 'tt-anchor';
         anchor.style.cssText = 'margin-right:10px';
-        anchor.innerHTML = '<button type="button" id="mm-room-btn" class="btn btn--secondary btn--xl">'
-          + '<span class="btn__label">匹配队友</span></button>';
         const bar = document.querySelector('.room-bar');
         if (!bar) return;
-        // 房主看到的是「开始模拟」，队员看到的是「准备就绪 / 已就绪」：都插在它前面
+        // 直接克隆「开始模拟」按钮，尺寸与样式完全一致
+        const startBtn = [...bar.querySelectorAll('button')]
+          .find((b) => /开始模拟/.test(b.textContent || '') && b.offsetParent);
+        if (startBtn) {
+          const clone = startBtn.cloneNode(true);
+          clone.id = 'mm-room-btn';
+          clone.type = 'button';
+          clone.className = startBtn.className;
+          clone.disabled = false;
+          const label = clone.querySelector('.btn__label');
+          if (label) label.textContent = '匹配队友';
+          else clone.textContent = '匹配队友';
+          anchor.appendChild(clone);
+        } else {
+          anchor.innerHTML = '<button type="button" id="mm-room-btn" class="btn btn--secondary">'
+            + '<span class="btn__label">匹配队友</span></button>';
+        }
+        // 放在右侧「开始模拟」按钮左边（与它成对）
         const action = [...bar.querySelectorAll('button')].find((b) => /开始模拟|准备就绪|已就绪/.test(b.textContent || ''));
         const target = action ? (action.closest('.tt-anchor') || action) : null;
         if (target) target.parentElement.insertBefore(anchor, target);
@@ -351,9 +405,15 @@
         el = document.getElementById('mm-room-btn');
         el.addEventListener('click', onClick);
       }
+      // 同步开始模拟按钮的样式（主按钮、同尺寸）
+      try {
+        const startBtn = [...document.querySelectorAll('button')].find((b) => /开始模拟/.test(b.textContent || '') && b.offsetParent);
+        if (startBtn && startBtn.className) {
+          el.className = startBtn.className;
+          el.id = 'mm-room-btn';
+        }
+      } catch { /* ignore */ }
       el.querySelector('.btn__label').textContent = matched ? '正在分配…' : queued ? '取消匹配' : '匹配队友';
-      el.classList.toggle('btn--primary', queued || matched);
-      el.classList.toggle('btn--secondary', !(queued || matched));
       const hasBot = (room && (room.seats || []).some((x) => x && x.isBot)) === true;
       el.disabled = matched || !isHost || hasBot;
       if (hasBot) el.title = '房间内有 AI 队友，无法匹配（请先移除 AI 队友）';
@@ -622,80 +682,102 @@
   // ---------------------------------------------------------------- 房间右上角：15 分钟开始倒计时
 
   function installRoomCountdown() {
+    if (window.__mmTimerInstalled) return;
+    window.__mmTimerInstalled = true;
     const sp = window.__SP__;
     if (!sp || !sp.store || !sp.store.subscribe) return;
-    let box = null;
     const LIMIT = 15 * 60 * 1000;
+    const fallbackCreated = new Map();
+
     const tick = () => {
       const s = sp.store.get();
       const room = s.room;
-      if (!room || s.match && s.match.public) { if (box) { box.remove(); box = null; } return; }
+      if (!room || (s.match && s.match.public)) {
+        const dead = document.getElementById('mm-room-timer');
+        if (dead) dead.remove();
+        return;
+      }
       let createdAt = Number(room.createdAt) || 0;
       if (!createdAt) {
-        // 服务端没带创建时间时，用本机首次看到该房间的时间兜底
-        const k = 'mm-room-created-' + room.code;
-        try {
-          createdAt = Number(localStorage.getItem(k)) || 0;
-          if (!createdAt) { createdAt = Date.now(); localStorage.setItem(k, String(createdAt)); }
-        } catch { createdAt = Date.now(); }
+        const code = room.code || '(none)';
+        if (!fallbackCreated.has(code)) fallbackCreated.set(code, Date.now());
+        createdAt = fallbackCreated.get(code);
       }
-      const left = createdAt + LIMIT - Date.now();
+      if (createdAt > Date.now()) createdAt = Date.now();
+      const left = Math.max(0, Math.min(LIMIT, createdAt + LIMIT - Date.now()));
+      const mm = Math.floor(left / 60000);
+      const ss = Math.floor((left % 60000) / 1000);
+      const timeText = String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+
+      // 每次都按 id 取，避免引用被移除的旧节点
+      let box = document.getElementById('mm-room-timer');
       if (!box) {
         box = document.createElement('div');
         box.id = 'mm-room-timer';
-        box.style.cssText = 'position:fixed;z-index:88;padding:8px 16px;border-radius:9px;'
-          + 'background:rgba(8,14,18,.94);border:1px solid rgba(78,216,175,.35);'
-          + 'font:14px/1.4 "Noto Sans SC",system-ui,sans-serif;color:#9fb4ae;white-space:nowrap;'
-          + 'box-shadow:0 8px 22px rgba(0,0,0,.45);';
+        box.className = 'invite brackets';
         document.body.appendChild(box);
       }
-      const leftClamped = Math.min(LIMIT, Math.max(0, left));
-      const mm = Math.min(15, Math.floor(leftClamped / 60000));
-      const ss = Math.floor((leftClamped % 60000) / 1000);
-      const timeText = String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
-      box.innerHTML = left > 0
-        ? timeText + ' <span style="color:#cfe9e0">后同盟将自动销毁</span>'
-        : '<span style="color:#ffb4a8">房间即将销毁</span>';
-      box.style.fontWeight = '400';
-      box.style.letterSpacing = '.5px';
-      // 时间部分单独高亮
-      try {
-        if (left > 0) {
-          box.innerHTML = '<span style="color:#7ff0cf;font:700 32px/1.15 &quot;Noto Sans SC&quot;,system-ui,sans-serif">' + timeText + '</span>'
-            + ' <span style="color:#a8c0b9;font-size:15px;letter-spacing:.5px">后同盟将自动销毁</span>';
-        }
-      } catch { /* ignore */ }
-      // 与密钥字母同高同宽，放在面板左侧
+      box.innerHTML = '<span class="mm-timer-time">' + timeText + '</span>'
+        + '<span class="mm-timer-label">后同盟将自动销毁</span>';
+
+      // 找到同盟密钥面板（用「复制密钥」按钮定位），尺寸/位置完全跟随它
       try {
         const copyEl = [...document.querySelectorAll('button,span,div')]
           .find((n) => (n.textContent || '').trim() === '复制密钥');
+        // 向上找到真正的「同盟密钥」面板（同时包含标题与复制按钮的容器）
         let panel = copyEl;
-        for (let k = 0; k < 6 && panel; k++) {
-          const r0 = panel.getBoundingClientRect();
-          if (r0.width >= 240) break;
+        for (let k = 0; k < 10 && panel; k++) {
+          const txt = panel.textContent || '';
+          if (txt.includes('同盟密钥') && txt.includes('复制密钥')) break;
           panel = panel.parentElement;
         }
         const rect = panel ? panel.getBoundingClientRect() : null;
-        if (rect && rect.width >= 240) {
-          box.style.width = '250px';
-          box.style.height = '84px';
+        if (rect && rect.width >= 140) {
+          const w = Math.max(120, Math.round(rect.width * 0.45));
+          const h = Math.max(48, Math.round(rect.height * 0.7));
+          let left = Math.round(rect.left - w - 16);
+          left = Math.max(8, Math.min(left, Math.round(rect.left - w - 8)));
+          box.style.position = 'fixed';
+          box.style.width = w + 'px';
+          box.style.height = h + 'px';
+          box.style.left = left + 'px';
+          box.style.top = Math.round(rect.top + rect.height / 2 - h / 2) + 'px';
+          box.style.transform = 'none';
+          box.style.right = 'auto';
           box.style.display = 'flex';
           box.style.flexDirection = 'column';
           box.style.alignItems = 'center';
           box.style.justifyContent = 'center';
           box.style.padding = '0';
-          box.style.right = 'auto';
-          box.style.left = Math.max(8, rect.left - 250 - 18) + 'px';
-          box.style.top = (rect.top + 40) + 'px';
-          box.style.transform = 'none';
+          box.style.fontSize = Math.round(h * 0.18) + 'px';
+          const tEl = box.querySelector('.mm-timer-time');
+          const lEl = box.querySelector('.mm-timer-label');
+          if (tEl) tEl.style.fontSize = Math.round(h * 0.36) + 'px';
+          if (lEl) lEl.style.fontSize = Math.round(h * 0.15) + 'px';
+        } else {
+          // 找不到面板时放到右上角，避免跑到左上角挡按钮
+          box.style.position = 'fixed';
+          box.style.width = '200px';
+          box.style.height = '68px';
+          box.style.right = '360px';
+          box.style.top = '28px';
+          box.style.left = 'auto';
+          box.style.display = 'flex';
+          box.style.flexDirection = 'column';
+          box.style.alignItems = 'center';
+          box.style.justifyContent = 'center';
         }
       } catch { /* ignore */ }
-
     };
+
     sp.store.subscribe(tick);
-    setInterval(tick, 1000);
+    setInterval(tick, 500);
+    setTimeout(tick, 50);
+    setTimeout(tick, 300);
+    window.addEventListener('resize', tick);
     tick();
   }
+
 
 
   // ---------------------------------------------------------------- 统一风格（与游戏内 UI 一致）
@@ -711,11 +793,55 @@
         --mm-line:rgba(78,216,175,.30);
         --mm-text:#cfe9e0; --mm-dim:#7d9a92;
       }
-      /* 节点角标 */
-      #mm-nodes .chip{
-        background:rgba(10,18,20,.92); border:1px solid var(--mm-line); border-radius:6px;
-        color:var(--mm-text); font:12px/1.5 "Noto Sans SC",system-ui,sans-serif;
-      }
+@media (max-width:1300px){
+  .room-bar__center{min-width:0}
+  .room-bar__status{white-space:nowrap}
+}
+/* 空间不足时只压缩右侧按钮，文字仍保持整体居中 */
+/* 就绪文字不换行，空间不够时整体缩放而不是断行 */
+/* 窄屏时等比缩小文字，但保持整体居中 */
+@media (max-width:1600px){
+  .ready-count{font-size:calc(.18 * var(--t))}
+  .ready-count .num{font-size:calc(.22 * var(--t))}
+  .room-bar__status{font-size:calc(.14 * var(--t));white-space:nowrap}
+}
+@media (max-width:1300px){
+  .ready-count{font-size:calc(.16 * var(--t))}
+  .ready-count .num{font-size:calc(.2 * var(--t))}
+  .room-bar__status{font-size:calc(.13 * var(--t))}
+}
+/* room-bar 自适应：界面变窄时按钮缩小，给中间文字留位置 */
+@media (max-width:1700px){
+  .room-bar__right .btn{font-size:calc(.16 * var(--t));padding-inline:.14rem}
+  .room-bar__right .btn .btn__label{font-size:calc(.17 * var(--t))}
+  .room-bar__center{font-size:calc(.16 * var(--t))}
+}
+@media (max-width:1450px){
+  .room-bar{padding:0 .3rem;gap:.18rem}
+  .room-bar__right .btn{font-size:calc(.15 * var(--t));padding-inline:.1rem}
+  .room-bar__right .btn .btn__label{font-size:calc(.15 * var(--t))}
+  .room-bar__center{font-size:calc(.15 * var(--t))}
+  .room-bar__status{font-size:calc(.13 * var(--t))}
+}
+/* 底栏文字随界面缩放 */
+.room-bar__center{font-size:calc(.18 * var(--t))}
+.ready-count{font-size:calc(.2 * var(--t))}
+.ready-count .num{font-size:calc(.24 * var(--t))}
+.room-bar__status{font-size:calc(.16 * var(--t))}
+/* 匹配队友按钮：紧凑一些，避免挤压底栏文字 */
+#mm-room-anchor{margin:0 .12rem}
+/* 节点角标 */
+      #mm-nodes:not(.topbar) .chip{
+  display:inline-flex; align-items:center; justify-content:center; gap:.05rem;
+  height:.32rem; padding:0 .14rem 0 .11rem; border-radius:99px;
+  background:rgba(0,0,0,.5); border:1px solid var(--line);
+  color:var(--text-hi); font:calc(.16 * var(--t))/1 "Noto Sans SC",system-ui,sans-serif;
+  cursor:pointer; user-select:none; white-space:nowrap;
+}
+#mm-nodes .chip .num{color:var(--mint-400);font-family:var(--font-num);font-weight:700;font-variant-numeric:tabular-nums}
+      #mm-nodes.topbar{gap:0!important}
+      #mm-nodes.topbar .chip{color:#ffffff}
+      #mm-nodes.topbar .chip .num{color:var(--mint-400)}
       #mm-nodes .chip b{color:var(--mm-mint2)}
       #mm-nodes .panel{
         background:rgba(10,18,20,.97); border:1px solid var(--mm-line); border-radius:8px;
@@ -783,98 +909,281 @@
 
   // ---------------------------------------------------------------- 服务器更新公告（每个版本弹一次）
 
-  function installUpdateNotice() {
-    const SEEN = 'sp_update_seen';
-    fetch('/mm/api/update').then((r) => r.json()).then((d) => {
-      if (!d || !d.enabled || !d.text) return;
-      const ver = String(d.version || '') || (d.updatedAt || '');
-      try { if (localStorage.getItem(SEEN) === ver) return; } catch { /* ignore */ }
-      const style = document.createElement('style');
-      style.textContent = `
-        #mm-update{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.62)}
-        #mm-update .card{max-width:min(680px,88vw);max-height:76vh;overflow:auto;background:#0c1215;border:1px solid #2c4a4e;border-radius:14px;padding:20px 22px;color:#dff5ee;font:14px/1.75 "Noto Sans SC",system-ui,sans-serif;box-shadow:0 20px 60px rgba(0,0,0,.6)}
-        #mm-update h3{margin:0 0 4px;color:#7ff0cf;font-size:18px}
-        #mm-update .ver{color:#6f8f88;font-size:12px;margin-bottom:12px}
-        #mm-update pre{white-space:pre-wrap;margin:0 0 16px;font:inherit}
-        #mm-update button{float:right;background:#1b4d43;border:1px solid #2f7f6c;color:#c9ffef;border-radius:8px;padding:6px 16px;cursor:pointer}
-      `;
-      document.head.appendChild(style);
-      const box = document.createElement('div');
-      box.id = 'mm-update';
-      box.innerHTML = '<div class="card"><h3>服务器更新公告</h3><div class="ver"></div><pre></pre><button>知道了</button></div>';
-      box.querySelector('.ver').textContent = d.version ? '版本 ' + d.version : '';
-      box.querySelector('pre').textContent = d.text;
-      box.querySelector('button').onclick = () => { box.remove(); try { localStorage.setItem(SEEN, ver); } catch { /* ignore */ } };
-      document.body.appendChild(box);
-    }).catch(() => {});
-  }
+
 
   // ---------------------------------------------------------------- 临时公告
 
-  function installAnnouncement() {
-    let last = null;
-    let playedKey = null; // 已完整播过两遍的公告版本
-    try { playedKey = localStorage.getItem('sp.annPlayed') || null; } catch { /* ignore */ }
-    const style = document.createElement('style');
-    style.id = 'mm-ann-style';
-    style.textContent = `
-      #mm-ann{position:fixed;left:50%;top:11%;transform:translateX(-50%);z-index:80;
-        width:min(880px,92vw);height:36px;display:flex;align-items:center;overflow:hidden;pointer-events:none;
-        background:linear-gradient(90deg,rgba(0,0,0,0),rgba(6,12,14,.72) 12%,rgba(6,12,14,.72) 88%,rgba(0,0,0,0));
-        -webkit-mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent);
-        mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent);
-        font:15px/1.4 "Noto Sans SC",system-ui,sans-serif;color:#e8f4ef;white-space:nowrap;
-        opacity:1;transition:opacity .6s}
-      #mm-ann.gone{opacity:0}
-      #mm-ann .inner{display:inline-block;padding-left:100%;animation:mm-ann-scroll var(--mm-dur,18s) linear 2 forwards}
-      #mm-ann .hl{color:#7ff0cf}
-      @keyframes mm-ann-scroll{from{transform:translateX(0)}to{transform:translateX(-100%)}}
-    `;
-    document.head.appendChild(style);
 
-    const load = () => fetch('/mm/api/announcement').then((r) => r.json()).then((d) => {
+  // ---------------------------------------------------------------- 官方 QQ 群（右上角）
+
+  // 顶部按钮助手：克隆「统计」按钮的样式与图标位，替换图标路径与文字
+  function ensureTopButton(id, label, iconPath, onClick, beforeId, allowLobby) {
+    const stat = document.querySelector('button.title-stats')
+      || (allowLobby ? [...document.querySelectorAll('button')].find((b) => !b.id.startsWith('mm-') && /S\.W\.E\.E\.P/i.test((b.textContent || '').trim())) : null);
+    const existing = document.getElementById(id);
+    if (!stat) { if (existing) existing.style.display = 'none'; return null; }
+    if (existing) { existing.style.display = ''; return existing; }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = id;
+    btn.className = stat.className;
+    btn.style.marginRight = '10px';
+    btn.style.color = '#ffffff';
+    const svg = stat.querySelector('svg');
+    if (svg) {
+      const s = svg.cloneNode(true);
+      const path = s.querySelector('path');
+      if (path) path.setAttribute('d', iconPath);
+      btn.appendChild(s);
+    }
+    const span = document.createElement('span');
+    span.textContent = label;
+    btn.appendChild(span);
+    btn.onclick = onClick;
+    const before = beforeId ? document.getElementById(beforeId) : null;
+    stat.parentElement.insertBefore(btn, before || stat);
+    return btn;
+  }
+
+  function ensureTopButtonFrom(id, label, iconPath, onClick, templateRe, beforeId) {
+    const tpl = [...document.querySelectorAll('button')]
+      .find((b) => !b.id.startsWith('mm-') && templateRe.test((b.textContent || '').trim()));
+    const existing = document.getElementById(id);
+    if (!tpl) { if (existing) existing.style.display = 'none'; return null; }
+    if (existing) { existing.style.display = ''; return existing; }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = id;
+    btn.className = tpl.className;
+    btn.style.marginRight = '10px';
+    const svg = tpl.querySelector('svg');
+    if (svg) {
+      const s = svg.cloneNode(true);
+      const path = s.querySelector('path');
+      if (path) path.setAttribute('d', iconPath);
+      btn.appendChild(s);
+    }
+    const span = document.createElement('span');
+    span.textContent = label;
+    btn.appendChild(span);
+    btn.onclick = onClick;
+    const before = beforeId ? document.getElementById(beforeId) : null;
+    tpl.parentElement.insertBefore(btn, before || tpl);
+    return btn;
+  }
+
+  // mm-clean-top：非标题页时移除我们插入的按钮
+  function cleanTopExtras() {
+    const onTitle = !!document.querySelector('button.title-stats');
+    const inLobby = [...document.querySelectorAll('button')].some((b) => !b.id.startsWith('mm-') && /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
+    const qq = document.getElementById('mm-qq');
+    if (!onTitle && qq) qq.remove();
+    const notice = document.getElementById('mm-notice-btn');
+    if (!onTitle && !inLobby && notice) notice.remove();
+    const legacy = document.getElementById('mm-notice-lobby');
+    if (legacy) legacy.remove();
+  }
+
+  function installQQGroup() {
+    const QQ = '312990596';
+    const LINK = 'https://qun.qq.com/universal-share/share?ac=1&authKey=f50LwALLkBM4sEW9%2Fzx%2BnaN1aT0QvIEpxEpgZ62mrdnpilQA7WCK5SgPMNtCWLfH&busi_data=eyJncm91cENvZGUiOiIzMTI5OTA1OTYiLCJ0b2tlbiI6Ik5zR2lzaTczUEp6UGNhOWNuSDF0VUp5eW9CemVvZGlib3dxbFNGeGVLSVJwZWFWb3Z4dCtHb01maDExVnZBVS8iLCJ1aW4iOiIyODExMTA0NzEifQ%3D%3D&data=MRFk_l0v2xsFWvIy0Baa-d5WJYNGXZA1tTitHhWUrEjtqcUwegXE9v7kk_-1zb_PP8c4L07-oo1AKcWjaMqjbQ&svctype=4&tempid=h5_group_info';
+    const ICON = 'M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 5V6a2 2 0 0 1 2-2z';
+    const ensure = () => ensureTopButton('mm-qq', '官方Q群：' + QQ, ICON, () => window.open(LINK, '_blank', 'noopener'), null, false);
+    ensure();
+    setInterval(ensure, 1200);
+    window.addEventListener('resize', ensure);
+  }
+
+
+
+
+  // ---------------------------------------------------------------- 临时公告（后台即时推送，滚动两遍后消失）
+
+  function installTempNotice() {
+    // 移植参考版 ticker：顶部条内每行从右侧滑入、停留约 4.8 秒、向左滑出
+    if (!document.getElementById('mm-ticker-css')) {
+      const st = document.createElement('style');
+      st.id = 'mm-ticker-css';
+      st.textContent = `
+#mm-ticker{position:fixed;top:9%;left:50%;transform:translateX(-50%);width:min(760px,92vw);height:30px;
+  overflow:hidden;pointer-events:none;z-index:60}
+#mm-ticker .line{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:8px;
+  white-space:nowrap;padding:0 24px;font:15px/1.3 "Noto Sans SC",system-ui,sans-serif;color:#e8f4ef;
+  background:linear-gradient(90deg,transparent,rgba(10,14,12,.97) 10%,rgba(10,14,12,.97) 90%,transparent);
+  border-top:1px solid rgba(255,198,0,.35);border-bottom:1px solid rgba(255,198,0,.35);
+  animation:ticker-in .42s cubic-bezier(.2,.8,.2,1), ticker-out .38s ease-in-out 4.8s forwards}
+@keyframes ticker-in{from{transform:translateX(80%);opacity:0}}
+@keyframes ticker-out{to{transform:translateX(-40%);opacity:0}}
+`;
+      document.head.appendChild(st);
+    }
+
+    let queue = [];
+    let showing = false;
+    let lastKey = '';
+
+    const strip = () => {
+      let el = document.getElementById('mm-ticker');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'mm-ticker';
+        document.body.appendChild(el);
+      }
+      return el;
+    };
+
+    const showNext = () => {
+      if (showing) return;
+      const text = queue.shift();
+      if (!text) return;
+      showing = true;
+      const el = strip();
+      const line = document.createElement('div');
+      line.className = 'line';
+      line.textContent = text;
+      el.appendChild(line);
+      setTimeout(() => {
+        try { line.remove(); } catch { /* ignore */ }
+        showing = false;
+        showNext();
+      }, 5600);
+    };
+
+    const poll = () => fetch('/mm/api/announcement', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
       const key = d && d.enabled && d.text ? (d.updatedAt || d.text) : null;
-      const old = document.getElementById('mm-ann');
-      if (!key) { if (old) old.remove(); last = null; return; }
-      if (key === playedKey) { if (old) old.remove(); return; } // 已播过就不再推送
-      if (key === last && old) return;
-      last = key;
-      if (old) old.remove();
-      const el = document.createElement('div');
-      el.id = 'mm-ann';
-      el.innerHTML = '<span class="inner"></span>';
-      const inner = el.querySelector('.inner');
-      // 时间（6:10 / 21:00）用高亮色，像官方的样式
-      const text = String(d.text);
-      const parts = text.split(/(\d{1,2}:\d{2})/g);
-      for (const part of parts) {
-        if (/^\d{1,2}:\d{2}$/.test(part)) {
-          const sp = document.createElement('span');
-          sp.className = 'hl';
-          sp.textContent = part;
-          inner.appendChild(sp);
-        } else if (part) {
-          inner.appendChild(document.createTextNode(part));
+      if (!key) { queue = []; return; }
+      if (key === lastKey) return;
+      lastKey = key;
+      const lines = String(d.text).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      queue = lines;
+      showNext();
+    }).catch(() => {});
+    poll();
+    setInterval(poll, 5000);
+    setInterval(showNext, 800);
+  }
+
+
+  function installAnnouncement() {
+    let cache = null;
+    let revision = '';
+    let dotPending = false;
+    const ICON = 'M12 2a1 1 0 0 1 1 1v1.1a6 6 0 0 1 5 5.9v4l2 2v2H4v-2l2-2v-4a6 6 0 0 1 5-5.9V3a1 1 0 0 1 1-1zm0 20a3 3 0 0 1-3-3h6a3 3 0 0 1-3 3z';
+    const hash = (s) => {
+      let a = 2166136261;
+      for (let i = 0; i < s.length; i++) a = Math.imul(a ^ s.charCodeAt(i), 16777619);
+      return 'ann1:' + (a >>> 0).toString(16) + ':' + s.length.toString(16);
+    };
+
+    if (!document.getElementById('mm-ann-css')) {
+      const st = document.createElement('style');
+      st.id = 'mm-ann-css';
+      st.textContent = `
+.announcement-list { display: flex; flex-direction: column; gap: .24rem; }
+.announcement-entry { overflow-wrap: anywhere; }
+.announcement-entry + .announcement-entry { border-top: 1px solid var(--line); padding-top: .22rem; }
+.announcement-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .2rem; margin-bottom: .12rem; }
+.announcement-entry h3 { font-size: max(calc(.23 * var(--t)), 16px); color: var(--text-hi); }
+.announcement-date { font-size: max(calc(.14 * var(--t)), 12px); color: var(--text-lo); }
+.announcement-entry p { white-space: pre-wrap; font-size: max(calc(.18 * var(--t)), 14px); line-height: 1.7; }
+.announcement-entry p + p { margin-top: .12rem; }
+.announcement-state { display: flex; flex-direction: column; align-items: center; gap: .14rem; padding-block: .36rem; text-align: center; }
+.announcement-state h3 { color: var(--text-hi); font-size: max(calc(.22 * var(--t)), 16px); }
+.announcement-state p { font-size: max(calc(.17 * var(--t)), 14px); line-height: 1.6; }
+.announcement-board .modal__body { display: flex; flex-direction: column; flex: 1; gap: 12px; overflow: hidden; }
+.announcement-scroll { min-height: 0; flex: 1; overflow-y: scroll; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 12px; }
+.announcement-board .modal__actions .btn { min-height: 40px; font-size: max(calc(.17 * var(--t)), 14px); padding-inline: 16px; }
+`;
+      document.head.appendChild(st);
+    }
+
+    const open = () => {
+      if (document.getElementById('mm-notice-modal')) return;
+      const veil = document.createElement('div');
+      veil.id = 'mm-notice-modal';
+      veil.className = 'modal lobby-dialog';
+      veil.innerHTML = '<div class="modal__box brackets modal__box--mint lobby-dialog announcement-board" role="dialog" aria-modal="true" tabindex="-1">'
+        + '<div class="modal__stripe" aria-hidden="true"></div>'
+        + '<header class="modal__head"><span class="micro">BULLETIN BOARD</span><h2 class="modal__title">公告板</h2></header>'
+        + '<div class="modal__body"><div class="announcement-scroll" role="region" tabindex="0"><div class="announcement-list"></div></div></div>'
+        + '<footer class="modal__actions"><button type="button" class="btn btn--secondary" data-mm-close>关闭公告</button></footer>'
+        + '</div>';
+      const listEl = veil.querySelector('.announcement-list');
+      const list = Array.isArray(cache) ? cache : [];
+      if (!list.length) {
+        listEl.outerHTML = '<div class="announcement-state"><h3>暂无公告</h3><p>新的公告会在这里显示。</p></div>';
+      } else {
+        for (const en of list) {
+          const art = document.createElement('article');
+          art.className = 'announcement-entry';
+          const head = document.createElement('header');
+          const h3 = document.createElement('h3');
+          h3.textContent = String(en.title || '');
+          head.appendChild(h3);
+          if (en.date) {
+            const d = document.createElement('span');
+            d.className = 'announcement-date num';
+            d.textContent = String(en.date);
+            head.appendChild(d);
+          }
+          art.appendChild(head);
+          for (const para of (en.paragraphs || [])) {
+            const pn = document.createElement('p');
+            pn.textContent = String(para);
+            art.appendChild(pn);
+          }
+          listEl.appendChild(art);
         }
       }
-      const dur = Math.max(12, Math.min(30, Math.round(text.length / 5)));
-      el.style.setProperty('--mm-dur', dur + 's');
-      document.body.appendChild(el);
-      // 滚动两遍后整条消失；同一版本不再重复推送
-      const innerEl = el.querySelector('.inner');
-      if (innerEl) {
-        innerEl.addEventListener('animationend', () => {
-          playedKey = key;
-          try { localStorage.setItem('sp.annPlayed', key); } catch { /* ignore */ }
-          el.classList.add('gone');
-          setTimeout(() => { try { el.remove(); } catch { /* ignore */ } }, 600);
-        });
-      }
+      const close = () => veil.remove();
+      veil.querySelector('[data-mm-close]').onclick = close;
+      veil.addEventListener('click', (e) => { if (e.target === veil) close(); });
+      document.addEventListener('keydown', function esc(e) {
+        if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+      });
+      document.body.appendChild(veil);
+      try { localStorage.setItem('mm.annDismissed', revision); } catch { /* ignore */ }
+      const dot = document.querySelector('#mm-notice-btn .mm-dot');
+      if (dot) dot.style.display = 'none';
+    };
 
-    }).catch(() => {});
+    const ensure = () => {
+      const btn = ensureTopButton('mm-notice-btn', '公告', ICON, open, 'mm-qq', true);
+      if (!btn) return;
+      let dot = btn.querySelector('.mm-dot');
+      if (dotPending && !dot) {
+        dot = document.createElement('span');
+        dot.className = 'mm-dot';
+        dot.style.cssText = 'display:inline-block;width:6px;height:6px;border-radius:50%;background:#e8b25a;margin-left:6px;vertical-align:middle';
+        btn.appendChild(dot);
+      }
+      if (dot) dot.style.display = dotPending ? 'inline-block' : 'none';
+    };
+
+    const load = async () => {
+      try {
+        const r = await fetch('/mm/api/announcements', { cache: 'no-store' });
+        const list = await r.json();
+        if (!Array.isArray(list)) return;
+        cache = list;
+        const rev = hash(JSON.stringify(list));
+        if (rev !== revision) {
+          revision = rev;
+          let dismissed = '';
+          try { dismissed = localStorage.getItem('mm.annDismissed') || ''; } catch { /* ignore */ }
+          dotPending = !!(list.length) && dismissed !== rev;
+        }
+      } catch { /* ignore */ }
+    };
+
+    ensure();
+    setInterval(ensure, 1200);
     load();
-    setInterval(load, 3000);
+    setInterval(load, 60000);
   }
+
+
+
 
   // ---------------------------------------------------------------- 节点状态角标（延迟旁边：大厅/房间看集群，对局看本节点）
 
@@ -913,27 +1222,113 @@
     try { new MutationObserver(walk).observe(document.body, { childList: true, subtree: true }); } catch { /* ignore */ }
   }
 
+  const __mmStatusCss = `
+#mm-nodes .panel{padding:18px 20px;background:rgba(6,10,12,.97);border:1px solid var(--line);border-radius:12px;min-width:480px}
+#mm-nodes .server-status__heading{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;
+  padding-bottom:14px;border-bottom:1px solid var(--line);font-size:14px;color:var(--text-hi)}
+#mm-nodes .server-status__window{font-size:11px;color:var(--text-lo)}
+#mm-nodes .server-status__table-wrap{overflow-x:auto;max-width:100%}
+#mm-nodes .server-status__table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap;table-layout:fixed}
+#mm-nodes .server-status__table th:nth-child(1),#mm-nodes .server-status__table td:nth-child(1){width:44%}
+#mm-nodes .server-status__table th:nth-child(2),#mm-nodes .server-status__table td:nth-child(2){width:20%}
+#mm-nodes .server-status__table th:nth-child(3),#mm-nodes .server-status__table td:nth-child(3){width:18%}
+#mm-nodes .server-status__table th:nth-child(4),#mm-nodes .server-status__table td:nth-child(4){width:18%}
+#mm-nodes .server-status__table th,#mm-nodes .server-status__table td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:right;font-weight:400;line-height:1.5}
+#mm-nodes .server-status__table th:first-child,#mm-nodes .server-status__table td:first-child{text-align:left}
+#mm-nodes .server-status__table thead{color:var(--text-lo);font-size:12px;letter-spacing:.5px}
+#mm-nodes .server-status__table tbody{color:var(--text-hi)}
+#mm-nodes .server-status__table td.num{font-family:var(--font-num);font-variant-numeric:tabular-nums;color:var(--mint-400);font-weight:700}
+#mm-nodes .server-status__table tr.off td{color:var(--red-premium,#c98b8b)}
+#mm-nodes .server-status__dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--mint-400);margin-right:10px;vertical-align:middle}
+#mm-nodes .server-status__table tr.off .server-status__dot{background:#8a4b4b}
+`;
+  const __mmStatusModalCss = `
+#mm-nodes .panel{display:none!important}
+.mm-status.modal{position:fixed;inset:0;z-index:130;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72)}
+.mm-status .modal__box{width:min(700px,calc(100vw - 32px));max-height:calc(100vh - 64px);display:flex;flex-direction:column;
+  background:#0a1114;border:1px solid var(--line);border-radius:10px;overflow:hidden;color:var(--text-hi)}
+.mm-status .modal__head{display:flex;flex-direction:column;gap:2px;padding:16px 20px 12px;border-bottom:1px solid var(--line)}
+.mm-status .modal__head .micro{font-size:10px;letter-spacing:3px;color:var(--text-dim)}
+.mm-status .modal__title{margin:0;font-size:18px;color:var(--text-hi)}
+.mm-status .modal__body{padding:16px 20px;overflow:auto}
+.mm-status .modal__actions{display:flex;justify-content:flex-end;padding:12px 20px;border-top:1px solid var(--line)}
+.mm-status .server-status__heading{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;
+  padding-bottom:14px;border-bottom:1px solid var(--line);font-size:14px}
+.mm-status .server-status__window{font-size:11px;color:var(--text-lo)}
+.mm-status .server-status__table-wrap{overflow-x:auto}
+.mm-status .server-status__table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap;table-layout:fixed}
+.mm-status .server-status__table th,.mm-status .server-status__table td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:right;font-weight:400}
+.mm-status .server-status__table th:first-child,.mm-status .server-status__table td:first-child{text-align:left;width:44%}
+.mm-status .server-status__table th:nth-child(2),.mm-status .server-status__table td:nth-child(2){width:20%}
+.mm-status .server-status__table th:nth-child(3),.mm-status .server-status__table td:nth-child(3){width:18%}
+.mm-status .server-status__table th:nth-child(4),.mm-status .server-status__table td:nth-child(4){width:18%}
+.mm-status .server-status__table thead{color:var(--text-lo)}
+.mm-status .server-status__table td.num{font-family:var(--font-num);font-variant-numeric:tabular-nums;color:var(--mint-400);font-weight:700}
+.mm-status .server-status__dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--mint-400);margin-right:10px;vertical-align:middle}
+.mm-status tr.off td{color:#c98b8b}
+`;
+  const __mmStatusCss2 = `
+.server-status-modal{width:min(700px,calc(100vw - 32px));max-height:calc(100vh - 64px)}
+.server-status-modal .modal__body{display:flex;flex-direction:column;gap:12px;overflow:hidden;min-height:0}
+.server-status__heading{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--line);font-size:max(calc(.15 * var(--t)),12px);color:var(--text-hi)}
+.server-status__window{font-size:11px;color:var(--text-lo)}
+.server-status__table-wrap{overflow:auto;min-height:0;flex:1}
+.server-status__table{border-collapse:collapse;width:100%;font-size:max(calc(.14 * var(--t)),12px);white-space:nowrap;table-layout:fixed}
+.server-status__table th,.server-status__table td{padding:10px 10px;border-bottom:1px solid var(--line);text-align:right;font-weight:400}
+.server-status__table th:first-child,.server-status__table td:first-child{text-align:left;width:44%}
+.server-status__table th:nth-child(2),.server-status__table td:nth-child(2){width:20%}
+.server-status__table th:nth-child(3),.server-status__table td:nth-child(3){width:18%}
+.server-status__table th:nth-child(4),.server-status__table td:nth-child(4){width:18%}
+.server-status__table thead{color:var(--text-lo)}
+.server-status__table td.num{font-family:var(--font-num);font-variant-numeric:tabular-nums;color:var(--mint-400);font-weight:700}
+.server-status__dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--mint-400);margin-right:10px;vertical-align:middle}
+.server-status__table tr.off td{color:#c98b8b}
+`;
   function installNodeBadge() {
+    try {
+      if (!document.getElementById('mm-status-css2')) {
+        const s2 = document.createElement('style');
+        s2.id = 'mm-status-css2';
+        s2.textContent = __mmStatusCss2;
+        document.head.appendChild(s2);
+      }
+    } catch { /* ignore */ }
+    try {
+      if (!document.getElementById('mm-status-modal-css')) {
+        const s1 = document.createElement('style');
+        s1.id = 'mm-status-modal-css';
+        s1.textContent = __mmStatusModalCss;
+        document.head.appendChild(s1);
+      }
+    } catch { /* ignore */ }
+    if (!document.getElementById('mm-status-css')) {
+      const s0 = document.createElement('style');
+      s0.id = 'mm-status-css';
+      s0.textContent = __mmStatusCss;
+      document.head.appendChild(s0);
+    }
     if (document.getElementById('mm-nodes')) return;
     const style = document.createElement('style');
     style.textContent = `
       #mm-nodes{position:fixed;z-index:46;display:inline-flex;align-items:center;font:12px/1.5 "Noto Sans SC",system-ui,sans-serif}
       div:has(> #mm-nodes){align-items:center}
-      #mm-nodes .chip{display:inline-flex;align-items:center;justify-content:center;height:36px;gap:6px;background:rgba(8,14,18,.86);border:1px solid #27393b;color:#bfe3d8;padding:4px 10px;border-radius:12px;cursor:pointer;user-select:none;white-space:nowrap}
+      #mm-nodes:not(.topbar) .chip{display:inline-flex;align-items:center;justify-content:center;gap:.05rem;height:.32rem;padding:0 .14rem 0 .11rem;border-radius:99px;background:rgba(0,0,0,.5);border:1px solid var(--line);color:var(--text-hi);font:calc(.16 * var(--t))/1 "Noto Sans SC",system-ui,sans-serif;cursor:pointer;user-select:none;white-space:nowrap}
+#mm-nodes .chip .num{color:var(--mint-400);font-family:var(--font-num);font-weight:700;font-variant-numeric:tabular-nums}
       #mm-nodes .chip i{width:7px;height:7px;border-radius:50%;background:#4ed8af;box-shadow:0 0 6px #4ed8af}
       #mm-nodes[data-state=busy] .chip i{background:#e8b25a;box-shadow:0 0 6px #e8b25a}
       #mm-nodes[data-state=down] .chip i{background:#d9534f;box-shadow:0 0 6px #d9534f}
       #mm-nodes .chip b{font-weight:700;color:#e6fff7}
       #mm-nodes.match .chip i{background:#e8b25a;box-shadow:0 0 6px #e8b25a}
-      #mm-nodes .panel{position:absolute;top:calc(100% + 8px);left:0;z-index:60;min-width:380px;max-height:min(calc(100vh - 120px),920px);overflow:auto;background:rgba(8,14,18,.97);border:1px solid #27393b;border-radius:10px;padding:8px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+      #mm-nodes .panel{position:absolute;top:calc(100% + 8px);left:0;z-index:60;min-width:360px;max-height:min(calc(100vh - 120px),920px);overflow:auto;background:rgba(0,0,0,.62);border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 10px 30px rgba(0,0,0,.5);backdrop-filter:blur(6px);color:var(--text-hi);font:calc(.15 * var(--t))/1.5 "Noto Sans SC",system-ui,sans-serif}
       #mm-nodes .panel[hidden]{display:none}
-      #mm-nodes .head{display:grid;grid-template-columns:14px 1fr 56px 56px 56px;gap:6px;padding:2px 6px 6px;color:#6f8f88;font-size:11px;border-bottom:1px solid #1d2c2e;margin-bottom:4px}
+      #mm-nodes .head{display:grid;grid-template-columns:14px 1fr 56px 56px 56px;gap:6px;padding:2px 4px 8px;color:var(--text-dim);font-size:calc(.12 * var(--t));border-bottom:1px solid var(--line);margin-bottom:6px}
       #mm-nodes .head span{text-align:right}
       #mm-nodes .head span:first-child{text-align:left;grid-column:1 / span 2}
       #mm-nodes .row{display:grid;grid-template-columns:14px 1fr 56px 56px 56px;align-items:center;gap:6px;padding:2px 6px;color:#9fd8c6;white-space:nowrap}
       #mm-nodes .row b{font-weight:600;overflow:hidden;text-overflow:ellipsis}
       #mm-nodes .row i{width:6px;height:6px;border-radius:50%;background:#4ed8af}
-      #mm-nodes .row span{color:#6f8f88;font-size:11px;text-align:right}
+      #mm-nodes .row span{color:var(--text-lo);font-size:calc(.13 * var(--t));text-align:right}
+      #mm-nodes .row span.num{color:var(--mint-400);font-family:var(--font-num);font-weight:700;font-variant-numeric:tabular-nums}
       #mm-nodes .row.off{color:#c98b8b}
       #mm-nodes .row.off i{background:#8a4b4b}
     `;
@@ -959,13 +1354,62 @@
       const start = [...document.querySelectorAll('button')].find((b) => /^开始\s*»?$/.test((b.textContent || '').trim()) && b.offsetParent);
       const ping = document.querySelector('.ping');
       if (start && start.getClientRects().length) {
-        // 标题页：固定在左上角
+        // 标题页：放进右上角工具条，排在「公告」按钮左边，样式与按钮一致
+        const notice = document.getElementById('mm-notice-btn');
+        const hostBtn = notice || document.querySelector('button.title-stats')
+          || [...document.querySelectorAll('button')].find((b) => /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
+        if (hostBtn && hostBtn.parentElement) {
+          if (el.parentElement !== hostBtn.parentElement || el.nextElementSibling !== hostBtn) {
+            hostBtn.parentElement.insertBefore(el, hostBtn);
+          }
+          el.style.display = 'inline-flex';
+          el.style.position = 'static';
+          el.style.left = 'auto';
+          el.style.right = 'auto';
+          el.style.top = 'auto';
+          el.style.transform = 'none';
+          el.style.margin = '0 8px 0 0';
+          el.classList.add('topbar');
+          // 直接沿用「公告」按钮的图标与文字排版，保证同款
+          try {
+            const chipEl = el.querySelector('.chip');
+            if (chipEl) {
+              const dot = chipEl.querySelector('i');
+              if (dot) dot.style.display = 'none';
+              let icon = chipEl.querySelector('svg.mm-chip-icon');
+              if (!icon && hostBtn.querySelector('svg')) {
+                icon = hostBtn.querySelector('svg').cloneNode(true);
+                icon.classList.add('mm-chip-icon');
+                icon.style.marginRight = '6px';
+                chipEl.insertBefore(icon, chipEl.firstChild);
+              }
+            }
+          } catch { /* ignore */ }
+          // 外观与「公告」按钮完全一致：直接套用它自己的 class（含 hover 效果）
+          try {
+            el.style.color = '#ffffff';
+            el.style.background = 'transparent';
+            const chipEl = el.querySelector('.chip');
+            if (chipEl) {
+              chipEl.className = hostBtn.className + ' chip';
+              chipEl.style.cssText = 'cursor:pointer';
+              // 与公告/统计等按钮使用同一套间距（克隆按钮自带 10px 右边距）
+              el.style.margin = '0 10px 0 0';
+              el.style.padding = '0';
+              el.style.height = 'auto';
+            }
+          } catch { /* ignore */ }
+          return;
+        }
+        // 工具条还没渲染出来：先固定在左上角，下个周期再归位
         el.style.display = '';
         el.style.position = 'fixed';
         el.style.left = '16px';
         el.style.top = '16px';
         el.style.transform = 'none';
         el.style.margin = '0';
+        el.classList.remove('topbar');
+        setTimeout(place, 500);
         return;
       }
       if (!ping || !ping.getClientRects().length) { el.style.display = 'none'; return; }
@@ -977,6 +1421,7 @@
       el.style.transform = 'none';
       el.style.margin = '0 0 0 10px';
       el.style.display = 'inline-flex';
+      el.classList.remove('topbar');
       // 把“延迟 + 角标”强制排成一行（与选择模拟协议界面一致）
       let host = ping.parentElement;
       for (let k = 0; k < 3 && host && host.getBoundingClientRect().width < 60; k++) host = host.parentElement;
@@ -996,20 +1441,74 @@
     const attach = () => {
       if (!el.isConnected) document.body.appendChild(el);
       place();
+    setInterval(place, 1200);
+    window.addEventListener('resize', place);
     };
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
 
+
+    const openStatusModal = () => {
+      if (!data) return;
+      if (document.getElementById('mm-status-modal')) return;
+      const veil = document.createElement('div');
+      veil.id = 'mm-status-modal';
+      veil.className = 'modal lobby-dialog';
+      veil.innerHTML = '<div class="modal__box brackets modal__box--mint lobby-dialog server-status-modal server-status-modal--cluster" role="dialog" aria-modal="true" tabindex="-1">'
+        + '<div class="modal__stripe" aria-hidden="true"></div>'
+        + '<header class="modal__head"><span class="micro">SERVER STATUS</span><h2 class="modal__title">节点状态</h2></header>'
+        + '<div class="modal__body"></div>'
+        + '<footer class="modal__actions"><button type="button" class="btn btn--secondary">关闭</button></footer>'
+        + '</div>';
+      const body = veil.querySelector('.modal__body');
+      const ready = data.online, total = data.total;
+      body.innerHTML = '<div class="server-status__heading"><span>' + ready + ' / ' + total + ' 节点就绪</span>'
+        + '<span class="server-status__window">刚刚更新</span></div>'
+        + '<div class="server-status__table-wrap"><table class="server-status__table"><thead><tr>'
+        + '<th>节点</th><th>状态</th><th>人数</th><th>对局</th></tr></thead><tbody>'
+        + data.nodes.map((x) => '<tr class="' + (x.ok ? 'ok' : 'off') + '">'
+          + '<td><span class="server-status__dot"></span>' + x.name + '</td>'
+          + '<td>' + (x.ok ? '正常' : '离线') + '</td>'
+          + '<td class="num">' + (x.ok ? x.humans : '--') + '</td>'
+          + '<td class="num">' + (x.ok ? x.matches : '--') + '</td></tr>').join('')
+        + '</tbody></table></div>';
+      const close = () => veil.remove();
+      veil.querySelector('.modal__actions button').onclick = close;
+      veil.addEventListener('click', (e) => { if (e.target === veil) close(); });
+      document.addEventListener('keydown', function esc(e) {
+        if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+      });
+      document.body.appendChild(veil);
+    };
+
     chip.addEventListener('click', (e) => {
       e.stopPropagation();
       if (el.classList.contains('match') || !data) return;
+      openStatusModal();
+      return;
       open = !open;
       panel.hidden = !open;
       if (open) {
-        panel.innerHTML = '<div class="head"><span>节点</span><span>状态</span><span>人数</span><span>对局</span></div>'
-          + data.nodes.map((x) => '<div class="row ' + (x.ok ? 'ok' : 'off') + '"><i></i>' + x.name
-            + '<span>' + (x.ok ? '正常' : '离线') + '</span><span>' + (x.ok ? x.humans : '--')
-            + '</span><span>' + (x.ok ? x.matches : '--') + '</span></div>').join('');
+        const ready = data.online, total = data.total;
+        panel.innerHTML = '<div class="server-status__heading"><span>' + ready + ' / ' + total + ' 节点就绪</span>'
+          + '<span class="server-status__window">刚刚更新</span></div>'
+          + '<div class="server-status__table-wrap"><table class="server-status__table"><thead><tr>'
+          + '<th>节点</th><th>状态</th><th>人数</th><th>对局</th></tr></thead><tbody>'
+          + data.nodes.map((x) => '<tr class="' + (x.ok ? 'ok' : 'off') + '">'
+            + '<td><span class="server-status__dot"></span>' + x.name + '</td>'
+            + '<td>' + (x.ok ? '正常' : '离线') + '</td>'
+            + '<td class="num">' + (x.ok ? x.humans : '--') + '</td>'
+            + '<td class="num">' + (x.ok ? x.matches : '--') + '</td></tr>').join('')
+          + '</tbody></table></div>';
+        // 定位：固定到角标下方（避免被顶栏的窄容器挤压）
+        try {
+          const r = el.getBoundingClientRect();
+          panel.style.position = 'fixed';
+          panel.style.left = Math.round(Math.min(r.left, window.innerWidth - 500)) + 'px';
+          panel.style.top = Math.round(r.bottom + 8) + 'px';
+          panel.style.width = '480px';
+          panel.style.maxHeight = Math.min(window.innerHeight - r.bottom - 24, 720) + 'px';
+        } catch { /* ignore */ }
       }
     });
     document.addEventListener('click', () => { open = false; panel.hidden = true; });
@@ -1033,7 +1532,7 @@
       }
       el.classList.remove('match');
       if (!data) return;
-      text.innerHTML = '<b>' + sum.ready + '/' + sum.total + '</b> · ' + LOAD_TEXT[sum.state] + ' · <b>' + sum.humans + '</b> 人在线';
+      text.innerHTML = '<span class="num">' + sum.ready + '/' + sum.total + '</span> · ' + LOAD_TEXT[sum.state] + ' · <span class="num">' + sum.humans + '</span> 人在线';
     };
 
     const load = () => fetch('/mm/api/node-status').then((r) => r.json()).then((d) => { data = d; render(); }).catch(() => {});
