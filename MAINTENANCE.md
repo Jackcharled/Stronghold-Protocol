@@ -57,4 +57,40 @@
 
 _本地部署补丁，不含备案号相关内容。_
 
+
+### 服务端改动明细（2026-10-20）
+
+**房间生命周期**（`node-*/server/lobby.js`）
+
+- 新增 `roomTtlMs()`：每 5 秒读取一次 `shared/data/room-ttl.json` 的 `minutes`（1~1440，缺省 15），配置改动无需重启节点。
+- `create()` 里执行 `room.ttlMs = roomTtlMs()`：解散时长在**建房时冻结**，之后改配置只影响新房间。
+- `toState()` 下发 `serverNow`、`expiresInMs`、`ttlMs`：客户端据此校正时钟差并按房间自身时长倒计时。
+- `sweepOldRooms()` 改用 `room.ttlMs` 判断到期；对局中的房间照旧跳过。
+- `join()` **不再**重置 `createdAt`：加入已有房间沿用创建时刻的剩余时间。
+- 对局结束（`onMatchEnd`）仍重置 `createdAt`，给玩家回房再开一局的时间。
+
+**断点存档**（`node-*/server/persist/lobbyState.js`）
+
+- `roomDoc()` 增加 `createdAt`、`lastMatchEndedAt`、`ttlMs` 三个字段。
+- 恢复时优先使用存档里的 `createdAt` / `ttlMs`，缺失才回退到当前时间与全局配置；服务器重启后倒计时连续，不再重置回满值。
+
+**PM2 编排**（`ecosystem.config.cjs`）
+
+- `BASE` 指向 `D:\Stronghold-Protocol`。
+- 每个节点新增 `SP_REDIS_PREFIX=`sp:n<N>:``：此前 30 个节点共用 `sp:` 前缀，空大厅会覆盖有房间的存档（表现为重启后 `restored 0 room(s)`）。
+
+**接口**
+
+- `matchmaker/server.js`：新增 `GET /mm/api/room-ttl` → `{ minutes }`，供客户端显示使用。
+- `dashboard/server.js`：新增 `GET/POST /api/room-ttl`，后台写 `shared/data/room-ttl.json`，保存即生效。
+- 后台页面新增「同盟解散时间」区块（1~1440 分钟输入 + 保存）。
+
+**反向代理与守护**（与目录迁移配套）
+
+- `nginx/conf/nginx.conf`：30 节点反代、`/mm/` 注入、HTTP→HTTPS、ACME 校验，路径全部改为新目录；补回 `sub_filter '</body>' '<script src="/mm/client.js">'`。
+- `guard/nginx-autoban.ps1`：日志、状态、心跳路径改为 `D:\Stronghold-Protocol\...`。
+- 计划任务 `SP-Nginx`、`SP-Nginx-AutoBan`、`SP-LetsEncrypt-Renew` 与开机自启脚本同步改用英文路径。
+
+> 以上为本地部署改动，仓库只保留注入脚本与本文档，不含服务端源码与美术资源。
+
 _最后更新：2026-10-20_
