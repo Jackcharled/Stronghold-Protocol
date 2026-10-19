@@ -1,7 +1,7 @@
-﻿/* 卫戍协议：盟约 · 萝卜喵公益服 — 客户端注入脚本
+/* 卫戍协议：盟约 · 萝卜喵公益服 — 客户端注入脚本
  * 由 nginx sub_filter 注入到游戏页面末尾（<script src="/mm/client.js"></script>），不修改游戏本体文件。
  * 包含：节点状态角标、临时公告、更新公告、同盟密钥倒计时、匹配队友入口、界面精简。
- * 最后更新：2026-10-19
+ * 最后更新：2026-10-19（修复匹配成功后无法进入对局、有 AI 队友时禁止匹配、匹配界面兜底返回）
  */
 'use strict';
 // 由 nginx 注入到游戏首页的「匹配衔接脚本」（不改动任何游戏本体文件）。
@@ -354,7 +354,9 @@
       el.querySelector('.btn__label').textContent = matched ? '正在分配…' : queued ? '取消匹配' : '匹配队友';
       el.classList.toggle('btn--primary', queued || matched);
       el.classList.toggle('btn--secondary', !(queued || matched));
-      el.disabled = matched || !isHost;
+      const hasBot = (room && (room.seats || []).some((x) => x && x.isBot)) === true;
+      el.disabled = matched || !isHost || hasBot;
+      if (hasBot) el.title = '房间内有 AI 队友，无法匹配（请先移除 AI 队友）';
       el.title = isHost ? '把整个房间投入匹配池' : '仅房主可以发起匹配';
     };
 
@@ -397,6 +399,12 @@
       // 地址栏只保留域名：房间码 / 节点 / 代号这些参数处理完就清掉
       if (room && (location.search.includes('room=') || location.search.includes('n=') || location.search.includes('name='))) cleanUrl();
       if (!room || polling || seatsOf(room) >= 4 || room.inMatch) return;
+      // 房间里有 AI 队友时不参与匹配（AI 无法跨节点加入）
+      if ((room.seats || []).some((x) => x && x.isBot)) {
+        if (queued) { queued = false; matched = false; hideOverlay(); }
+        ensureButton();
+        return;
+      }
       polling = true;
       try {
         const st = await api(`/mm/api/party/state?code=${encodeURIComponent(room.code)}&node=${nodeOf()}&client=${encodeURIComponent(CLIENT_ID)}`);
@@ -1050,6 +1058,18 @@
     host.appendChild(hint);
   }
 
+  function addFoundBack() {
+    const panel = document.getElementById('mm-ov-panel');
+    if (!panel || panel.querySelector('#mm-ov-back')) return;
+    const b = document.createElement('button');
+    b.id = 'mm-ov-back';
+    b.type = 'button';
+    b.textContent = '返回房间';
+    b.style.cssText = 'margin-top:14px;padding:8px 18px;border-radius:6px;border:1px solid rgba(78,216,175,.5);background:rgba(8,14,18,.6);color:#9fe8d2;cursor:pointer;font:13px/1.2 "Noto Sans SC",system-ui,sans-serif';
+    b.onclick = () => { location.href = '/'; };
+    panel.appendChild(b);
+  }
+
   function hideOverlay() {
     const ov = document.getElementById('mm-overlay');
     if (ov) ov.remove();
@@ -1094,11 +1114,11 @@
       const s = store.get();
       if (reported || !s.session.entered || net.status !== 'online') return;
       if (s.room && s.room.code) { report(s.room.code); return; }
-      if (creating || createdOk || attempts >= 3 || Date.now() - lastAt < 2000) return;
+      if (creating || createdOk || attempts >= 6 || Date.now() - lastAt < 2000) return;
       attempts += 1; lastAt = Date.now(); creating = true;
       net.request('room.create', { mode: 'coop', difficulty: PDIFF })
         .then(() => { createdOk = true; })
-        .catch((e) => console.warn('[mm] 自动建房失败', e && e.message))
+        .catch((e) => { console.error('[mm] 自动建房失败', e && e.message); try { addFoundBack(); } catch { /* ignore */ } })
         .finally(() => { creating = false; });
     };
 
@@ -1222,5 +1242,4 @@
     return j;
   }
 })();
-
 
