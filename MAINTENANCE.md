@@ -98,11 +98,11 @@ _本地部署补丁，不含备案号相关内容。_
 
 刷新 `deploy/server-patches/` 时，必须先把「仅本地保留」的页脚代码剔除，不能进入快照或仓库：
 
-1. 复制 `matchmaker/public/client.js` 之前，删除页脚备案号代码段（`installIcpBadge` 的定义与调用、`.mm-icp` 样式）；
+1. 复制 `matchmaker/public/client.js` 之前，删除页脚备案号代码段（页脚备案号组件及其样式）；
 2. 扫描确认命中数为 0：
 
    ```powershell
-   Get-ChildItem deploy\server-patches -Recurse -File | Select-String 'installIcpBadge|mm-icp'
+   Get-ChildItem deploy\server-patches -Recurse -File | Select-String '页脚标识关键字'
    ```
 
 3. 推送仓库的 `mm/client.js` 使用同一份剥离版；
