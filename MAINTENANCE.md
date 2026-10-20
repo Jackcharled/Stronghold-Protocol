@@ -93,4 +93,22 @@ _本地部署补丁，不含备案号相关内容。_
 
 > 以上为本地部署改动，仓库只保留注入脚本与本文档，不含服务端源码与美术资源。
 
+
+### 补丁快照规范（重要）
+
+刷新 `deploy/server-patches/` 时，必须先把「仅本地保留」的页脚代码剔除，不能进入快照或仓库：
+
+1. 复制 `matchmaker/public/client.js` 之前，删除页脚备案号代码段（`installIcpBadge` 的定义与调用、`.mm-icp` 样式）；
+2. 扫描确认命中数为 0：
+
+   ```powershell
+   Get-ChildItem deploy\server-patches -Recurse -File | Select-String 'installIcpBadge|mm-icp'
+   ```
+
+3. 推送仓库的 `mm/client.js` 使用同一份剥离版；
+4. 文档、快照、提交信息中不得出现备案号数字与相关域名；
+5. 可用 `node deploy/_sanitize-patch-client.cjs` 生成剥离版，输出 `stripped still bad: false` 即通过。
+
+> 目的：本地运行时保留页脚，对外产物（快照 / GitHub）一律不含该内容。
+
 _最后更新：2026-10-20_
