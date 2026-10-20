@@ -1,7 +1,7 @@
 // public/js/render/promote.js — which prep pieces were just promoted (精锐晋升), for the merge cue of render/app.js setPrep.
 //
 // A merge replaces the consumed normal copies by ONE new elite piece in the same m.private update: on the board tile of
-// the consumed copy that deploys first when a copy was deployed (PRTS 卫戍协议/帮助 "若消耗已部署至作战区的干员，则发送至
+// the consumed copy that deploys first when a copy was deployed (PRTS Stronghold-Protocol/帮助 "若消耗已部署至作战区的干员，则发送至
 // 作战区对应位置"; server board.js mergeTile), else in the hand / temp. So a promotion = a chess piece with a new uid that is
 // an elite, while normal copies of the same operator (same baseId) vanished from the previous state. The cue then plays
 // on the elite (fx.promote: gold pillar + rings, streaks from the vanished copies) instead of the plain deploy flash.

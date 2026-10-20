@@ -63,6 +63,8 @@ const QUIET_SWAP_MIN_AGE_MS = 5000;
  * @returns {string}
  */
 export function errorText(code, msg) {
+  // 游客限制优先显示服务端文案，避免显示成「无效的请求」
+  if (typeof msg === 'string' && /游客/.test(msg)) return msg;
   return ERR_TEXT[code] || CLIENT_ERR_TEXT[code] || (typeof msg === 'string' && msg) || String(code || N_('未知错误'));
 }
 
@@ -76,6 +78,8 @@ export class NetError extends Error {
     this.code = String(code || 'INTERNAL');
     this.serverMsg = msg ?? null;
     this.detail = typeof detail === 'string' ? detail : null;
+    // __guestMsg：游客限制时直接显示服务端给出的具体原因
+    if (typeof detail === 'string' && /游客/.test(detail)) this.message = detail;
   }
 }
 
@@ -365,8 +369,32 @@ export class Net {
 
   _sendHello() {
     if (!this.name) return;
+    // 首次连接前若还没有账号代码，先取一次（不阻塞发包，取到后重发 hello 由上层触发）
+    if (!this._accountTagProbed) {
+      this._accountTagProbed = true;
+      try {
+        const saved = localStorage.getItem('mm.tag');
+        if (!/^[0-9]{4}$/.test(saved || '')) {
+          fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((j) => {
+              const tag = j && j.user && j.user.tag;
+              if (tag && /^[0-9]{4}$/.test(tag)) {
+                localStorage.setItem('mm.tag', tag);
+                if (this.name) this.reconnectNow(this.name);
+              }
+            })
+            .catch(() => {});
+        }
+      } catch { /* 隐私模式 */ }
+    }
     const rid = this._nextRid();
-    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION };
+    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, guest: !window.__SP_ACCOUNT_USER };
+    // 账号四位代码：直接写入 hello，服务器会随 welcome / room.state 下发给所有界面
+    try {
+      const tag = localStorage.getItem('mm.tag');
+      if (/^[0-9]{4}$/.test(tag || '')) msg.tag = tag;
+    } catch { /* 隐私模式 */ }
     let token = null;
     try { token = this.getToken(); } catch { token = null; }
     if (typeof token === 'string' && token.length > 0 && token.length <= 64) {

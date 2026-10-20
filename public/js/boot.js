@@ -8,6 +8,16 @@
       if (!e || e.getAttribute('data-final')) return;
       var im;
       try { im = !!(window.HTMLScriptElement && HTMLScriptElement.supports && HTMLScriptElement.supports('importmap')); } catch (_x) { im = false; }
+      // 自动重试一次：首屏模块并发加载偶发失败（网络抖动/HTTP2 流中断）时，刷新一次即可
+      try {
+        if (why !== 'old' && !sessionStorage.getItem('sp_boot_retry')) {
+          sessionStorage.setItem('sp_boot_retry', '1');
+          var u = new URL(location.href);
+          u.searchParams.set('retry', String(Date.now()));
+          location.replace(u.toString());
+          return;
+        }
+      } catch (_r) { /* 忽略 */ }
       e.textContent = why === 'old' || !im
         ? '当前浏览器版本过旧，无法运行本游戏。请升级到 iOS / iPadOS 16.4+（Safari 16.4+）、Chrome / Edge 90+ 或 Firefox 108+ 后刷新。'
         : '游戏脚本加载失败，请检查网络连接后刷新页面。';

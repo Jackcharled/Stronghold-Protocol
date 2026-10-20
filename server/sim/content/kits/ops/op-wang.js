@@ -15,7 +15,7 @@
 // 棋子/跟子消失而取消激活 / 移动速度降低为直接乘算，可无限叠加，每层独立计时（但移动速度存在0.1数值下限）". S3 备注 "棋子与跟子的
 // 攻击范围/触发范围为…，触发时对范围内所有敌方单位造成伤害（可对空） / 技能开启时自动“部署”的为第一天赋的跟子"), PRTS 棋子 (备注
 // "技能伤害始终借用持有者的攻击力计算，但伤害来源于自身"), PRTS 分支特性信息 陷阱师 ("可对空 / “敌人已在”…地面行动敌人… / 干员离场
-// 后，附属的陷阱随之消失"), PRTS 卫戍协议/帮助 §作战阶段 (placed summons deploy with the board "无视所属干员的持有状态，不消耗持有数量";
+// 后，附属的陷阱随之消失"), PRTS Stronghold-Protocol/帮助 §作战阶段 (placed summons deploy with the board "无视所属干员的持有状态，不消耗持有数量";
 // "若召唤物在战斗期间退场，将在满足条件后立即原地再部署1个").
 // - Trait (陷阱师): ranged physical arrows, 3-3, hits air units (PRTS 分支特性信息 "可对空"), blocks 1, ground-targetable.
 //   "陷阱无法放置于敌人已在的格子中": a 棋子 does not come back while a ground enemy stands on its tile (S3: inside her range it
@@ -23,7 +23,7 @@
 //   deploy limit 8 (the hand count — the match's); its attributes in the stats.
 // - T1 铸子 (cnt / attack@max_spawn_cnt; "最多拥有7枚", full potential: 8): the 棋子 are hand pieces the player places; they
 //   deploy with the board for free. Her stock (持有库存: the 棋子 in her hand — cnt at the start, at most STOCK_CAP; the
-//   skills add to it) counts them — the owner's decision of 2026-10-06, a deliberate deviation from PRTS 卫戍协议/帮助 (placed
+//   skills add to it) counts them — the owner's decision of 2026-10-06, a deliberate deviation from PRTS Stronghold-Protocol/帮助 (placed
 //   summons "无视所属干员的持有状态，不消耗持有数量", which left her stock at cnt: one S1 / S2 cast reached the cap and 阻回
 //   held her SP for the rest of the battle): every deployment of a 棋子 (the battle start's and each return) takes one from
 //   it, like one she deployed herself (never below 0 [ASSUMED: an 8th placed piece of TRP-X's deploy limit takes none]), and
@@ -35,7 +35,7 @@
 //   enemy (air units too) on an active one's tile sets it off: its effect, then it is used up (a 棋子 leaves the field; a
 //   跟子 is gone) [ASSUMED: a trap is spent by its trigger]. A spent 棋子 comes back on its tile ("原地再部署") after its
 //   redeploy time (2 s), paying its cost and one of her stock, while 望 is on the field. 铸子 "手动部署棋子时，望在相邻位置额外
-//   部署一枚棋子": the 棋子 the player placed deploy at the battle start (PRTS 卫戍协议/帮助: a placement in 休整 fires no
+//   部署一枚棋子": the 棋子 the player placed deploy at the battle start (PRTS Stronghold-Protocol/帮助: a placement in 休整 fires no
 //   deployment effect, the piece deploys when the combat starts) — that deployment drops one 跟子 on a tile next to it (the
 //   PRTS order above; community report, 0.2.2 — until 0.2.1 the battle start dropped none, so a lone 棋子 never set off), at
 //   most attack@max_spawn_cnt on the field; each later return counts as one too [ASSUMED]. The battle start deploys one

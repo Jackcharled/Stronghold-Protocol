@@ -45,7 +45,7 @@ export function mergeProgress(priv, chessId, getChess = () => null) {
 }
 
 /**
- * Where the elite appears when gaining one more normal copy of `chessId` completes a merge now (PRTS 卫戍协议/帮助
+ * Where the elite appears when gaining one more normal copy of `chessId` completes a merge now (PRTS Stronghold-Protocol/帮助
  * "若消耗已部署至作战区的干员，则发送至作战区对应位置"; mirror of server board.js mergeTile / PlayerState._mergeChess): the
  * board tile of the deployed copy that deploys first (col asc, then row desc: by column from the left, top to bottom —
  * Battle.start) — `{ row, col, dir }` — or null (no
@@ -77,7 +77,7 @@ export function handFull(priv) {
 /**
  * Would gaining one more `slot` (shop / reward card: { kind: 'chess'|'item', id }) complete a merge right away? Mirror
  * of server PlayerState completesChessMerge / completesItemMerge. (A full hand refuses such a purchase all the same:
- * PRTS 卫戍协议/帮助 §手牌区, GitHub #82.)
+ * PRTS Stronghold-Protocol/帮助 §手牌区, GitHub #82.)
  * @param {any} priv
  * @param {{kind?:string, id:string}} slot
  * @param {{ getChess?:(id:string)=>any, getItem?:(id:string)=>any, itemMergeCount?: number }} [o]
@@ -153,7 +153,7 @@ export function shopBlockReason(kind, { priv, editable, slot } = {}) {
   if (kind === 'buy' || kind === 'reward') {
     if (!isObj(slot) || slot.sold) return kind === 'reward' ? t('已选择') : t('已售出');
     if ((Number(slot.price) || 0) > funds) return t('资金不足');
-    // a full hand refuses every purchase / pick, a merge-completing one too (PRTS 卫戍协议/帮助 §手牌区, GitHub #82)
+    // a full hand refuses every purchase / pick, a merge-completing one too (PRTS Stronghold-Protocol/帮助 §手牌区, GitHub #82)
     if (handFull(priv)) return t('整备区已满');
     return null;
   }
@@ -167,7 +167,7 @@ export function shopBlockReason(kind, { priv, editable, slot } = {}) {
 
 /**
  * The 准备 confirmation (community report #4 after 0.1.2): readying with funds left asks first — the prep's end wipes
- * them (PRTS 卫戍协议/帮助 「本回合的剩余资金将清零」; the server still does: PlayerState.endPrep). act2autochess constData
+ * them (PRTS Stronghold-Protocol/帮助 「本回合的剩余资金将清零」; the server still does: PlayerState.endPrep). act2autochess constData
  * `noMoneyTipsBand` — data/config.json economy.leftoverFundsKeptByBands, ["band_cannot"] — names the strategies whose
  * funds carry over and that get no such tip (坎诺特 利滚利). No prompt for an un-ready, with 0 funds, when already ready
  * or out, or under AI 托管 (the server plays the seat). The dialog's wording is the remake's own [ASSUMED]: neither the

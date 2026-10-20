@@ -43,8 +43,8 @@ export default {
   //      S1 仗义疏财 (passive, 2 coins): a coin heals the most injured ally (< 70 % HP) of the 3×3 around her — herself
   //      included — for attack@heal_scale × ATK — on her attack, or with no enemy to attack on her own attack timer (owner's decision
   //      2026-10-04, against the official 「下一次攻击会为…」; installS1). S3 千金一掷 (持续时间无限): attacks hit twice, kills give a coin;
-  //      stays open until she leaves the field, keeping its coins (cap bb.sp = 10). PRTS 卫戍协议/帮助 技能操作
-  //      https://prts.wiki/w/卫戍协议/帮助: 「通常不会自动关闭技能」; skill_table skchr_swire2_3 spends coins only on
+  //      stays open until she leaves the field, keeping its coins (cap bb.sp = 10). PRTS Stronghold-Protocol/帮助 技能操作
+  //      https://prts.wiki/w/Stronghold-Protocol/帮助: 「通常不会自动关闭技能」; skill_table skchr_swire2_3 spends coins only on
   //      「主动关闭」, which this mode never performs. Maintainer 2026-10-17 withdrew the 2026-10-04 cap-triggered close.
   //      精锐 module MER-Y: ATK +4 % per trait payment (≤ 5 stacks).
   chess_char_3_04_a: (bb, chess, def) => {
@@ -184,7 +184,7 @@ export default {
       skill: { kind: 'passive' },
       skills: altSkills(chess, d, bb, {
         [S1]: () => ({ kind: 'passive' }), // (coins → heals: installS1)
-        // Official 卫戍协议 never closes this toggle: no coin burst, push or coin spending on end/retreat.
+        // Official Stronghold-Protocol never closes this toggle: no coin burst, push or coin spending on end/retreat.
         [S3]: () => ({ kind: 'toggle', attack: { hits: 2 } }),
       }),
       trait: {

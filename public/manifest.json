@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "卫戍协议：盟约",
-  "short_name": "卫戍协议",
-  "description": "明日方舟「卫戍协议：盟约」非官方同人复刻",
+  "name": "Stronghold-Protocol：盟约",
+  "short_name": "Stronghold-Protocol",
+  "description": "明日方舟「Stronghold-Protocol：盟约」非官方同人复刻",
   "start_url": "/",
   "scope": "/",
   "display": "fullscreen",

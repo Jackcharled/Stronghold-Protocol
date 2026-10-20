@@ -8,7 +8,7 @@
 // none. The text read is the record's trait without a module (`traitBase`, which an elite with modules carries; else
 // `trait`). build-data stores that Chinese reading as `placeOnRanged` (GitHub #676): the client looks up the localized
 // record, and en / ja / ko / zh-TW (which writes 於) no longer contain the Simplified line. A module talent such as the
-// 教官's Y module ("可以额外部署在远程位") is a 部署效果, which 卫戍协议 switches off (PRTS 卫戍协议/帮助 §战斗部署), and
+// 教官's Y module ("可以额外部署在远程位") is a 部署效果, which Stronghold-Protocol switches off (PRTS Stronghold-Protocol/帮助 §战斗部署), and
 // is not read. The battle keeps position MELEE: on a 高台 the unit attacks and blocks nothing.
 
 /** The trait line that lets a MELEE chess stand on a ranged (高台) tile. */

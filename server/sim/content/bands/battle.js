@@ -17,7 +17,7 @@
 //                                               (bond_add_type by_charlevel; no "已激活" in the text ⇒ requireActive false)
 //   act1autochess_band16_buff 大帝 加急调派     "每次部署后再部署时间减少50%": every deployment of an operator stacks one
 //                                               redeploy ×(1 + respawn_time) for the rest of the battle, with no cap (PRTS
-//                                               卫戍协议：盟约 下半 / PRTS盟约记录 备注 "※该策略效果可无限叠加"; a 20-stack cap
+//                                               Stronghold-Protocol：盟约 下半 / PRTS盟约记录 备注 "※该策略效果可无限叠加"; a 20-stack cap
 //                                               until 0.2.2 — GitHub #328, PR #329)
 //   act1autochess_band17_buff 桑葚 药枚实验     at combat start the player's units on the front-most (最右边) column: each
 //                                               attack has `prob` to gain 1 shield layer (max 1)

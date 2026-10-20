@@ -109,7 +109,7 @@
 // Lost WebGL context of the 3D board: the 2D board takes over at once and the 3D board is rebuilt on a fresh context
 // a moment later (up to 3 tries; a context lost again right away counts as a failure; `setBoardMode('2d')` stops it).
 //
-// Board art: the real 卫戍协议 board textures of the local client are used when installed (render/boardArt.js, crops
+// Board art: the real Stronghold-Protocol board textures of the local client are used when installed (render/boardArt.js, crops
 // from tools/crop-board-atlas.mjs); otherwise every material is procedural (same geometry, no network errors).
 // 3D board (DESIGN §15): with the local art installed and WebGL2 available, the official board is a real three.js
 // scene (render/board3d) on a canvas UNDER the (then transparent) Pixi canvas; the TileField keeps only highlights,

@@ -1,8 +1,8 @@
-// server/sim/content/kits/ops/standin-acguad.js — Sharp (char_609_acguad, 卫戍协议 6★ 近卫·无畏者) 补位 stand-in kit.
+// server/sim/content/kits/ops/standin-acguad.js — Sharp (char_609_acguad, Stronghold-Protocol 6★ 近卫·无畏者) 补位 stand-in kit.
 // Stands in for 忍冬 (tier 3, S3), 银灰 / 百炼嘉维尔 (tier 4, S2), 隐德来希 / 归溟幽灵鲨 (tier 5, S3 + DRE-X) and 佩佩
 // (tier 6, S3 + DRE-X): data/backups.json `units.char_609_acguad.standsIn`. Kit contract: ../README.md "Stand-in kits".
 // Numbers: the blackboards of data/backups.json (skill_table / character_table / battle_equip_table at E2 Lv1 skill
-// level 4 and E2 Lv60 skill level 7); what the data does not carry: PRTS Sharp(卫戍协议), cited where used.
+// level 4 and E2 Lv60 skill level 7); what the data does not carry: PRTS Sharp(Stronghold-Protocol), cited where used.
 
 import { num, talentBb, traitBb, skillRec, statBuff, toggleBuff } from '../shared/tier1.js';
 

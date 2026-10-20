@@ -12,7 +12,7 @@
 // 我方视野", 禁疗 孤立 不可阻挡 失衡免疫 元素免疫, 晕眩 寒冷 冻结 浮空 束缚 沉默 沉睡免疫, "受到伤害时取消此伤害，若该伤害来源为非
 // 无职业的辅助职业的工匠单位，治疗自身相当于最大生命值1%的生命值"; 团结的力量 "实际范围为自身及身后一格…多个支援装置的天赋效果可
 // 叠加"; skill "伤害半径1.1，造成物理普通伤害…可对空", "仅能选择不持有不可选中/隐匿/无敌的敌方单位（无视孤立）"), PRTS 分支特性信息
-// 工匠 ("干员部署后，按天赋描述数量补充支援装置持有数", "干员离场后，附属的支援装置随之消失"), PRTS 卫戍协议/帮助 (§战斗部署 a hand
+// 工匠 ("干员部署后，按天赋描述数量补充支援装置持有数", "干员离场后，附属的支援装置随之消失"), PRTS Stronghold-Protocol/帮助 (§战斗部署 a hand
 // summon comes in its deploy-limit count; §作战阶段 "所有手动部署的召唤物…作战开始时立即部署一次", "若战场区初始部署有召唤物，若召唤
 // 物在战斗期间退场，将在满足条件后立即原地再部署1个"), and the client's battle data read from the local install — charpack
 // char_4072_ironmn (ironmn_t_1 charge_token[born]; ironmn_t_2 on his own tokens of his x-4: ON_OWNER_FINISH ⇒ Dice(prob) ⇒
@@ -153,7 +153,7 @@ export function opsOn(battle, dev, keys, { ignoreSelect = false } = {}) {
 }
 
 /**
- * A device piece's return (PRTS 卫戍协议/帮助 "若战场区初始部署有召唤物…退场，将在满足条件后立即原地再部署1个"): once it left the
+ * A device piece's return (PRTS Stronghold-Protocol/帮助 "若战场区初始部署有召唤物…退场，将在满足条件后立即原地再部署1个"): once it left the
  * field it comes back on its own tile after its redeploy time (data respawnTime), paying its cost (`costOf(dev)`, default its
  * data cost) and spending one of the owner's stock, while the owner stands. `onLeave(dev)` runs as it leaves (节约经费 —
  * not when it leaves with its owner: `dev.mem.withOwner`), `onBack(dev)` when it is back. Shared with 娜斯提 (op-nasti.js).

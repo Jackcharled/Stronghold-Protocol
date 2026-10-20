@@ -35,6 +35,7 @@
 // screen's 局内数值 section draws the same ones for the chosen skill / module, without a live entry (GitHub issue #64).
 
 import { useEffect } from '../../vendor/hooks.module.js';
+import { skinFor, availableSkins } from './skins.js';
 import { html, Icon, TierChip, MicroLabel, Button, confirmDialog, useTicker } from './components.js';
 import { Img, RichText, UnitThumb, BondGlyph, GIcon, diyToken } from './gameComponents.js';
 import { attackInterval, rangeGridBox, fmtNum, tileKey, chessLoadout, nextThreshold, bondTier, briefingBondTip, pieceBondIds, grantedBonds, morphPairings, ownStandIn, standInOf, standInLoadout, standInLabel, standInTip, standInForText, ownDiyRecord, ownDiyPick, diyRecordFor, pickGetter, unitPick, unitCultivation } from './gameLogic.js';
@@ -77,6 +78,28 @@ export const FIELD_WIDE_CELLS = 400;
 export const RANGE_FIT = Object.freeze({ cols: 6, rows: 7 });
 
 /** Inline style of the mini-map (rangeGridBox `box`): its columns, and smaller cells when the grid exceeds RANGE_FIT. */
+// 详情面板立绘：优先使用玩家为该干员选择的皮肤立绘
+function skinArtFor(m, c) {
+  try {
+    // 皮肤键：干员 id（棋盘上的 id 可能带 _2 之类的后缀，需要还原成基础干员 id）
+    // 直接读 localStorage：账号云同步可能在 skinsStore 初始化之后才写入，store 会是旧的
+    const readSkinsMap = () => {
+      try { return JSON.parse(localStorage.getItem('sp.pref.skins') || '{}') || {}; } catch { return {}; }
+    };
+    const map = readSkinsMap();
+    // 干员对象用 charId 字段；棋子 id 可能带 _2 后缀，两种都试
+    const raw = String((c && (c.charId || c.id)) || '');
+    const candidates = [String((c && c.charId) || ''), raw, raw.replace(/_\d+$/, '')].filter(Boolean);
+    for (const cid of candidates) {
+      if (!cid) continue;
+      const sid = skinFor(cid) || map[cid];
+      if (!sid) continue;
+      const row = availableSkins(cid).find((x) => x.id === sid);
+      if (row && row.portrait) return row.portrait;
+    }
+  } catch { /* 忽略 */ }
+  return chessPortraitUrl(m, c);
+}
 export function rangeGridStyle(box) {
   const cols = `grid-template-columns:repeat(${box.cols}, var(--rg))`;
   if (box.cols <= RANGE_FIT.cols && box.rows <= RANGE_FIT.rows) return cols;
@@ -426,7 +449,7 @@ export function ChessDetail({ chess, piece, unit, snapHp, editable, onSell, bond
   blocks.head = html`
     <div key="head" class="dhead">
       <div class=${cx('dhead__art', golden && 'is-golden', `dhead__art--t${c.tier}`)}>
-        <${Img} src=${chessPortraitUrl(m, body)} fallback=${html`<${UnitThumb} kind="chess" id=${c.chessId} size="lg" rec=${si} />`} />
+        <${Img} src=${skinArtFor(m, body)} fallback=${html`<${UnitThumb} kind="chess" id=${c.chessId} size="lg" rec=${si} />`} />
       </div>
       <div class="dhead__info">
         <div class="dhead__chips">

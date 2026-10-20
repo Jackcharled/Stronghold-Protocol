@@ -8,6 +8,11 @@ export function createRng(seed = 1) {
   return rngFromState((Number(seed) >>> 0) || 0x9e3779b9);
 }
 
+/** 从存档里的随机数状态继续（对局检查点用）。 */
+export function createRngFromState(state) {
+  return rngFromState(Number(state) >>> 0);
+}
+
 function rngFromState(s) {
   const next = () => {
     s = (s + 0x6d2b79f5) >>> 0;

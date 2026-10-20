@@ -12,7 +12,7 @@
 // 移动创伤（1200伤害/格），再次施加…时仅刷新BUFF的持续时间，不改变真实伤害的来源与每格伤害比例"), PRTS 工程蓄水炮 (备注 "持有禁疗 /
 // 蓄水炮的技能和攻击均优先选择离自身最近的敌人作为目标 / 普通攻击…该位移效果仅对前方三格内的地面敌方单位生效 / 部署后20秒自动撤退";
 // 技能备注 "蓄水炮进行的发射除基本力度外均以本体的数值为准"), PRTS 特殊机制 移动创伤 (every 0.066 s and once at the end: (distance
-// moved since the last update) × 每格伤害 预计算的真实持续伤害, nothing when the difference is > 4 tiles), PRTS 卫戍协议/帮助 (a
+// moved since the last update) × 每格伤害 预计算的真实持续伤害, nothing when the difference is > 4 tiles), PRTS Stronghold-Protocol/帮助 (a
 // placed summon deploys with the board; "若召唤物在战斗期间退场，将在满足条件后立即原地再部署1个"; a summon's manual skill is
 // force-opened).
 // - Trait (推击手) "同时攻击阻挡的所有敌人 / 可以放置于远程位": the profession default (pusher `hitAllBlocked`, block 2; melee,

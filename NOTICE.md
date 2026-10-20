@@ -1,6 +1,6 @@
 # 版权与使用声明（NOTICE）
 
-**卫戍协议：盟约 · Stronghold Protocol** 是《明日方舟》限时玩法「卫戍协议：盟约」的**非官方同人复刻**，与上海鹰角网络科技有限公司（Hypergryph）、Yostar 及其关联方**没有任何关联**，也未获得其授权或认可。
+**Stronghold-Protocol：盟约 · Stronghold Protocol** 是《明日方舟》限时玩法「Stronghold-Protocol：盟约」的**非官方同人复刻**，与上海鹰角网络科技有限公司（Hypergryph）、Yostar 及其关联方**没有任何关联**，也未获得其授权或认可。
 
 ## 1. 代码许可证：GPL-3.0-or-later
 
@@ -27,7 +27,7 @@ Copyright (C) 2026 Stronghold-Protocol contributors
 
 ## 2. 不属于本项目、不受 GPL 约束的内容
 
-《明日方舟》及「卫戍协议」相关的全部**名称、角色、美术、Spine 模型、界面图、音乐音效、文本与游戏数据**，版权归上海鹰角网络科技有限公司及其授权方（Yostar 等）所有。具体包括：
+《明日方舟》及「Stronghold-Protocol」相关的全部**名称、角色、美术、Spine 模型、界面图、音乐音效、文本与游戏数据**，版权归上海鹰角网络科技有限公司及其授权方（Yostar 等）所有。具体包括：
 
 - Release 完整包中的 `public/assets/**`（含从官方客户端本地提取的 3D 棋盘模型与贴图、官方战斗特效 `public/assets/local/**`）和 `public/fonts/**`（字体归各自作者）；
 - 由官方数据表生成的 `data/*.json` 与 `data/i18n/*.json`（官方英文服文本），以及含有或派生自游戏数据的 `docs/research/*.json`、`test/fixtures/official-waves.json`、`public/dev/recordings/*.json`；

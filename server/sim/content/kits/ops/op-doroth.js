@@ -16,7 +16,7 @@
 //   and leave when she leaves the field (分支特性信息 "干员离场后，附属的陷阱随之消失"; die_to_kill_token).
 // - The traps in this mode: her 共振装置 are hand pieces the player places (data `placeable`; the prep hands out a stack —
 //   content/tokens.js, server/match/player/diy.js). Placed pieces deploy with the board, free and ignoring her stock (PRTS
-//   卫戍协议/帮助 "所有手动部署的召唤物，无视所属干员的持有状态…作战开始时立即部署一次"); a used-up one stays its tile's piece and
+//   Stronghold-Protocol/帮助 "所有手动部署的召唤物，无视所属干员的持有状态…作战开始时立即部署一次"); a used-up one stays its tile's piece and
 //   comes back there (PRTS "若召唤物在战斗期间退场，将在满足条件后立即原地再部署1个") once the deployment conditions hold: she is on
 //   the field, her stock holds a trap, the token card's redeploy time has run since the last trap deployment (data
 //   respawnTime 5 s: 备注 "…会让共振装置进入再部署CD"), its player has its cost in DP (3; TRP-X 2), fewer of her traps than

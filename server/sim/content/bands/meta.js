@@ -389,7 +389,7 @@ K.preparation_start_add_special_goods_every_n_round = (ps) => ({
 // ---------------------------------------------------------------------------------------------------------------
 // 鸭爵 “神秘顾客”: "从第5回合起，你和队友遭遇的部分敌人可能会替换为<鸭爵><高普尼克><流泪小子><圆仔>，击倒这些敌人者获得1资金奖励
 // （包括联防阶段）". A global handler rewrites the battle spawn list of every alive player while the band is held by that
-// player or a teammate: from round `round`, in the normal battle, the Final Assault and the Hidden Core (PRTS 卫戍协议：盟约
+// player or a teammate: from round `round`, in the normal battle, the Final Assault and the Hidden Core (PRTS Stronghold-Protocol：盟约
 // 下半/PRTS盟约记录 鸭爵 备注 "每回合将有0~2名敌人被替换为上述敌人之一…且在最终回合和隐秘核心回合中仍然生效"; the 联防 phase
 // replaces nothing: its enemies are leaks, which keep their bounty). min..max (0–2, uniform [ASSUMED]) of the player's
 // ground enemies from the `minweight`–`maxweight` share of the player's enemies (time order) [ASSUMED reading of the two

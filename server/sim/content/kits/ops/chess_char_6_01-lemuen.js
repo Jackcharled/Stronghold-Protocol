@@ -183,8 +183,8 @@ function lemuen(bb, chess, def) {
     // then the lowest DEF), one bullet each; the skill ends when the bullets are spent, then bombard. With nothing in
     // range it waits — bullets and locks kept (the marks follow their enemies / stay where they left) — and locks the
     // next enemy that comes at once: an ammo skill has no time limit ("攻击装有5发弹药，打完后结束（可随时停止技能）"; in
-    // the client data her S3 lock needs a target and only the spent bullets end the skill buff lemuen_s_3) and the 卫戍协议
-    // automation never stops a skill (PRTS 卫戍协议/帮助 技能操作: "通常不会自动关闭技能"). Until 0.2.0 the skill ended at
+    // the client data her S3 lock needs a target and only the spent bullets end the skill buff lemuen_s_3) and the Stronghold-Protocol
+    // automation never stops a skill (PRTS Stronghold-Protocol/帮助 技能操作: "通常不会自动关闭技能"). Until 0.2.0 the skill ended at
     // the first lock tick with nothing in range (community report: 「蕾缪安3技能范围里没人好像会自动结束」). Its fx 'lock'
     // carries `hold`: the renderer keeps those reticles up while her skill runs (render/fx/locks.js).
     skill: {

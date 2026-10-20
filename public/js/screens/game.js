@@ -56,7 +56,7 @@
 // User playtest #4: the detail card shows live stats (item 7) — in battle the local sim's unit (battle/runner.js
 // unitStats), in prep an own board unit's start-of-battle stats (g.unitStats → m.unitStats); 机变 cards take two taps
 // (item 2, ui/choiceOverlay.js).
-// Merges (user playtest #6 follow-up, PRTS 卫戍协议/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置"): a shop /
+// Merges (user playtest #6 follow-up, PRTS Stronghold-Protocol/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置"): a shop /
 // reward card armed for a purchase that completes a merge lights, in gold, the board tile its elite will take (the
 // deployed copy that deploys first, gameLogic.mergeTarget — none when no copy is deployed: the elite goes to the hand);
 // the elite then appears there with the promotion cue (render/app.js setPrep → fx.promote).
@@ -778,6 +778,8 @@ function MatchScreen() {
   // graceful degradation: without WebGL / the render engine the DOM view takes over — say so once per match
   useEffect(() => {
     if (viewKind !== 'fallback') return;
+    // iOSFallbackNotice：移动端默认使用简化视图，不提示渲染器失败
+    try { if (/iPad|iPhone|iPod/.test(navigator.userAgent || '')) return; } catch { /* ignore */ }
     let asked = null;
     try { asked = new URLSearchParams(globalThis.location?.search || '').get('render'); } catch { asked = null; }
     if (asked === 'fallback' || globalThis.__SP_RENDER__ === 'fallback') return;
@@ -930,7 +932,7 @@ function MatchScreen() {
   const offerCue = priv?.shop?.rewardOffer ? (priv.shop.rewardOffer.source === 'special' ? 'refresh' : 'merge') : null;
   useEffect(() => { if (offerCue) audio.sfx(offerCue); }, [offerCue]);
   // a shop / reward card armed for a purchase that completes a merge lights the tile its elite will take (the deployed
-  // copy that deploys first — PRTS 卫戍协议/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置", gameLogic.mergeTarget)
+  // copy that deploys first — PRTS Stronghold-Protocol/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置", gameLogic.mergeTarget)
   const mergeAt = armedCard?.kind === 'chess' && editable && showPrep ? mergeTarget(priv, armedCard.id, gd.chess) : null;
   const mergeAtKey = mergeAt ? `${mergeAt.row},${mergeAt.col}` : '';
   useEffect(() => {
@@ -1746,7 +1748,7 @@ function MatchScreen() {
             setBondOpen(null);
           }}><${Icon} name="signal" /></button>` : null}
         ${prepLoadoutOpen && phase === PHASE.PREP && priv && !priv.ready && !spectator
-          ? html`<${LoadoutButton} from="prep" size="sm" />` : null}
+          ? null : null}
         <button type="button" class="gm__gear" aria-label=${t('设置')} title=${t('设置')} onClick=${() => setSettingsOpen(true)}><${GIcon} name="gear" /></button>
         <button type="button" class="gm__gear gm__guide" aria-label=${t('玩法说明')} title=${t('玩法说明')} onClick=${() => openGuide(0)}><${Icon} name="book" /></button>
         <${FullscreenButton} class="gm__gear gm__fs" />

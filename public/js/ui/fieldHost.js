@@ -15,7 +15,8 @@ import { audio } from '../audio.js';
 import { store } from '../store.js';
 import { settingsStore } from './settings.js';
 
-const LOAD_TIMEOUT_MS = 12000;
+const LOAD_TIMEOUT_MS_IOS = 45000; // iOS 首次加载 3D 资源更慢
+const LOAD_TIMEOUT_MS = /iPad|iPhone|iPod/.test(globalThis.navigator?.userAgent || '') ? LOAD_TIMEOUT_MS_IOS : 12000;
 const METHODS = ['setStage', 'setCamera', 'setPrep', 'enterBattle', 'pushSnapshot', 'pushEvents', 'highlightTiles', 'on', 'resize', 'destroy'];
 // direction-step hooks (ui/facingWheel.js): optional — the wheel falls back to the engine's dev hooks when absent;
 // setPen (enemy preview pen list), prepField ({ kind, side, mirror } of the Final Assault prep), stripesUnder (the view
@@ -134,7 +135,14 @@ function renderPref() {
     const q = new URLSearchParams(globalThis.location?.search || '').get('render');
     if (q === 'fallback' || q === 'engine') return q;
   } catch { /* ignore */ }
-  return globalThis.__SP_RENDER__ === 'fallback' ? 'fallback' : 'auto';
+  if (globalThis.__SP_RENDER__ === 'fallback') return 'fallback';
+  // 设备不支持 WebGL2 时直接使用简化视图（避免尝试后失败）
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2');
+    if (!gl) return 'fallback';
+  } catch { return 'fallback'; }
+  return 'auto';
 }
 
 function abortError(signal) {

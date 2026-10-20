@@ -16,7 +16,7 @@
 // gate — the settled lp stays until settlement, in red with a −min(lpCapPerRound, counted leaks) tick (GitHub #479: the
 // official keeps the current value until settlement), 联防中 while a 联防 may still save part of it (liveLp;
 // the leaks come from the local battle runner, else m.public players[].pendingLp). 联防 (user playtest #6 item 7; PRTS
-// 卫戍协议/帮助 "防卫失败的玩家可通过上方信息栏确认自身所属敌人的剩余数量"): a leaker's phase capsule carries the official
+// Stronghold-Protocol/帮助 "防卫失败的玩家可通过上方信息栏确认自身所属敌人的剩余数量"): a leaker's phase capsule carries the official
 // runner tag ×N (research 09 `tag_miss`; art ui/battle bg_miss_enemy [ASSUMED]) = its enemies still standing on the 联防
 // field, uncapped and live — falling as the helpers kill them, rising when one splits or summons (the local 联防
 // replica's runner state().uniteLeft, else m.public players[].uniteLeft); the LP tower marks lp with −min(lpCapPerRound, N).

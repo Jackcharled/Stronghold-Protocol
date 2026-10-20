@@ -566,7 +566,7 @@ export class GameData {
    * deployable summons (tokens.json `placeable`: 医疗探机, 诅咒娃娃, 海嗣, 狼群, 流形, 爬行号·防护单元; user playtest #6)
    * that the chess makes under `loadout` ({ skillIndex } from shared/protocol.js resolveLoadout; absent ⇒ its default
    * skill): the owner variant's `sources` (`bySkill[skillIndex]` for a non-default skill) name a talent or a skill —
-   * 赫默 / 巫恋 on S1 make no drone / doll. `count` = the summon's deploy limit (PRTS 卫戍协议/帮助 "根据召唤物部署数量
+   * 赫默 / 巫恋 on S1 make no drone / doll. `count` = the summon's deploy limit (PRTS Stronghold-Protocol/帮助 "根据召唤物部署数量
    * 上限（非初始持有量），发送等量召唤物至手牌区": 凯瑟琳 2 of her 3 devices).
    */
   placeableTokens(chessId, loadout = null) {

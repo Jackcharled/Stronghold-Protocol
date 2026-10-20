@@ -556,7 +556,7 @@ roster exclusion. The default-yes vanilla extraction prompt does not grant art c
 before full extraction, and direct full `extract.py` runs require `--plugin-art` (or explicit `--only plugin-art`).
 Registry checks and packing keep `assets.add`/`assets.override` classification against the original `data/assets.json`;
 references use the merged manifest. One broken sprite is logged without skipping later sprites in its bundle.
-This adds no plugin fields and changes no gameplay/content hashes. See [ASSETS.md](ASSETS.md#official-operator-art-referenced-by-plugins-031)
+This adds no plugin fields and changes no gameplay/content hashes. See [ASSETS.md](https://github.com/sganggs/Stronghold-Protocol/blob/v0.3.1/docs/ASSETS.md#official-operator-art-referenced-by-plugins-031)
 for paths, scratch-only extraction and limits (no extra skins, illustrations or voices).
 
 A cosmetic plugin, or a content plugin's own assets, can put this inside its `assets` object/file:
@@ -588,7 +588,7 @@ events retain their normal handling. Owner/target death cancels pending arrival 
 
 Compiled effects add `"index":"fx/index.json"`. This version-3 `fx-index` fragment contains `units`, `skills`,
 `prefabs` and `textures: {"sheet":{"file":"fx/sheet.png"}}`. Prefabs are version-1 `fx-prefab` JSON under `fx/`,
-following [the extracted format](design/vfx-format.md), with this validated subset:
+following [the extracted format](https://github.com/sganggs/Stronghold-Protocol/blob/v0.3.1/docs/design/vfx-format.md), with this validated subset:
 
 - Units: `kind:"char"`, skills, modes, optional startEffect/deadEffect. Skill copies match index.skills.
 - Skills: uses (`keys`, role, from, optional ability/oneshot), optional mode/rootClass. Roles: start/loop/end/hit/cast.
@@ -991,8 +991,8 @@ No plugin scripts run to open, draw, refresh or apply a window. Old API 1 manife
 The manifest schema checks JSON paths, allowed classes, API 2, the required permission and its corresponding part;
 the shipped example is validated against both the schema and the manifest reader.
 
-A complete, art-free example is [offers-demo](examples/offers-demo/plugin.json), with
-[its window](examples/offers-demo/offers.json) and [cards](examples/offers-demo/cards.json).
+A complete, art-free example is [offers-demo](https://github.com/sganggs/Stronghold-Protocol/blob/v0.3.1/docs/examples/offers-demo/plugin.json), with
+[its window](https://github.com/sganggs/Stronghold-Protocol/blob/v0.3.1/docs/examples/offers-demo/offers.json) and [cards](https://github.com/sganggs/Stronghold-Protocol/blob/v0.3.1/docs/examples/offers-demo/cards.json).
 Copy that directory to `plugins/offers-demo`, check it, then enable it in the room's plugin panel.
 
 ```json
@@ -1275,7 +1275,7 @@ a Worker escape. Node 22 permissions do not restrict network and are not a malic
 escape can probe the server's network or read its allowed install tree and targets of links inside it.
 Do not put links pointing outside inside the installation root; use a network namespace/container to restrict network. Prefer a low-privilege account/container
 with outbound-network and OS resource limits. Chrome regression coverage includes CSP and sandbox behavior;
-Firefox and Safari have not had dedicated sandbox verification. See [DESIGN §32.11](history/0.3.0.md#3211-p3b--worker-simulation-ses-and-csp)
+Firefox and Safari have not had dedicated sandbox verification. See [DESIGN §32.11](https://github.com/sganggs/Stronghold-Protocol/blob/v0.3.1/docs/history/0.3.0.md#3211-p3b--worker-simulation-ses-and-csp)
 and [deployment](DEPLOY.md).
 
 

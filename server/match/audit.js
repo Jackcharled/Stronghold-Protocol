@@ -19,7 +19,7 @@
 //                 price, the level rises by one and its price resets to the next base; Ready only with an empty temp
 //   merges        a merge consuming a deployed copy puts the elite on that copy's tile (of several, the first in deploy
 //                 order legal for it — board.js mergeTile; a 突变细胞 carrier destroyed before the gain is no copy) with
-//                 its facing, else into the hand / temp; the deploy count never grows (PRTS 卫戍协议/帮助, user playtest
+//                 its facing, else into the hand / temp; the deploy count never grows (PRTS Stronghold-Protocol/帮助, user playtest
 //                 #6 follow-up)
 //   combat start  nothing overdue in temp, everyone ready, funds lost (carry bands excepted), unfrozen shop cleared,
 //                 one field per alive player
@@ -241,7 +241,7 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
       });
       return res;
     });
-    // merges (PRTS 卫戍协议/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置", user playtest #6 follow-up): with a
+    // merges (PRTS Stronghold-Protocol/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置", user playtest #6 follow-up): with a
     // deployed copy among the consumed ones the elite stands on the first such tile in deploy order that is legal for
     // it, with that copy's facing; else in the hand / temp (the incoming copy is never deployed: a 突变细胞
     // transformation destroyed its carrier before the gain, so that freed tile is no copy's). A merge never grows the

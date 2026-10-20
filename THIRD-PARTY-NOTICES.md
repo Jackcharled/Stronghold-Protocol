@@ -21,7 +21,7 @@ them (with `node_modules/`, which keeps each package's own licence file).
 | [Acorn](https://github.com/acornjs/acorn) | 8.18.0 | MIT | parsed sandbox module adapter — `public/vendor/acorn.mjs`, server | no (npm) | yes |
 | [@pixi/unsafe-eval](https://github.com/pixijs/pixijs/tree/v7.4.2/packages/unsafe-eval/src) | 7.4.2 | MIT (PixiJS notice below) | CSP-compatible shader uniform uploads; upstream syncUniforms transpiled, install adapted to lazy global PIXI | **yes**, `public/js/render/app/pixiNoEval.js` | yes |
 | [ws](https://github.com/websockets/ws) | 8.22.0 | MIT | WebSocket server (`server/`) | no (npm) | yes (`node_modules/`) |
-| [Node.js](https://nodejs.org/) | v22.23.3 (pinned in `scripts/make-windows-bundle.mjs`) | MIT | the portable `node\node.exe` (**Windows portable package only** — the integration bundle in [Releases](../../releases/latest) ships no `node.exe`) | no (downloaded from nodejs.org at package time, sha256 verified) | **Windows portable package only** (`node\node.exe`, with `node\LICENSE-node.txt`) |
+| [Node.js](https://nodejs.org/) | v22.23.3 (pinned in `scripts/make-windows-bundle.mjs`) | MIT | the portable `node\node.exe` (**Windows portable package only** — the integration bundle in [Releases](https://github.com/sganggs/Stronghold-Protocol/releases/latest) ships no `node.exe`) | no (downloaded from nodejs.org at package time, sha256 verified) | **Windows portable package only** (`node\node.exe`, with `node\LICENSE-node.txt`) |
 | [puppeteer-core](https://github.com/puppeteer/puppeteer) | 25.12.0 | Apache-2.0 | optional browser tests (dev dependency) | no (npm) | no |
 | [Ark-Unpacker](https://github.com/isHarryh/Ark-Unpacker) LZ4AK decoder | — | BSD-3-Clause | `tools/local-extract/aklz4.py` (optional local extraction) | **yes** — keeps its notice; full text also in `tools/local-extract/LICENSE-Ark-Unpacker.txt` | yes |
 | [UnityPy](https://github.com/K0lb3/UnityPy) (via MooncellWiki/UnityPy), [lz4](https://github.com/python-lz4/python-lz4), [Pillow](https://github.com/python-pillow/Pillow) | see `tools/local-extract/requirements.txt` | MIT / BSD-3-Clause / MIT-CMU | optional local extraction; installed by pip into `.venv-extract` only when the host opts in | no | no |
@@ -43,7 +43,7 @@ at all, this project grants an additional permission under GPL-3.0 section 7 for
 ## Game data, art and audio
 
 All names, characters, artwork, Spine models, UI graphics, music, sound effects and game data of *Arknights* /
-「卫戍协议：盟约」 are © Shanghai Hypergryph Network Technology Co., Ltd. (上海鹰角网络科技有限公司) and its licensors
+「Stronghold-Protocol：盟约」 are © Shanghai Hypergryph Network Technology Co., Ltd. (上海鹰角网络科技有限公司) and its licensors
 (Yostar and others). They are **not** licensed under the GPL and this project grants no rights to them; see
 [NOTICE.md](NOTICE.md) for the non-commercial terms. Community mirrors used by `tools/fetch-assets.mjs` /
 `tools/build-data.mjs`: [Kengxxiao/ArknightsGameData](https://github.com/Kengxxiao/ArknightsGameData),

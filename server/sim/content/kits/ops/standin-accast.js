@@ -3,7 +3,7 @@
 // Kit contract and the stand-in rules: ../README.md ("Stand-in kits").
 //
 // Sources: data/backups.json (character_table / skill_table / battle_equip_table at E2 Lv1 rank 4 and E2 Lv60 rank 7),
-// PRTS Pith(卫戍协议) (S3 备注 "※溅射范围扩大至1.2") and the client's battle data (charpack char_612_accast,
+// PRTS Pith(Stronghold-Protocol) (S3 备注 "※溅射范围扩大至1.2") and the client's battle data (charpack char_612_accast,
 // battle/buff_template_data.json accast_s_3[AOE]).
 // - 扩散术师 trait "攻击造成群体法术伤害": the splash around each struck target, radius = the trait's
 //   attack@projectile_range (1.1, PRTS 溅射半径一览's branch value); a skill's attack@projectile_range replaces it while it runs.

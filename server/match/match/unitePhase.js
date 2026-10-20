@@ -100,7 +100,7 @@ export class MatchUnite {
   }
 
   /**
-   * 联防 (user playtest #6 item 7; PRTS 卫戍协议/帮助 "防卫失败的玩家可通过上方信息栏确认自身所属敌人的剩余数量"): how many of
+   * 联防 (user playtest #6 item 7; PRTS Stronghold-Protocol/帮助 "防卫失败的玩家可通过上方信息栏确认自身所属敌人的剩余数量"): how many of
    * a leaker's enemies are still standing on the 联防 field — not spawned yet, alive, or through the objective again —
    * plus its leaks that could not re-enter: what settle() charges it (before the per-round cap) if the 联防 ended now.
    * It falls as the helpers strike them down; a split or a summon raises nothing (a 联防 field tags its runtime spawns

@@ -13,7 +13,7 @@
 // 速度-80%", "技能持续至盾牌旋转365°并收回时结束"; S3 备注 "技能期间攻击可对空", 临死模式 — 阻回 / 沉默 / 不死, allies' 不死 and the
 // lethal excess as her 流失, the forced exit, "若携带X模组，则X模组的“造成额外伤害”效果依然生效"; AST-X 备注 — the extra damage's
 // conditions "①此为普通攻击或普通攻击附带的伤害；②伤害来源于斩业星熊自身；③不为本模组特性的伤害…伤害为法术附加伤害", "仅对敌方
-// 单位反弹伤害，伤害为法术普通伤害"), PRTS 卫戍协议/帮助 技能策略 (her S3 row "于技能持续时间过半后…关闭技能（进入其技能效果的
+// 单位反弹伤害，伤害为法术普通伤害"), PRTS Stronghold-Protocol/帮助 技能策略 (her S3 row "于技能持续时间过半后…关闭技能（进入其技能效果的
 // 临死模式）" added in 上半, REMOVED with 下半; "通常不会自动关闭技能").
 // - Trait (驭法铁卫) "技能开启时普通攻击会造成法术伤害": physical attacks while no skill runs (the kit's trait dmgType — the
 //   data's 'phys' too since 0.2.0 WE2 — build-data classifyAttack) and arts while one runs (every skill's attack override); block 3, ground-only

@@ -48,7 +48,7 @@ export class PlayerItems {
     if (consume) {
       const key = 'item:' + itemKey(item.id);
       if (!this.m.registry.has(key)) return fail(ERR.BAD_TARGET, 'effect not available');
-      // a full carrier replaces first, consumables included (PRTS 卫戍协议/帮助 "达到上限强行佩戴会改为替换装备：指定一件已佩戴
+      // a full carrier replaces first, consumables included (PRTS Stronghold-Protocol/帮助 "达到上限强行佩戴会改为替换装备：指定一件已佩戴
       // 装备替换为将要佩戴的装备，并销毁被指定的装备"; GitHub #263): the pick (else the oldest) comes off before the effect —
       // which so sees the carrier without it (its bonds) — and is destroyed once the effect went through, leaving the slot
       // free (the normal 博士投影 then takes it: ev.keep, so it no longer pushes the oldest item out). A refusal puts it back.

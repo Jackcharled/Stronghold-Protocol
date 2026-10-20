@@ -19,6 +19,7 @@ export const DEV_BUILD = /-dev$/.test(APP_VERSION);
 export const PLUGIN_API = Object.freeze({ current: 2, min: 1 });
 
 export const MAX_SEATS = 4;
+export const MAX_SEATS_HARD = 20;
 /**
  * Spectator seats of a co-op room (community report #26, owner's decision 2026-10-04) — a remake feature: the official
  * room has 1–4 players and no spectator seat (there only eliminated players and 联防 bystanders watch, research 09 §3.1).
@@ -77,7 +78,7 @@ export const PIECE_KIND = Object.freeze({ CHESS: 'chess', ITEM: 'item', TOKEN: '
 
 /**
  * Whether the placed piece of a skill's summon (赫默's 医疗探机, 巫恋's 诅咒娃娃) also deploys once, for free, at the
- * battle start. true = the PRTS reading (卫戍协议/帮助 §作战阶段: "所有手动部署的召唤物，无视所属干员的持有状态…作战开始时
+ * battle start. true = the PRTS reading (Stronghold-Protocol/帮助 §作战阶段: "所有手动部署的召唤物，无视所属干员的持有状态…作战开始时
  * 立即部署一次", example 赫默's drone), settled by the user on 2026-10-01 after playtest #6 (DESIGN §20); false = the
  * playtest #4 reading ("是赫默开技能释放一次，不是开局直接就部署了"): it takes its tile only when the owner's skill gives one.
  * Either way the piece re-appears on its tile each time the owner's skill gives one.
@@ -225,7 +226,7 @@ export const ERR_TEXT = {
 // derived from the id (autochess_battle_fooldoctor_03…06 → pic_fooldoctor_04/05/06/08_battle).
 const emo = (id, sortId, picId, label) => Object.freeze({ id, sortId, picId, label });
 export const EMOTE_THEMES = Object.freeze([
-  { themeId: 'emoticon_autochess_basic', dir: 'basic', sortId: 100000, isBasic: true, name: N_('表情套组：卫戍协议'), emotes: [
+  { themeId: 'emoticon_autochess_basic', dir: 'basic', sortId: 100000, isBasic: true, name: N_('表情套组：Stronghold-Protocol'), emotes: [
     emo('autochess_battle_happy', 1001, 'pic_happy_battle', N_('开心')),
     emo('autochess_battle_scared', 1002, 'pic_scared_battle', N_('害怕')),
     emo('autochess_battle_sorry', 1003, 'pic_sorry_battle', N_('对不起')),
@@ -241,7 +242,7 @@ export const EMOTE_THEMES = Object.freeze([
     emo('slug_autochess_battle_distrust', 2005, 'pic_distrust_battle', '？？？'),
     emo('slug_autochess_battle_very_soon', 2006, 'pic_very_soon_battle', N_('很快就好！')),
   ] },
-  { themeId: 'emoticon_autochess_basic_2', dir: 'basic_2', sortId: 100001, isBasic: true, name: N_('表情套组：卫戍协议'), emotes: [
+  { themeId: 'emoticon_autochess_basic_2', dir: 'basic_2', sortId: 100001, isBasic: true, name: N_('表情套组：Stronghold-Protocol'), emotes: [
     emo('autochess_battle_noproblem', 1007, 'pic_noproblem_battle', N_('没问题！')),
     emo('autochess_battle_respect', 1008, 'pic_respect_battle', N_('敬礼！')),
     emo('autochess_battle_call', 1009, 'pic_call_battle', N_('欢呼！')),

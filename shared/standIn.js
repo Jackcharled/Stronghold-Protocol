@@ -6,7 +6,7 @@
 //
 // `backups.units[charId].forms[statusKey]` holds what a character is at one training status (stats, trait, talents,
 // every skill unlocked there, the modules of that equip level) with nothing selected. composeUnitRecord joins a form to
-// the identity of a chess record — chess id, tier, bonds, 特质 (garrisonIds), price, merge, status: PRTS 「卫戍协议」
+// the identity of a chess record — chess id, tier, bonds, 特质 (garrisonIds), price, merge, status: PRTS 「Stronghold-Protocol」
 // "原型干员会继承其补位干员的盟约 / 特质" — with a selected skill and module, and returns a record shaped exactly like a
 // data/chess.json record whose `skill` / `module` defaults are that selection: normalizeChess, resolveLoadout /
 // loadoutRecord and the detail card read it unchanged. A stand-in's skill and module are fixed by the chess

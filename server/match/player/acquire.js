@@ -65,7 +65,7 @@ export class PlayerAcquire {
 
   /**
    * Merge `need` normal copies of `baseId` (the incoming, not yet stowed piece first, then temp, hand, board) into
-   * the elite — PRTS 卫戍协议/帮助 §干员的获得与精锐化: "发送1名【精锐】状态的该干员至手牌区（若消耗已部署至作战区的干员，
+   * the elite — PRTS Stronghold-Protocol/帮助 §干员的获得与精锐化: "发送1名【精锐】状态的该干员至手牌区（若消耗已部署至作战区的干员，
    * 则发送至作战区对应位置）" (the user's playtest #6 follow-up confirms it). The tile (`mergeTile`): when a consumed copy
    * stood on the board the elite takes its tile and facing — of several, the one that deploys first (the left board
    * column first, top to bottom within a column — Battle.start's order) [ASSUMED]. The incoming copy is never deployed (a 突变细胞 transformation
@@ -142,10 +142,10 @@ export class PlayerAcquire {
   }
 
   /**
-   * Transformation (突变细胞 "战斗结束后，装备者替换为高一阶的随机干员"; PRTS 卫戍协议：盟约 下半/PRTS盟约记录 备注 "生效时，原
+   * Transformation (突变细胞 "战斗结束后，装备者替换为高一阶的随机干员"; PRTS Stronghold-Protocol：盟约 下半/PRTS盟约记录 备注 "生效时，原
    * 干员销毁，获得一名高一阶的随机初始干员（最高六阶）"): a destroy followed by a gain. The carrier is destroyed wherever it
    * stands — a board tile is freed (the deploy count drops), its summons are removed, its pool copies return. Its
-   * equipment, the cell included, comes off first (PRTS 卫戍协议/帮助 "在失去该干员（干员出售、销毁、合并等）…时自动卸除"): to
+   * equipment, the cell included, comes off first (PRTS Stronghold-Protocol/帮助 "在失去该干员（干员出售、销毁、合并等）…时自动卸除"): to
    * the hand, overflowing into temp, auto-merging like any gain. Then `newId` is gained like any other gained operator
    * (acquireChess, onGain source 'transform'): the hand, then the expandable temp queue; it gets no summon card in the hand (only a deployment
    * brings one), and a merge it completes follows the ordinary rule (_mergeChess: the elite on a consumed deployed copy's
@@ -194,7 +194,7 @@ export class PlayerAcquire {
    * up from the tier below (user playtest #6 item 19: the official promotion reward never offers one operator twice —
    * the user's first-hand report; the normal shop's slots may repeat). The offer reserves no copies (the pick takes one).
    * The player's slotted 自选 pieces of the reward tier join the draw (player/diy.js diyStockEntries: copies left, then
-   * the roll's tier — not the ordinary shop's shopLevel gate). 卫戍协议/帮助 干员晋升 names one temporary refresh one tier
+   * the roll's tier — not the ordinary shop's shopLevel gate). Stronghold-Protocol/帮助 干员晋升 names one temporary refresh one tier
    * above the 调度中心 and no separate pool; the owner decided on 2026-10-12 that the refresh includes 自选 of the newly
    * reached tier. 0.2.0 had [ASSUMED] the shop-level gate on this refresh too (DESIGN §25); §30.23 reverses that.
    * An offer built from explicit `ids` does not roll.

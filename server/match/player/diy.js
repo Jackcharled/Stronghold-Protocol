@@ -13,14 +13,14 @@
 //     AI 托管 evaluation, names in toasts and tickers — sees the operator. A player without picks keeps the match's
 //     GameData itself: nothing changes for anyone else. token(id) also finds the 自选 summons (data/backups.json
 //     `tokens`) and placeableTokens() reads their variant of the owner form (`<charId>@<statusKey>`, shared/diy.js
-//     diyTokenOwner), so a placeable 自选 summon comes to the hand like any operator's (PRTS 卫戍协议/帮助 §战斗部署).
+//     diyTokenOwner), so a placeable 自选 summon comes to the hand like any operator's (PRTS Stronghold-Protocol/帮助 §战斗部署).
 //   * the per-player stock (initDiyStock, called by the match once its bans are drawn): each slotted DIY piece has copies
 //     of its own — the tier's pool copies, 8 at tier 5 and 5 at tier 6 [ASSUMED: research 0.2.0 §2.5, the excel has no
 //     stock field] — drawn by this player only; it never enters the shared pool (PR #71's shared shop was the mistake to
 //     avoid); in co-op its copies double like the shared pool's (gamedata.js poolCopies × coopPoolMultiplier: 16 / 10 —
 //     the maintainer's decision of 2026-10-15, GitHub #650, DESIGN §32.14.31). A piece all of whose bonds are switched
 //     off this match (本局禁用: the drawn bans and the mode's static list)
-//     gets no stock and so leaves the shop, like a preset chess whose bonds are all off (PRTS 卫戍协议：盟约 "禁用盟约有可能
+//     gets no stock and so leaves the shop, like a preset chess whose bonds are all off (PRTS Stronghold-Protocol：盟约 "禁用盟约有可能
 //     影响自选的支援干员"); 协防 (emptyShip) is never banned, so a prototype always stays. poolOf(baseId) routes every copy
 //     taken or returned for a slotted slot to that stock (buy, reward picks, merges, promotions, sells, temp, elimination).
 //   * the shop's draws (diyRollEntries): the stock of each slotted slot joins this player's copy-weighted shop rolls,
@@ -29,7 +29,7 @@
 //     等级 ≥ 干员所在等阶" is that persistent shop). The price is the slot's (any chess of its tier: 4).
 //   * the promotion reward (pushRewardOffer with no explicit ids) draws diyStockEntries() under the reward tier
 //     min(shopLevel + 1, 6): a tier-5 自选 piece can appear when the 调度中心 reaches 4, a tier-6 piece when it reaches
-//     5, one shop level before the ordinary shop. 卫戍协议/帮助 干员晋升 names that refresh and no second pool; the owner
+//     5, one shop level before the ordinary shop. Stronghold-Protocol/帮助 干员晋升 names that refresh and no second pool; the owner
 //     decided on 2026-10-12 that it includes 自选 of the newly reached tier. 0.2.0 had [ASSUMED] the shop-level gate
 //     for this refresh too (DESIGN §25); §30.23 reverses it. A piece is not guaranteed. Banned slots and `left <= 0`
 //     stay out. Explicit-id offers do not use this draw.
@@ -108,7 +108,7 @@ export function diyGameData(gd, records) {
     /**
      * GameData.placeableTokens for a slotted slot: the summons its record lists (the pick's skill and talents) that are
      * placeable, by the variant of the owner form (`bySkill[skillIndex]` sources) — the deploy limit as the count (PRTS
-     * 卫戍协议/帮助 "根据召唤物部署数量上限（非初始持有量）"), the active module's own when its variant has one (`byModule`:
+     * Stronghold-Protocol/帮助 "根据召唤物部署数量上限（非初始持有量）"), the active module's own when its variant has one (`byModule`:
      * 望's TRP-X "可同时部署的陷阱数量提升", 6 → 7 棋子; SUM-Y stage 2+ 4 drones / summons). The data's deploy limit holds the
      * token's own talent additions (tools/build-data.mjs tokenTalentDeckBonus, 0.2.0): 麦哲伦 / 令 / 电弧 3, 白铁 2, 夜莺 3 幻影 —
      * at the owner's potential (`loadout.potential`, PlayerState.loadoutFor; 0.2.2: 望's 棋子 6 below 潜能3, 7 from it).

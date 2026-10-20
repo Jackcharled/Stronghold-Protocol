@@ -12,7 +12,7 @@
 // …叠加时取最高"; S3 备注: the start (撤退重构体, 【移动】, the 路标形态 marker), 不死 ("期间受到致命伤害结算后立即结束技能；技能结束后
 // 返回…以不高于1点的生命值在场；因返回而部署时获得1s不死"), "期间对自身进行治疗时，治疗跳跃不会衰减且不占用跳跃数", the return); PRTS
 // 重构体 (备注 "持有禁疗（可以被Mon3tr无视）、不可阻挡", "嘲讽等级-1", "Mon3tr因移动之外的原因退场时强制撤退场上的重构体", 通常形态
-// "阻挡数强制归0，每0.1s流失8生命值…退场时返还1个可部署的重构体"); PRTS 卫戍协议/帮助 (§战斗部署 placed summons, §作战阶段
+// "阻挡数强制归0，每0.1s流失8生命值…退场时返还1个可部署的重构体"); PRTS Stronghold-Protocol/帮助 (§战斗部署 placed summons, §作战阶段
 // "若召唤物在战斗期间退场，将在满足条件后立即原地再部署1个"); the client's battle data: charpack char_4179_monstr (attacks
 // `_ignoreHealFree`; talent "1" monstr_t_1[born_charge] / [die_to_kil_token]; talent "2" monstr_t_2[atk_spd], scaled in the S2
 // mode by `_applyTalentScale` on attack_speed; modes S3_Reborn (Combat / Attack: PURE, targetMotion 1, `_maxNum` 3

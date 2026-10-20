@@ -1,7 +1,7 @@
 {
  "meta": {
   "source": "Kengxxiao/ArknightsGameData zh_CN (activity_table act2autochess + autoChessData, character_table, skill_table, range_table, battle_equip_table, uniequip_table)",
-  "season": "act2autochess 卫戍协议：盟约",
+  "season": "act2autochess Stronghold-Protocol：盟约",
   "statFormula": "Linear interpolation of character_table.phases[evolvePhase].attributesKeyFrames between keyframe levels; hp/atk/def/cost/block/respawn rounded half-up to int; + module attributeBlackboard at equipLevel (golden only). Potential 0, trust 0 (favorPoint 0). Talent-based permanent stat boosts NOT folded in (listed in talents).",
   "rangeGridFormat": "[row, col] offsets, operator at [0,0], col>0 = facing direction (range_table direction=1 means facing right). Rotate for other facings.",
   "skillLevelNote": "skill level 4 for normal chess, 7 for golden (精锐) chess (no masteries)",
@@ -8250,7 +8250,7 @@
     {
      "index": 1,
      "name": "灵便条约",
-     "description": "在【卫戍协议】中，隶属于盟约【调和】",
+     "description": "在【Stronghold-Protocol】中，隶属于盟约【调和】",
      "blackboard": [],
      "rangeId": null,
      "tokenKey": null,
@@ -8485,7 +8485,7 @@
     {
      "index": 1,
      "name": "灵便条约",
-     "description": "在【卫戍协议】中，隶属于盟约【调和】",
+     "description": "在【Stronghold-Protocol】中，隶属于盟约【调和】",
      "blackboard": [],
      "rangeId": null,
      "tokenKey": null,

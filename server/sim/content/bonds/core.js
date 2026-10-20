@@ -505,7 +505,7 @@ function installEgir(battle, pid, bb, members) {
   // battle (normal, 联防, boss) counts its own. PRTS: the knocked-out unit's next deployment has 0 redeploy time and 0
   // cost, i.e. it IS knocked out (被击倒 triggers fire) and redeploys where it lies (the engine's rest tile,
   // Battle._layBody: the tile it was knocked out on — a raid-relocated member comes back where it fell —, or its own home
-  // when it fell on another board piece's home; PRTS 卫戍协议/帮助 §作战阶段 单位部署) with full HP, SP reset and `deploy`
+  // when it fell on another board piece's home; PRTS Stronghold-Protocol/帮助 §作战阶段 单位部署) with full HP, SP reset and `deploy`
   // effects (卡西米尔 / 叙拉古). Death priority 11: before 不屈 (10), whose redeploy "also consumes a 复活 charge" — for a
   // knock-out in the fight the slot is always the one used. Until 0.1.3 the slots were fixed at battle start for the
   // first 3 members by position (§23.20); until 0.1.2 the first 3 knocked out took them but a revived member's pending

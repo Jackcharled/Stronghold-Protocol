@@ -270,7 +270,7 @@ function summonMods(b, hpRatio = null) {
 export function install(battle) {
   ensureInstalled(battle);
   battle.on('enemySpawn', ({ enemy }) => onSpawn(battle, enemy), { priority: 90 });
-  // "最终攻势中，敌方领袖不会受到侵蚀损伤" (PRTS 卫戍协议：盟约/PRTS盟约记录 规则; research 06 §10.1): leaders ignore erosion gauge damage
+  // "最终攻势中，敌方领袖不会受到侵蚀损伤" (PRTS Stronghold-Protocol：盟约/PRTS盟约记录 规则; research 06 §10.1): leaders ignore erosion gauge damage
   battle.on('elementHit', (c) => { if (c.target && c.target.isBoss && c.dmg.element === 'erosion') c.dmg.cancel = true; }, { priority: 100 });
 }
 export function registerMeta() {}

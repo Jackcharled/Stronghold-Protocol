@@ -2,7 +2,7 @@
 //
 // The ground (low tile tops, the island's cliff edges) is one PIXI.Mesh with a custom perspective-correct shader:
 // every quad carries (u·w, v·w, w) texture coordinates with w = 1/depth, so the material atlas (render/textures.js:
-// the real 卫戍协议 board art of the local client when installed — render/boardArt.js — else procedural) maps onto
+// the real Stronghold-Protocol board art of the local client when installed — render/boardArt.js — else procedural) maps onto
 // the trapezoid tiles without the affine "kink". Vertices are re-projected only when the camera changes. Draw
 // order (painter's): backdrop ground plane → cliff faces → low tops. The island stands on a large textured ground
 // plane (the board art's concrete backdrop) with baked contact shadows, fading into fog with distance.

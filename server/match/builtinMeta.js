@@ -213,12 +213,12 @@ const ITEM_HANDLERS = {
       }
     },
   },
-  // 突变细胞 "战斗结束后，装备者替换为高一阶的随机干员": PRTS 卫戍协议：盟约 下半/PRTS盟约记录 备注 "生效时，原干员销毁，获得
+  // 突变细胞 "战斗结束后，装备者替换为高一阶的随机干员": PRTS Stronghold-Protocol：盟约 下半/PRTS盟约记录 备注 "生效时，原干员销毁，获得
   // 一名高一阶的随机初始干员（最高六阶）" — the carrier (deployed or on the bench) is destroyed and a random NORMAL operator
   // one tier higher (at most 6; an elite carrier too) is gained like any gained operator: into the 整备区 (overflow temp),
   // never onto the carrier's tile — official footage (bilibili BV1vzyVBuEN9 ≈ 8:24, BV1Qkw1zMEoR ≈ 7:25): at the next
   // prep the tile is empty, one more deployment is left and the new operator waits on the bench (pointed out in PR #2).
-  // The destroyed operator's equipment, the cell included, returns to the hand first (PRTS 卫戍协议/帮助 "佩戴的装备无法
+  // The destroyed operator's equipment, the cell included, returns to the hand first (PRTS Stronghold-Protocol/帮助 "佩戴的装备无法
   // 手动卸除，在失去该干员（干员出售、销毁、合并等）或装备合并为进阶品质时自动卸除"; the official text never says 销毁 for the
   // cell — unlike every consumable item —, and players re-inject it every round: "之后就是一直打针，扎到核心卡…就换人扎",
   // bilibili cv47000418; player feedback after 0.1.0). PlayerState.transformChess.

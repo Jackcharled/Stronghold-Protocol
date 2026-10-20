@@ -35,13 +35,31 @@ import { store, useStore, shallowEqual, emptyMatch, isSpectating } from '../stor
 import { difficultyInfo } from './lobby.js';
 import { t, tc } from '../../../shared/i18n.js';
 
+// 账号四位代码：优先取登录账号代码，其次从已保存的「名字#1234」解析
+function tagFromName(name) {
+  const m = /#([0-9]{4})\s*$/.exec(String(name || ''));
+  return m ? m[1] : '';
+}
+
+function accountTag() {
+  try {
+    const saved = localStorage.getItem('mm.tag');
+    if (/^[0-9]{4}$/.test(saved || '')) return saved;
+  } catch { /* 忽略 */ }
+  try {
+    const m = /#([0-9]{4})$/.exec(localStorage.getItem('mm.name') || localStorage.getItem('sp.name') || '');
+    if (m) return m[1];
+  } catch { /* 忽略 */ }
+  return (typeof window !== 'undefined' && window.__SP_ACCOUNT_TAG) || '';
+}
+
 /**
  * Seats padded to the room's capacity (co-op 4, solo 1), each null or a seat record.
  * @param {any} room room.state payload
  * @returns {(null | {seat:number, playerId:any, name:string, isBot:boolean, ready:boolean, connected:boolean})[]}
  */
 export function normalizeSeats(room) {
-  const cap = room?.mode === 'solo' ? 1 : MAX_SEATS;
+  const cap = room?.mode === 'solo' ? 1 : (Number(room?.capacity) || MAX_SEATS); // exp8
   const src = Array.isArray(room?.seats) ? room.seats : [];
   const out = [];
   for (let i = 0; i < cap; i++) {
@@ -154,7 +172,7 @@ function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot,
       <span class="seat__name">${seat.name || t('博士')}</span>
       ${isMe ? html`<span class="seat__you">${t('你')}</span>` : null}
     </div>
-    <${MicroLabel}>${seat.isBot ? 'AUTONOMOUS UNIT' : `DOCTOR #${doctorNo(seat.playerId)}`}<//>
+    <${MicroLabel}>${seat.isBot ? 'AUTONOMOUS UNIT' : `DOCTOR #${seat.tag || (seat.playerId === window.__SP_ACCOUNT_PID && accountTag()) || tagFromName(seat.name) || doctorNo(seat.playerId)}`}<//>
     ${facts.modded && !seat.isBot ? html`<span class=${`seat__content is-${seat.content || 'loading'}`} data-testid="seat-content">
       ${seat.content === 'ready' ? t('插件内容就绪') : seat.content === 'failed' ? t('插件内容校验失败') : t('插件内容载入中')}
     </span>` : null}
@@ -191,8 +209,8 @@ function SpectatorBar({ facts, myId, busy, onRemove, onSit }) {
 
 function InviteBox({ code, name, difficulty }) {
   const copy = async (what) => {
-    // the copied link carries an invitation line (#103): 「{name}邀请你加入卫戍协议：盟约【{difficulty}】」
-    const invite = t('{name}邀请你加入卫戍协议：盟约【{difficulty}】', { name: name ?? '', difficulty: DIFFICULTY_NAMES[difficulty] ? t(DIFFICULTY_NAMES[difficulty]) : '' });
+    // the copied link carries an invitation line (#103): 「{name}邀请你加入Stronghold-Protocol：盟约【{difficulty}】」
+    const invite = t('{name}邀请你加入Stronghold-Protocol：盟约【{difficulty}】', { name: name ?? '', difficulty: DIFFICULTY_NAMES[difficulty] ? t(DIFFICULTY_NAMES[difficulty]) : '' });
     const ok = await copyText(what === 'code' ? code : `${inviteLink(code)} ${invite}`);
     if (ok) toast(what === 'code' ? t('已复制同盟密钥 {code}', { code }) : t('已复制邀请链接'), 'success');
     else toast(t('复制失败，请手动复制'), 'warn');

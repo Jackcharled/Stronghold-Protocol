@@ -9,7 +9,7 @@
 // “生命回复速度”属性，不受治疗加成和禁疗影响"; 天有四时 修正 "在场时" / "编入队伍且"; S1 修正 "小于等于一半"; S2 备注 "实际效果为技能
 // 期间普通攻击改为治疗友方单位（受攻速和缴械影响，非停止攻击），“特殊间隔”指攻击间隔+1.3"; S3 备注 "技能持续期间视野扩大至治疗范围，
 // 自身普通攻击同时触发治疗，无攻击目标时普通攻击可直接进行治疗", the 【播种标记】 and its teleport, "攻击力/攻击速度提升效果无视孤立");
-// PRTS 卫戍协议/帮助 §技能操作 (黍【离离枯荣】 "技能范围内存在可治疗的我方单位时释放技能"); the client's battle data: buff templates
+// PRTS Stronghold-Protocol/帮助 §技能操作 (黍【离离枯荣】 "技能范围内存在可治疗的我方单位时释放技能"); the client's battle data: buff templates
 // shu_t_1 / shu_t_1[char] / shu_farm_buff[char] / shu_s_2 / shu_s_3 / shu_s_3[in_range] / shu_s_3[heal_in_attack] /
 // shu_s_3[enemy][enter|leave|mark] / heal_scale_up[hpratio][LE], her charpack (the S2 / S3 modes' Attack / Heal
 // abilities, DoFarm / EnemyListener tile abilities and their selectors, the 天有四时 auras and deck part) and the skill

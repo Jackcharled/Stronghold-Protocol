@@ -13,7 +13,7 @@
 // "中继器持续时间结束时不再进行自动撤退"; 临界瞬爆 备注 "技能持续期间，自身的攻击范围可无限延伸直至无法继续延伸", "持有孤立的我方干员
 // 也可令谬因攻击范围延伸效果转向"; 混沌的本质 备注 "技能开启后3秒内持有强制缴械", "“停顿时间延长”指的是增加本次攻击对该敌人施加的
 // 停顿的时间", "技能开始/结束时强制撤回所有中继器", 修正 "清空再部署"); PRTS 中继器 (备注: 无敌, 禁疗, 孤立, 阻挡数 0, 再部署策略
-// 队列); PRTS 卫戍协议/帮助 §作战阶段 ("若战场区初始部署有召唤物，若召唤物在战斗期间退场，将在满足条件后立即原地再部署1个"); the client's
+// 队列); PRTS Stronghold-Protocol/帮助 §作战阶段 ("若战场区初始部署有召唤物，若召唤物在战斗期间退场，将在满足条件后立即原地再部署1个"); the client's
 // battle data (charpack char_4229_aphris — the range selectors, the talent abilities; battle/prefabs [uc]skills skchr_aphris_1/2/3;
 // buff_template_data aphris_token_add_atk_tohost, aphris_pc_t[with-draw], aphris_sk1(_token), aphris_sk2_switch_mode4,
 // aphris_sk3 / [token-withdraw] / [on_finish], die_to_kill_token, charge_token[born]).

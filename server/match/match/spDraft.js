@@ -11,7 +11,7 @@ import { weightedPick } from '../waves.js';
 import { botPickCard } from '../bot.js';
 import { OK, fail, DELAYS } from './common.js';
 
-/** Cards of the personal choice (PRTS 卫戍协议：盟约 下半 §法术 教鞭: "于3个战术特训的悬赏任务中选择一项"). */
+/** Cards of the personal choice (PRTS Stronghold-Protocol：盟约 下半 §法术 教鞭: "于3个战术特训的悬赏任务中选择一项"). */
 const PERSONAL_OFFER_SIZE = 3;
 
 export class MatchSpDraft {

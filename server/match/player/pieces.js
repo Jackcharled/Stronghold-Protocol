@@ -166,7 +166,7 @@ export class PlayerPieces {
 
   /**
    * An owner that changes its board tile (moved, swapped): its summons on the board go back onto its stack (PRTS
-   * 卫戍协议/帮助 "移动干员时，其所属召唤物全部退场并重置至手牌区"). With no stack and no free hand slot the summon joins
+   * Stronghold-Protocol/帮助 "移动干员时，其所属召唤物全部退场并重置至手牌区"). With no stack and no free hand slot the summon joins
    * the expandable temp queue (`allowTemp`). A stack that a prep deadline then removes still comes back at the next
    * round start. `keep`: a summon the player just placed (the one dragged onto its owner, which swapped the owner
    * away) stays where it was put.
@@ -221,7 +221,7 @@ export class PlayerPieces {
    * Owner on the board: send its placeable summons to the hand (one stack per token type, topped up to the deploy limit;
    * gamedata.placeableTokens / tokens.json `placeable`, user playtest #6) — those its equipped skill / module makes
    * (DESIGN §16: 赫默 S2 医疗无人机 a drone, 赫默 S1 none). Called when the owner is placed and at every round start, which
-   * returns a stack removed from temp at the last prep deadline (PRTS 卫戍协议/帮助 §手牌区 "干员所属召唤物会于下一回合
+   * returns a stack removed from temp at the last prep deadline (PRTS Stronghold-Protocol/帮助 §手牌区 "干员所属召唤物会于下一回合
    * 返还"); copies the owner still has (placed or stacked) are not granted again.
    */
   grantTokensFor(owner) {

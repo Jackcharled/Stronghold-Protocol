@@ -1,6 +1,6 @@
 # plugins/AGENTS.md — making a plugin with an AI agent
 
-For AI coding assistants asked to make or fix a plugin of 卫戍协议：盟约. Do not
+For AI coding assistants asked to make or fix a plugin of Stronghold-Protocol：盟约. Do not
 learn the rules from long prose: let the schema and the checker tell you, and loop until they are quiet. The reference is
 [docs/PLUGINS.md](../docs/PLUGINS.md) (§3 manifest, §4 permissions, §5 files, §9 cosmetic plugins, §15 studio and tools);
 people read [docs/PLUGIN-GUIDE.md](../docs/PLUGIN-GUIDE.md).

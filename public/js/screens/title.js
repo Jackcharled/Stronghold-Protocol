@@ -1,4 +1,4 @@
-// Title screen: season-style backdrop, big title 卫戍协议：盟约, remembered nickname, 开始, the language menu
+// Title screen: season-style backdrop, big title Stronghold-Protocol：盟约, remembered nickname, 开始, the language menu
 // (中文 | English | every pack in public/i18n/, ui/lang.js; a title in an alphabetic script — English — is the big one and
 // the small wordmark above it hides).
 //

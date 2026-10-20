@@ -3,7 +3,7 @@
 // Kit contract and the stand-in rules: ../README.md ("Stand-in kits").
 //
 // Sources: data/backups.json (character_table / skill_table / battle_equip_table at E2 Lv1 rank 4 and E2 Lv60 rank 7),
-// PRTS Raidian(卫戍协议) (S3 备注 on its 虚弱), PRTS 命中率 and the client's battle data (charpack char_614_acsupo).
+// PRTS Raidian(Stronghold-Protocol) (S3 备注 on its 虚弱), PRTS 命中率 and the client's battle data (charpack char_614_acsupo).
 // - 凝滞师 trait "攻击造成法术伤害，并对敌人造成短暂的停顿": arts, 停顿 `sluggish` s on every target (professions.js slower,
 //   from the trait blackboard); S2 lengthens it (attack@sluggish).
 // - T1 同调 "攻击速度+15，相邻的干员攻击速度+10" (module DEC-X level 2 / 3: 18 / 11, 20 / 12): her own ASPD (charpack

@@ -180,7 +180,7 @@ export function prepCapsuleLabel(phase) {
 // ---- the round start's deploy replay (PR #416) ---------------------------------------------------------------
 
 /**
- * The own board's pieces in deployment order — the order the battle deploys them (sim Battle.start; PRTS 卫戍协议/帮助
+ * The own board's pieces in deployment order — the order the battle deploys them (sim Battle.start; PRTS Stronghold-Protocol/帮助
  * "按从上到下>从左到右的顺序部署。优先部署干员，随后为召唤物"): the operators by column from the left, top to bottom within a
  * column (col asc, row desc, in board coordinates — so the mirrored right half of a boss prep also starts from its own
  * left), then the summons the same way. A placed item (画卷) is not one of them.

@@ -11,7 +11,7 @@ export class BattleLifecycle {
     if (this.started) return;
     this.started = true;
     this._safe(() => this._spawnStageDevices(), 'stageDevices');
-    // PRTS 卫戍协议/帮助 §作战阶段: "按从上到下>从左到右的顺序部署。优先部署干员，随后为召唤物（如果有）", noted "自卫戍协议：
+    // PRTS Stronghold-Protocol/帮助 §作战阶段: "按从上到下>从左到右的顺序部署。优先部署干员，随后为召唤物（如果有）", noted "自Stronghold-Protocol：
     // 盟约 下半（2026/3/14）起，部署顺序由“从左到右>从下到上”更改为“从上到下>从左到右”" — a scanning order: down each column
     // (top first), the columns from left to right; act 1's along each row, the rows from the bottom. It is the order PRTS
     // gives the 阿戈尔 devour ("从最先部署（更靠左和靠上的）的【阿戈尔】干员开始", content/bonds/core.js egirOrder) and the one
@@ -40,7 +40,7 @@ export class BattleLifecycle {
     // — ranks after all the operators (of every player on the field [ASSUMED]), in the order it came
     const summons = this.allyUnits.filter((u) => u.kind === 'token' && u.alive && u.deployed && u.deploySeq > seq0).sort((a, b) => a.deploySeq - b.deploySeq);
     for (const t of summons) t.aggroSeq = ++this._deploySeq;
-    // 联防 (PRTS 卫戍协议/帮助 "部署完成后…上一阶段为退场状态的干员强制退场"): an operator knocked out at the end of its
+    // 联防 (PRTS Stronghold-Protocol/帮助 "部署完成后…上一阶段为退场状态的干员强制退场"): an operator knocked out at the end of its
     // own combat is withdrawn right after the deployment — down on its tile, its redeploy timer starting now (re-read
     // after battleStart below; DESIGN §5.5). Its HP ratio is the end-of-phase one (0, as after kill()) until it
     // redeploys at full HP.

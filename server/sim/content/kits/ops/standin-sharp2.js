@@ -1,4 +1,4 @@
-// server/sim/content/kits/ops/standin-sharp2.js — 领主·Sharp (char_617_sharp2, 卫戍协议 6★ 近卫·领主) 补位 stand-in kit.
+// server/sim/content/kits/ops/standin-sharp2.js — 领主·Sharp (char_617_sharp2, Stronghold-Protocol 6★ 近卫·领主) 补位 stand-in kit.
 // Stands in for 水月 (tier 4), 玛恩纳 (tier 5, LOR-X) and 维娜·维多利亚 / 妮芙 (tier 6, LOR-X), always with S1 (her only
 // skill): data/backups.json `units.char_617_sharp2.standsIn`. Kit contract: ../README.md "Stand-in kits".
 // Numbers: the blackboards of data/backups.json (skill_table / character_table / battle_equip_table); what the data

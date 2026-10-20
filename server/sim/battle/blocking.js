@@ -58,7 +58,7 @@ export class BattleBlocking {
    * trigger). That holds for a ranged operator on a melee tile too: the user's rule after playtest #6, "阻挡了就一定要能
    * 打到" — whatever blocks an enemy can hit it, where it stands (DESIGN §20; it replaces the playtest #5 QA's melee-only
    * restriction). Only for attacks that hit enemies: a heal
-   * attack never asks — it keeps selecting injured allies while its unit blocks (PRTS 卫戍协议/帮助 "对于医疗干员
+   * attack never asks — it keeps selecting injured allies while its unit blocks (PRTS Stronghold-Protocol/帮助 "对于医疗干员
    * （咒愈师分支除外），攻击目标为需要治疗的单位"; PRTS 选择器 adds only the blocked units its side can pick).
    */
   blockedTargets(u, profile) {

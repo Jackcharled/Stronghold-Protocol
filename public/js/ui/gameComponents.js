@@ -65,7 +65,7 @@ export function makeLookups(ready = true) {
 export function Img({ src, class: cls, alt = '', fallback = null, style }) {
   const [bad, setBad] = useState(null);
   if (!src || bad === src) return fallback;
-  return html`<img class=${cls} src=${src} alt=${alt} draggable=${false} loading="lazy" style=${style} onError=${() => setBad(src)} />`;
+  return html`<img class=${cls} src=${src} alt=${alt} draggable=${false} loading="lazy" style=${style} onError=${(e) => { const el = e && (e.currentTarget || e.target); const s = String(src || ''); if (el && !el.dataset.retry && /^https?:\/\//i.test(s)) { el.dataset.retry = '1'; try { const u = new URL(s); el.src = u.pathname + u.search; return; } catch { /* ignore */ } } setBad(src); }} />`;
 }
 
 /** Official UI sprite by 'group/key' with a fallback. */

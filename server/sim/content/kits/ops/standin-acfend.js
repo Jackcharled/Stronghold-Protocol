@@ -7,14 +7,14 @@ const S1 = 'skchr_acfend_1', S2 = 'skchr_acfend_2', S3 = 'skchr_acfend_3';
 /** 反馈装甲 on an enemy she blocks, and its S2 version (×talent_mult): one buff per target whatever applies it (同名). */
 const FEEDBACK_KEY = 'acfend:feedback';
 const FEEDBACK_S2_KEY = 'acfend:feedback2';
-/** PRTS Mechanist(卫戍协议) 天赋备注: 精研材料's HP ratio and 反馈装甲's block are checked every 0.1 s. */
+/** PRTS Mechanist(Stronghold-Protocol) 天赋备注: 精研材料's HP ratio and 反馈装甲's block are checked every 0.1 s. */
 const CHECK_INTERVAL = 0.1;
 /** S3 应力倒置 "每秒…": one pulse per second of the skill, the first 1 s after the cast [ASSUMED: no pulse at the cast]. */
 const STRESS_INTERVAL = 1;
 
 export default {
   // Mechanist (铁卫, blocks 3) — numbers from data/backups.json (normal E2 Lv1 rank 4, elite E2 Lv60 rank 7; skill_table and
-  // PRTS Mechanist(卫戍协议) agree):
+  // PRTS Mechanist(Stronghold-Protocol) agree):
   //   精研材料: DEF +def; below hp_ratio HP another +`acfend_t_1[extra].def` (module PRO-X Lv3: 0.2) — PRTS 备注 "生命比例每0.1秒
   //      检测一次".
   //   反馈装甲: enemies she blocks ASPD `attack_speed` (−7). PRTS 备注: applied every 0.1 s to the enemies she blocks; then the

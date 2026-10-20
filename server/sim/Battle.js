@@ -12,7 +12,7 @@
 // FORCED_EXIT — down on their tile, redeploy timer running) and then fires `battleStart`.
 // An operator that left the field — knocked out, or forced out by its own effects (史尔特尔's 余烬 …, GitHub #60) — lies
 // on its `body` tile — where it fell, or its own home when it fell on another board piece's home — and redeploys there;
-// no ally deploys or moves onto that tile meanwhile (PRTS 卫戍协议/帮助 §作战阶段 单位部署; `isDown`, `_layBody`, `downOn`,
+// no ally deploys or moves onto that tile meanwhile (PRTS Stronghold-Protocol/帮助 §作战阶段 单位部署; `isDown`, `_layBody`, `downOn`,
 // `restTile`, `isReservedTile`; docs/SIM.md §1).
 // Tick order: scheduled callbacks → spawns → DP → buffs → enemies (attack, move, block) → enemy index →
 //   allies (skill tick, attack) → projectiles → redeploys → boss sync → `tick` hook → release hooks of removed units →

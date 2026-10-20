@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// tools/crop-board-atlas.mjs — tile crops of the real 卫戍协议 board atlas (local-client art, DESIGN §13).
+// tools/crop-board-atlas.mjs — tile crops of the real Stronghold-Protocol board atlas (local-client art, DESIGN §13).
 //
 // The local client's autochess map textures (extracted by tools/local-extract into public/assets/local/map/autochess):
 //   TX_autochessi_D.png       2048² diffuse atlas: 256 px floor cells (concrete slabs, hazard / chevron variants),

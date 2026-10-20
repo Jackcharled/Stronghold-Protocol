@@ -51,6 +51,7 @@ import { LoadoutStats } from '../ui/loadoutStats.js';
 export { LoadoutStats, statsPreview } from '../ui/loadoutStats.js';
 import { diyCount, sanitizeDiyPicks, setPick, serializeDiy, parseDiyImport, DIY_IMPORT_MAX_BYTES } from '../ui/diyModel.js';
 import { t, tParts, N_ } from '../../../shared/i18n.js';
+import { setSkins, availableSkins } from '../ui/skins.js';
 import { copyText } from '../ui/clipboard.js';
 import { toast } from '../ui/toasts.js';
 
@@ -516,6 +517,7 @@ function LoadoutScreen({ st }) {
   const locked = ((inMatch && phase && phase !== PHASE.INFO_CHECK && phase !== PHASE.LOBBY) && !prepOpen) || st.sync === 'locked';
   const gridRef = useRef(null);
   const fileRef = useRef(null);                            // hidden <input type=file> of the 导入 dialog
+  const skinFileRef = useRef(null);                        // 导入皮肤用的 hidden file input
   const [narrowDetail, setNarrowDetail] = useState(false); // phones: the detail slides over the roster
   // the detail's 普通 / 精锐 skill toggle: one preview for its skills, its 特质 and the rows' skill details (display only)
   const [previewLevel, setPreviewLevel] = useState('normal');
@@ -573,6 +575,7 @@ function LoadoutScreen({ st }) {
   const ioText = io?.text ?? '';
   const ioOwn = io?.kind === 'ownership';
   const ioDiy = io?.kind === 'diy';
+  const ioSkins = io?.kind === 'skins';
   const openExport = () => setIo(tab === 'ownership'
     ? { mode: 'export', kind: 'ownership', text: serializeOwnership(loadoutStore.get().notOwned) }
     : tab === 'diy' ? { mode: 'export', kind: 'diy', text: serializeDiy(loadoutStore.get().diy) }
@@ -583,12 +586,24 @@ function LoadoutScreen({ st }) {
     toast(ok ? t('已复制到剪贴板') : t('复制失败，请在文本框中手动全选复制'), ok ? 'success' : 'warn');
   };
   const ioDownload = () => downloadText(exportFilename(new Date(), ioOwn ? 'ownership' : ioDiy ? 'diy' : 'loadout'), ioText);
+  // 导入皮肤：与「导入」一致的弹窗（粘贴或选择文件），只接受皮肤文件
+  const importSkins = () => setIo({ mode: 'import', kind: 'skins', text: '' });
+  // 导出皮肤设置：独立文件，不动调配/持有/自选
+  const exportSkins = () => {
+    let map = {};
+    try { map = JSON.parse(localStorage.getItem('sp.pref.skins') || '{}') || {}; } catch { map = {}; }
+    const count = Object.keys(map).length;
+    if (!count) { toast(t('没有可导出的皮肤设置'), 'warn'); return; }
+    downloadText(exportFilename(new Date(), 'skins'), JSON.stringify({ type: 'sp-skins', version: 1, skins: map }, null, 2));
+    toast(t('已导出 {n} 名干员的皮肤设置', { n: count }), 'success');
+  };
   const ioPick = () => fileRef.current?.click();
   const ioFile = async (e) => {
     const f = e.currentTarget.files && e.currentTarget.files[0];
     e.currentTarget.value = ''; // picking the same file twice must fire again
     if (!f) return;
     // refuse a huge pick before reading it into memory (a real payload is a few KB)
+    if (ioSkins && f.size > 2 * 1024 * 1024) { toast(t('文件过大，请选择「导出皮肤」下载的文件'), 'error'); return; }
     if (ioDiy && f.size > DIY_IMPORT_MAX_BYTES) { toast(t('文件过大，请选择「导出」下载的自选编队文件'), 'error'); return; }
     if (f.size > (ioOwn ? OWNERSHIP_IMPORT_MAX_BYTES : LOADOUT_IMPORT_MAX_BYTES)) { toast(ioOwn ? t('文件过大，请选择「导出」下载的干员持有文件') : t('文件过大，请选择「导出」下载的调配文件'), 'error'); return; }
     try { setIo({ ...io, mode: 'import', text: await readFileText(f) }); } catch { toast(t('读取文件失败'), 'error'); }
@@ -598,6 +613,37 @@ function LoadoutScreen({ st }) {
     // of wiping the loadout
     const refused = importRefusal(io.kind, ready);
     if (refused) { toast(refused.text, refused.tone); return; }
+    if (ioSkins) {
+      let data = null;
+      try { data = JSON.parse(ioText); } catch { toast(t('导入失败：无法识别的内容'), 'error'); return; }
+      // 只允许皮肤文件：type/version/skins 三个字段，不能混入调配、持有等数据
+      if (!data || typeof data !== 'object' || Array.isArray(data)) { toast(t('导入失败：无法识别的格式'), 'error'); return; }
+      const keys = Object.keys(data);
+      const extra = keys.filter((k) => !['type', 'version', 'skins'].includes(k));
+      if (extra.length) { toast(t('导入失败：无法识别的格式'), 'error'); return; }
+      if (data.type != null && data.type !== 'sp-skins') { toast(t('导入失败：这不是皮肤文件'), 'error'); return; }
+      const map = data.skins;
+      if (!map || typeof map !== 'object' || Array.isArray(map)) { toast(t('导入失败：里面没有有效的皮肤条目'), 'error'); return; }
+      const clean = {};
+      let dropped = 0;
+      for (const [cid, sid] of Object.entries(map)) {
+        if (typeof cid !== 'string' || !/^char_[0-9]+_[A-Za-z0-9_]+$/.test(cid)) { dropped++; continue; }
+        if (typeof sid !== 'string' || !/^char_[0-9]+_[A-Za-z0-9_]+$/.test(sid)) { dropped++; continue; }
+        const rows = availableSkins(cid);
+        if (!rows.some((x) => x.id === sid)) { dropped++; continue; }
+        clean[cid] = sid;
+      }
+      const count = Object.keys(clean).length;
+      const rawCount = Object.keys(map).length;
+      if (!count) {
+        toast(rawCount ? t('导入失败：这份数据在当前版本没有可用的皮肤，未做任何改动') : t('导入失败：里面没有有效的皮肤条目'), 'error');
+        return;
+      }
+      setSkins(clean);
+      setIo(null);
+      toast(dropped ? t('已导入 {n} 名干员的皮肤（另有 {dropped} 项无效，未导入）', { n: count, dropped }) : t('已导入 {n} 名干员的皮肤设置', { n: count }), dropped ? 'warn' : 'success');
+      return;
+    }
     if (ioDiy) {
       const r = parseDiyImport(ioText);
       if (!r.ok) { toast(t('导入失败：{error}', { error: t(r.error, r.params) }), 'error'); return; }
@@ -712,6 +758,8 @@ function LoadoutScreen({ st }) {
         <span class="lo-count">${t('已调整')} <b class="num">${nChanged}</b><span class="num t-dim">/${roster.length}</span></span>
         <${Button} variant="ghost" size="sm" data-testid="loadout-export" disabled=${!nChanged && !Object.keys(st.ops || {}).length} onClick=${openExport} title=${t('导出当前调配（可复制或下载）')}>${t('导出')}<//>
         <${Button} variant="ghost" size="sm" data-testid="loadout-import" disabled=${!ready} onClick=${openImport} title=${t('导入调配（粘贴或选择文件）')}>${t('导入')}<//>
+        <${Button} variant="ghost" size="sm" data-testid="skins-export" onClick=${exportSkins} title=${t('导出皮肤设置（下载 JSON 文件）')}>${t('导出皮肤')}<//>
+        <${Button} variant="ghost" size="sm" data-testid="skins-import" onClick=${importSkins} title=${t('导入皮肤设置（选择「导出皮肤」下载的 JSON）')}>${t('导入皮肤')}<//>
         <${Button} variant="secondary" size="sm" icon="refresh" disabled=${!nChanged} onClick=${resetAll}>${t('全部恢复默认')}<//>
       </div>`}
     </header>
@@ -746,9 +794,10 @@ function LoadoutScreen({ st }) {
     </main>`}
   </div>
   ${io ? html`<${Modal} open=${true} onClose=${() => setIo(null)}
-      title=${ioDiy ? t(io.mode === 'export' ? '导出自选编队' : '导入自选编队')
+      title=${ioSkins ? t(io.mode === 'export' ? '导出皮肤' : '导入皮肤')
+        : ioDiy ? t(io.mode === 'export' ? '导出自选编队' : '导入自选编队')
         : io.mode === 'export' ? (ioOwn ? t('导出干员持有') : t('导出干员调配')) : (ioOwn ? t('导入干员持有') : t('导入干员调配'))}
-      micro=${ioOwn ? 'OPERATOR ROSTER' : ioDiy ? 'SELF-SELECT SQUAD' : 'OPERATOR LOADOUT'}
+      micro=${ioSkins ? 'SKINS' : ioOwn ? 'OPERATOR ROSTER' : ioDiy ? 'SELF-SELECT SQUAD' : 'OPERATOR LOADOUT'}
       actions=${io.mode === 'export'
         ? html`<${Button} variant="ghost" onClick=${() => setIo(null)}>${t('关闭')}<//>
             <${Button} variant="secondary" icon="copy" data-testid="loadout-io-copy" onClick=${ioCopy}>${t('复制')}<//>
@@ -756,7 +805,11 @@ function LoadoutScreen({ st }) {
         : html`<${Button} variant="ghost" onClick=${() => setIo(null)}>${t('取消')}<//>
             <${Button} variant="secondary" data-testid="loadout-io-pick" onClick=${ioPick}>${t('选择文件')}<//>
             <${Button} variant="primary" icon="check" data-testid="loadout-io-apply" disabled=${!ioText.trim() || !ready} onClick=${ioApply}>${t('导入')}<//>`}>
-      <p class="lo-io__hint">${ioDiy
+      <p class="lo-io__hint">${ioSkins
+        ? (io.mode === 'export'
+          ? t('共 {n} 名干员已选皮肤。复制或下载这份数据，即可在别的设备或浏览器上导入。', { n: Object.keys(((() => { try { return JSON.parse(localStorage.getItem('sp.pref.skins') || '{}') || {}; } catch { return {}; } })())).length })
+          : t('把「导出皮肤」得到的内容粘贴到下方，或点「选择文件」。只识别 skins 字段，混入调配等其他数据会被拒绝。'))
+        : ioDiy
         ? (io.mode === 'export'
           ? t('共 {n} 个自选名额已选择。复制或下载这份数据，即可在别的设备或浏览器上导入。', { n: nDiy })
           : t('把导出的自选编队数据粘贴到下方，或点「选择文件」。导入会覆盖当前的自选编队。'))
@@ -768,7 +821,7 @@ function LoadoutScreen({ st }) {
           ? html`${tParts('共 {n} 名干员已调整。复制或下载这份数据，即可在别的设备或浏览器上导入。', { n: html`<b class="num">${nChanged}</b>`, count: nChanged })}`
           : html`${t('把导出的内容粘贴到下方，或点「选择文件」。')}${nChanged ? html`${tParts('导入会{overwrite}当前的 {nChanged} 名干员调配。', { overwrite: html`<strong>${t('覆盖')}</strong>`, nChanged })}` : null}`}</p>
       <textarea class="lo-io__text" data-testid="loadout-io-text" spellcheck=${false} readOnly=${io.mode === 'export'} value=${ioText}
-        placeholder=${io.mode === 'export' ? '' : ioDiy ? t('在此粘贴导出的自选编队内容…') : ioOwn ? t('在此粘贴导出的干员持有内容…') : t('在此粘贴导出的调配内容…')}
+        placeholder=${io.mode === 'export' ? '' : ioSkins ? t('在此粘贴导出的皮肤 JSON…') : ioDiy ? t('在此粘贴导出的自选编队内容…') : ioOwn ? t('在此粘贴导出的干员持有内容…') : t('在此粘贴导出的调配内容…')}
         onInput=${(e) => setIo({ ...io, text: e.currentTarget.value })}></textarea>
       <input type="file" accept=".json,application/json,text/plain" class="lo-io__file" ref=${fileRef} onChange=${ioFile} />
     <//>` : null}

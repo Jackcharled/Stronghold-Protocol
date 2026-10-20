@@ -8,7 +8,7 @@
 // decision of 2026-10-07). Sources: character_table / skill_table / battle_equip_table / the token's character_table row (zh_CN, as
 // built into backups.json) and PRTS 莱伊 (巡哨伙伴 / 入神 / S1 / S2 / S3 备注), PRTS 沙地兽 (备注 "持有禁疗、无敌", "退场时返还1
 // 个可部署的沙地兽", "莱伊退场时强制撤退场上的沙地兽"; its skill "仅在持有者携带技能2时才会携带"), PRTS 分支特性信息 猎手, BWIKI
-// 莱伊 ("装填间隔即为攻击间隔，初始子弹数即为最大子弹数"), PRTS 卫戍协议/帮助 (a placed summon that leaves is deployed again on
+// 莱伊 ("装填间隔即为攻击间隔，初始子弹数即为最大子弹数"), PRTS Stronghold-Protocol/帮助 (a placed summon that leaves is deployed again on
 // its tile "在满足条件后"); the client's battle data read from the local install — buff_template_data ray_tr / ray_tr_add /
 // ray_tr_sub (the magazine), ray_s_1[konckback] (Knockback _useSourceDirection, _decreaseForceLevelWhenNotInDirection 1),
 // ray_s_1[kill_add_bullet], ray_t_1[damage_scale] (PHYSICAL DamageScale on targets holding ray_sndbst_aura), ray_s_2[deck],

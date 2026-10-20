@@ -12,7 +12,7 @@ const isMedicOp = (a) => a.kind === 'op' && a.alive && a.deployed && !a.hidden &
 
 export default {
   // Touch (医师) — skills from data/backups.json (normal E2 Lv1 skill rank 4, elite E2 Lv60 rank 7; skill_table and PRTS
-  // Touch(卫戍协议) agree):
+  // Touch(Stronghold-Protocol) agree):
   //   S1 慨赠 (20 s): ATK +atk, each heal has an `attack@prob` chance of one extra heal [ASSUMED: of the same target, the
   //      same amount — the text names no other target].
   //   S2 宛如天启 (30 s): her range becomes the 3-10 grid (PRTS 修正: "攻击距离+1" means 攻击范围扩大), she heals

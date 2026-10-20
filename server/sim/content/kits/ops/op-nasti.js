@@ -15,7 +15,7 @@
 // "生命回复速度属性不受此影响", skill "流失生命效果于获得技力/屏障效果后紧接着处理…会先提供技力和屏障再导致装置死亡"; 应急承重小组: the two
 // forms, "前方地块为可部署近战位的低地地块…则在前方地块上召唤一个高台形态的此装置。高台形态的此装置不计入部署数量上限", "仅高台形态装置
 // 已激活，且生命值未满时…可对其进行治疗，仅成功治疗后流失生命值", 未激活 = 装置类 + 无敌 + 不可阻挡, 激活 = 默认类, 阻挡数+1, 高地 /
-// 仅远程, 重叠部署; 第二次升级起 +1000 / +100 / +5; 最高级 阻回), PRTS 分支特性信息 工匠, PRTS 卫戍协议/帮助 (§战斗部署, §作战阶段 —
+// 仅远程, 重叠部署; 第二次升级起 +1000 / +100 / +5; 最高级 阻回), PRTS 分支特性信息 工匠, PRTS Stronghold-Protocol/帮助 (§战斗部署, §作战阶段 —
 // as op-ironmn.js), and the client's battle data read from the local install — charpack char_4212_nasti (nasti_t_1
 // charge_token[born]; T2: PassiveTrigger nasti_t2[res] = damage_resistance[inf], AuraTrigger on enemies of applyWay RANGED
 // (`_applyWay` 2, every level and motion) ⇒ AuraBuff: OwnerBuff nasti_t2[res_plus] (overrides [res]) + nasti_t2[add_sp], and

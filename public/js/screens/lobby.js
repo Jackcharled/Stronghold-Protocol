@@ -30,6 +30,24 @@ import { getConfig, getMode, getStage, useData } from '../data.js';
 import { t, tc, N_ } from '../../../shared/i18n.js';
 import { NoticesButton } from '../ui/notices.js';
 
+// 账号四位代码：优先取登录账号代码，其次从已保存的「名字#1234」解析
+function tagFromName(name) {
+  const m = /#([0-9]{4})\s*$/.exec(String(name || ''));
+  return m ? m[1] : '';
+}
+
+function accountTag() {
+  try {
+    const saved = localStorage.getItem('mm.tag');
+    if (/^[0-9]{4}$/.test(saved || '')) return saved;
+  } catch { /* 忽略 */ }
+  try {
+    const m = /#([0-9]{4})$/.exec(localStorage.getItem('mm.name') || localStorage.getItem('sp.name') || '');
+    if (m) return m[1];
+  } catch { /* 忽略 */ }
+  return (typeof window !== 'undefined' && window.__SP_ACCOUNT_TAG) || '';
+}
+
 /** Official mode texts (activity_table act2autochess.modeDataDict), fallback when config.json is absent. */
 export const MODE_TEXT = {
   single: {
@@ -355,7 +373,7 @@ export function LobbyScreen() {
           <${AvatarFrame} size="sm" name=${me.name} seat=${0} self=${true} />
           <span class="me-chip__text">
             <span class="me-chip__name">${me.name || t('博士')}</span>
-            <${MicroLabel}>${me.playerId != null ? `DOCTOR #${doctorNo(me.playerId)}` : 'DOCTOR'}<//>
+            <${MicroLabel}>${me.playerId != null ? `DOCTOR #${(window.__SP_ACCOUNT_PID = me.playerId, window.__SP_ACCOUNT_TAG) || me.tag || accountTag() || tagFromName(me.name) || doctorNo(me.playerId)}` : 'DOCTOR'}<//>
           </span>
           <${Icon} name="chart" class="me-chip__stats" />
         </button>

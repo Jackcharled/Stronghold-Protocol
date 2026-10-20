@@ -124,7 +124,7 @@ export function normalizeSkill(rec) {
   const skillIndex = s.skillIndex ?? s.index ?? null;
   const skillType = String(s.skillType ?? s.type ?? 'MANUAL').toUpperCase();
   // Class rows (profession / subprofession, research-shaped records carry `matchedBy`) apply to every MANUAL skill of the
-  // class and never to an AUTO one (PRTS 卫戍协议/帮助 技能策略; tools/build-data.mjs resolveTrigger does the same for data).
+  // class and never to an AUTO one (PRTS Stronghold-Protocol/帮助 技能策略; tools/build-data.mjs resolveTrigger does the same for data).
   if (/^(profession|subProfession)/.test(matchedBy) && skillType !== 'MANUAL') rule = 'DEFAULT';
   const trigGrid = toArrayOfPairs((typeof trig === 'object' && (trig.customRangeGrid ?? trig.rangeGrid ?? trig.grid)) || rec.skillTriggerCustomRangeGrid);
   if (/^skcom_withdraw/.test(String(s.skillId ?? s.id ?? ''))) return null;

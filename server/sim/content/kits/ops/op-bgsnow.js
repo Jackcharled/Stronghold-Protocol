@@ -20,7 +20,7 @@
 //   after 25 s (the token's hidden talent `interval`), and comes back on its tile after its own redeploy time (data 40 s; ×
 //   respawn_time while she carries S2), paying its cost (5 DP), while she is on the field [ASSUMED: as the 海嗣]. Its skill
 //   is the copy of hers the data gives (bySkill: sktok_bgsnow_1 / 2 / 3 — the 卫戍 strategy force-opens a summon's manual
-//   skill, PRTS 卫戍协议/帮助): free (spCost 0), once per deployment, by the data's DEFAULT. It is untargetable ("不会受到
+//   skill, PRTS Stronghold-Protocol/帮助): free (spCost 0), once per deployment, by the data's DEFAULT. It is untargetable ("不会受到
 //   攻击"), blocks nothing, hits air units. content/tokens.js has no kit for it: her install gives her pieces this one.
 // - T2 弱点速记 "“打字机”的攻击会使命中目标的防御力下降18%，持续4秒；若“打字机”放在鸿雪周围四格则效果提升至23%" (full potential:
 //   20% for 5 s, 25%): every damage the typewriter's attacks land cuts the target's DEF by bgsnow_token[def_down]_1 (_2

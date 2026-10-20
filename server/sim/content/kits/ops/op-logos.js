@@ -30,7 +30,7 @@
 //   attack@kill_damage (9999999) 无来源 true damage (备注 "无来源真实斩杀伤害"; no dodge), then another random enemy of his
 //   range takes arts damage equal to the HP the first had left (备注: his T2 bonus applies, T1 rolls). At most one try per
 //   enemy per entry into the range, and none ever again on an enemy that survived one (备注; a 频次 unit takes 1 HP, a
-//   leader in a boss battle loses nothing to 限伤 — 备注 "卫戍协议的最终攻势Boss…只能以常规的“当前生命值”处理斩杀的触发").
+//   leader in a boss battle loses nothing to 限伤 — 备注 "Stronghold-Protocol的最终攻势Boss…只能以常规的“当前生命值”处理斩杀的触发").
 // - S2 提喻 (MANUAL, 20 s, data DEFAULT): RES +magic_resistance; the attack locks one target (an instant hit, no bolt
 //   [ASSUMED: a lock-on beam]) every attack@cooldown s whatever the attack speed (备注 "攻击间隔固定为0.5s"), each hit
 //   attack@atk_scale_base + attack@atk_scale_delta × n of his ATK and the target's movement speed × (1 + attack@move_speed
