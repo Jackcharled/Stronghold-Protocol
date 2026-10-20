@@ -948,7 +948,29 @@
     const existing = document.getElementById(id);
     if (!stat) { if (existing) existing.style.display = 'none'; return null; }
     if (existing) { existing.style.display = ''; return existing; }
-    const btn = document.createElement('button');
+    const onTitle = !!document.querySelector('.title-screen');
+    let btn;
+    if (!onTitle) {
+      // 大厅：直接克隆 S.W.E.E.P. 按钮，尺寸/内边距/间距与相邻按钮完全一致
+      btn = stat.cloneNode(true);
+      btn.id = id;
+      btn.type = 'button';
+      btn.disabled = false;
+      btn.style.marginRight = '0px';
+      const lbl = btn.querySelector('.btn__label') || btn.querySelector('span');
+      if (lbl) lbl.textContent = label;
+      else btn.textContent = label;
+      const svgClone = btn.querySelector('svg');
+      if (svgClone) {
+        const path = svgClone.querySelector('path');
+        if (path) path.setAttribute('d', iconPath);
+      }
+      btn.onclick = onClick;
+      const before0 = beforeId ? document.getElementById(beforeId) : null;
+      stat.parentElement.insertBefore(btn, before0 || stat);
+      return btn;
+    }
+    btn = document.createElement('button');
     btn.type = 'button';
     btn.id = id;
     btn.className = stat.className;
@@ -980,7 +1002,7 @@
     btn.type = 'button';
     btn.id = id;
     btn.className = tpl.className;
-    btn.style.marginRight = '10px';
+    btn.style.marginRight = document.querySelector('.title-screen') ? '10px' : '0px';
     const svg = tpl.querySelector('svg');
     if (svg) {
       const s = svg.cloneNode(true);
@@ -1390,7 +1412,9 @@
     const place = () => {
       const start = [...document.querySelectorAll('button')].find((b) => /^开始\s*»?$/.test((b.textContent || '').trim()) && b.offsetParent);
       const ping = document.querySelector('.ping');
-      if (start && start.getClientRects().length) {
+      // 标题页登录态会隐藏「开始」按钮，这里改用标题页本身判断，避免节点状态被一起藏掉
+      const onTitle = !!document.querySelector('.title-screen');
+      if (onTitle || (start && start.getClientRects().length)) {
         // 标题页：放进右上角工具条，排在「公告」按钮左边，样式与按钮一致
         const notice = document.getElementById('mm-notice-btn');
         const hostBtn = notice || document.querySelector('button.title-stats')
@@ -1521,6 +1545,8 @@
     chip.addEventListener('click', (e) => {
       e.stopPropagation();
       if (el.classList.contains('match') || !data) return;
+      // 标题页只显示在线人数，不提供节点状态面板
+      if (document.querySelector('.title-screen')) return;
       openStatusModal();
       return;
       open = !open;
@@ -1569,6 +1595,11 @@
       }
       el.classList.remove('match');
       if (!data) return;
+      // 标题页只显示「服务器在线总人数」，其它界面仍显示节点概览
+      if (document.querySelector('.title-screen')) {
+        text.innerHTML = '在线 <span class="num">' + sum.humans + '</span> 人';
+        return;
+      }
       text.innerHTML = '<span class="num">' + sum.ready + '/' + sum.total + '</span> · ' + LOAD_TEXT[sum.state] + ' · <span class="num">' + sum.humans + '</span> 人在线';
     };
 
