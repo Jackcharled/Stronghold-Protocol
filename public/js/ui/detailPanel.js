@@ -78,21 +78,30 @@ export const FIELD_WIDE_CELLS = 400;
 export const RANGE_FIT = Object.freeze({ cols: 6, rows: 7 });
 
 /** Inline style of the mini-map (rangeGridBox `box`): its columns, and smaller cells when the grid exceeds RANGE_FIT. */
-// 详情面板立绘：优先使用玩家为该干员选择的皮肤立绘
-function skinArtFor(m, c) {
+// 详情面板立绘：优先使用该干员所属玩家选择的皮肤立绘（观战/队友详情按座位皮肤，本地玩家用自己的）
+function skinArtFor(m, c, skins = null, useLocal = false, forcedSkin = null) {
   try {
     // 皮肤键：干员 id（棋盘上的 id 可能带 _2 之类的后缀，需要还原成基础干员 id）
-    // 直接读 localStorage：账号云同步可能在 skinsStore 初始化之后才写入，store 会是旧的
+    // 详情卡只使用调用方传入的皮肤表；只有明确 useLocal 的调用方（商店等本地展示）才读本机
     const readSkinsMap = () => {
       try { return JSON.parse(localStorage.getItem('sp.pref.skins') || '{}') || {}; } catch { return {}; }
     };
-    const map = readSkinsMap();
+    const own = !!(skins && typeof skins === 'object');
+    const map = own ? skins : (useLocal ? readSkinsMap() : {});
     // 干员对象用 charId 字段；棋子 id 可能带 _2 后缀，两种都试
     const raw = String((c && (c.charId || c.id)) || '');
     const candidates = [String((c && c.charId) || ''), raw, raw.replace(/_\d+$/, '')].filter(Boolean);
+    // 调用方直接给了皮肤 id（场上单位的 skin）：不再依赖 map 的键是否完全一致
+    if (forcedSkin) {
+      for (const cid of candidates) {
+        if (!cid) continue;
+        const row = availableSkins(cid).find((x) => x.id === forcedSkin);
+        if (row && row.portrait) return row.portrait;
+      }
+    }
     for (const cid of candidates) {
       if (!cid) continue;
-      const sid = skinFor(cid) || map[cid];
+      const sid = map[cid];
       if (!sid) continue;
       const row = availableSkins(cid).find((x) => x.id === sid);
       if (row && row.portrait) return row.portrait;
@@ -410,7 +419,7 @@ function skillTextNote(sk) {
   return note ? html`<p class="dhint dhint--rule" data-skill-note=${sk.skillId}><${Icon} name="info" />${t(note)}</p>` : null;
 }
 
-export function ChessDetail({ chess, piece, unit, snapHp, editable, onSell, bonds, offBonds = null, loadout, onBond, live = null, hint = null, unitItems = null, standIn = null, diy = null, cultOpts = null, morphMode = 'official', onUnequip = null }) {
+export function ChessDetail({ chess, piece, unit, snapHp, editable, onSell, bonds, offBonds = null, loadout, onBond, live = null, hint = null, unitItems = null, standIn = null, diy = null, cultOpts = null, morphMode = 'official', onUnequip = null, skins = null, skinId = null }) {
   const m = data.get('assets');
   const hp = hpOf(live, snapHp);
   // 0.2.0 自选编队: `chess` is then the composed 自选 record (the operator, the slot's tier / price); its skill and module are
@@ -449,7 +458,7 @@ export function ChessDetail({ chess, piece, unit, snapHp, editable, onSell, bond
   blocks.head = html`
     <div key="head" class="dhead">
       <div class=${cx('dhead__art', golden && 'is-golden', `dhead__art--t${c.tier}`)}>
-        <${Img} src=${skinArtFor(m, body)} fallback=${html`<${UnitThumb} kind="chess" id=${c.chessId} size="lg" rec=${si} />`} />
+        <${Img} src=${skinArtFor(m, body, skins, false, skinId)} fallback=${html`<${UnitThumb} kind="chess" id=${c.chessId} size="lg" rec=${si} />`} />
       </div>
       <div class="dhead__info">
         <div class="dhead__chips">
@@ -877,7 +886,7 @@ export function selectVoiceKey(detail) {
  *   (the owner's request of 2026-10-08 「添加一下干员点击上去的语气一样的语音」 lifted 2026-10-03's 「整备阶段不需要干员语音」
  *   for this line only; [ASSUMED] the official prep tap says 选中干员 like the battle's FOCUS_CHAR)
  */
-export function DetailPanel({ detail, editable, snapHp, onClose, onSell, onDestroy, bonds = [], offBonds = null, loadout = null, ops = null, onBond = null, side = 'left', shopOpen = false, live = null, voice = false, morphMode = 'official', onUnequip = null, unequipAllowed = false }) {
+export function DetailPanel({ detail, editable, snapHp, onClose, onSell, onDestroy, bonds = [], offBonds = null, loadout = null, ops = null, onBond = null, side = 'left', shopOpen = false, live = null, voice = false, morphMode = 'official', onUnequip = null, unequipAllowed = false, skins = null, skinId = null }) {
   const getter = typeof live === 'function' ? live : null;
   useTicker(detail && getter ? 250 : 0);
   // 选中干员 voice (audio.voice 'select'): once per opened operator — the panel stays mounted while the target changes,
@@ -910,7 +919,7 @@ export function DetailPanel({ detail, editable, snapHp, onClose, onSell, onDestr
     <div class="dpanel__scroll">
       ${detail.type === 'chess' ? html`<${ChessDetail} chess=${detail.chess} piece=${detail.piece} snapHp=${snapHp} editable=${editable} onSell=${sellIt}
         bonds=${bonds} offBonds=${offBonds} loadout=${loadout} onBond=${onBond} live=${liveNow} hint=${detail.hint || null} unitItems=${detail.unitItems || null}
-        standIn=${detail.standIn || null} diy=${detail.diy || null} cultOpts=${detail.cultOpts || { ops }} morphMode=${morphMode} onUnequip=${onUnequip} />` : null}
+        standIn=${detail.standIn || null} diy=${detail.diy || null} cultOpts=${detail.cultOpts || { ops }} morphMode=${morphMode} onUnequip=${onUnequip} skins=${skins} skinId=${skinId} />` : null}
       ${detail.type === 'item' ? html`<${ItemDetail} item=${detail.item} piece=${detail.piece} editable=${editable} onDestroy=${destroyIt} offBonds=${offBonds} morphMode=${morphMode} unequipAllowed=${unequipAllowed} />` : null}
       ${detail.type === 'enemy' ? html`<${EnemyDetail} enemy=${detail.enemy} snapHp=${snapHp} count=${detail.count} live=${liveNow} />` : null}
       ${detail.type === 'token' ? html`<${TokenDetail} token=${detail.token} piece=${detail.piece} ownerId=${detail.ownerId ?? null} snapHp=${snapHp} live=${liveNow} />` : null}

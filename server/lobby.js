@@ -188,6 +188,23 @@ function roomTtlMs() {
   }
   return __roomTtlCache.ms;
 }
+/** 匹配队友最长搜索时间（默认 5 分钟；测试可用 SP_MATCHMAKING_TIMEOUT_MS 缩短）。 */
+const MATCHMAKING_TIMEOUT_MS = Math.max(1000, Number(process.env.SP_MATCHMAKING_TIMEOUT_MS) || 5 * 60 * 1000);
+function currentNodeNumber() {
+  return Number((String(process.env.SP_NODE_DIR || '').match(/node-(\d+)/i) || [])[1])
+    || (Number(process.env.PORT) > 3000 ? Number(process.env.PORT) - 3000 : 0);
+}
+/** 房间开始/解散时把房间从 matchmaker 的整队队列里移除，避免匹配到已开局/已解散的房间。 */
+function notifyPartyLeave(room) {
+  try {
+    const node = currentNodeNumber();
+    if (!node || !room || !room.code) return;
+    fetch('http://127.0.0.1:3090/api/party/leave', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomCode: room.code, node }),
+    }).catch(() => {});
+  } catch { /* 匹配器通知失败不能影响房间创建/解散 */ }
+}
 import { DIFFICULTIES, ERR, MAX_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
 import { checkLoadout, checkLoadoutOps, cultivationCharIds, checkNotOwned, checkDiyPicks, charPotentialChanges, checkSkinSelection, operatorCharIds } from '../shared/protocol.js';
 import { encode, isDroppable, isErrCode, sendRaw, sendSession } from './net.js';
@@ -329,6 +346,10 @@ export class Room {
     /** @type {string | null} per-network limit key of whoever started the running match */
     this.matchKey = null;
     this.createdAt = now;
+    /** 匹配队友进行中：暂停 15 分钟自动解散，并在 5 分钟时按当前人数开局 */
+    this.matchmaking = false;
+    this.matchmakingAt = 0;
+    this.matchmakingStartedAt = 0;
     this.disposed = false;
     /**
      * The content set the room plays (DESIGN §32): `{ cs, vanilla, plugins }` — the server's vanilla set, or with the
@@ -374,7 +395,7 @@ export class Room {
       aiPicksLast: this.aiPicksLast,
       createdAt: this.createdAt,
       serverNow: Date.now(),
-      expiresInMs: Math.max(0, this.createdAt + (this.ttlMs || roomTtlMs()) - Date.now()),
+      expiresInMs: Math.max(0, this.createdAt + (this.ttlMs || roomTtlMs()) - (this.matchmaking ? (Number(this.matchmakingStartedAt) || Date.now()) : Date.now())),
         ttlMs: this.ttlMs || roomTtlMs(),
       inMatch: !!this.match,
       seats: this.seats.map((s) => (s
@@ -650,6 +671,7 @@ export class Lobby {
       case 'room.join': return this.join(session, msg);
       case 'room.leave': return this.leave(session);
       case 'room.ready': return this.ready(session, msg);
+    case 'room.matchmaking': return this.matchmaking(session, msg);
       case 'room.setDifficulty': return this.setDifficulty(session, msg);
       case 'room.setAiPicksLast': return this.setAiPicksLast(session, msg);
       case 'room.addBot': return this.addBot(session);
@@ -795,6 +817,8 @@ export class Lobby {
     session.pendingResult = null;
     this.log.info(`[lobby] ${code} created (${mode}/${difficulty}${room.test ? ', test' : ''}) by ${session.name}`);
     this.broadcastState(room);
+    // 立刻持久化：避免建房后 10 秒内重启丢房间
+    try { this.persistFlush?.('room-create'); } catch { /* ignore */ }
     return OK;
   }
 
@@ -1165,6 +1189,35 @@ export class Lobby {
     return OK;
   }
 
+  /** 房主进入/退出「匹配队友」：匹配期间暂停 15 分钟解散计时。 */
+  matchmaking(session, msg) {
+    const room = this.roomOf(session);
+    if (!room) return fail(ERR.NOT_IN_ROOM);
+    if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
+    if (room.match) return fail(ERR.ROOM_STARTED);
+    const on = !!(msg && msg.on);
+    if (on === room.matchmaking) return OK;
+    const now = this.now ? this.now() : Date.now();
+    if (on) {
+      room.matchmaking = true;
+      room.matchmakingAt = now;
+      room.matchmakingStartedAt = now;
+      this.log?.info?.(`[lobby] ${room.code} 开始匹配队友，暂停解散计时`);
+    } else {
+      const started = Number(room.matchmakingStartedAt) || now;
+      room.matchmaking = false;
+      room.matchmakingAt = 0;
+      room.matchmakingStartedAt = 0;
+      // 暂停计时：把匹配期间的时间补回房间寿命，剩余时间不被消耗
+      const elapsed = Math.max(0, now - started);
+      room.createdAt = (Number(room.createdAt) || now) + elapsed;
+      if (room.lastMatchEndAt) room.lastMatchEndAt = Number(room.lastMatchEndAt) + elapsed;
+      this.log?.info?.(`[lobby] ${room.code} 取消匹配，恢复解散计时（暂停 ${Math.round(elapsed / 1000)}s）`);
+    }
+    this.broadcastState(room);
+    return OK;
+  }
+
   start(session) {
     const room = this.roomOf(session);
     if (!room) return fail(ERR.NOT_IN_ROOM);
@@ -1406,6 +1459,12 @@ export class Lobby {
 
   /** @param {Room} room @param {string | null} [key] per-network limit key of the starter */
   startMatch(room, key = null) {
+    if (room.matchmaking) {
+      room.matchmaking = false;
+      room.matchmakingAt = 0;
+      room.matchmakingStartedAt = 0;
+      notifyPartyLeave(room);
+    }
     if (room.test && !this.testEnabled) return fail(ERR.TEST_DISABLED);
     const host = room.seatOf(room.hostId);
     if (host) host.ready = true;
@@ -1480,6 +1539,8 @@ export class Lobby {
       this.log.info(`[lobby] ${room.code} match #${room.matchCount} starting (${room.mode}/${room.difficulty}, ${seats.length} seats, seed ${seed}${room.test ? ', test' : ''}${modded ? `, content ${room.content.cs.slice(0, 8)}${match.hosted ? ' in its match host' : ''}` : ''})`);
       this.broadcastState(room);
       match.start();
+      // 开局立刻持久化：避免「刚开局就重启」丢房间/对局检查点
+      try { this.persistFlush?.('match-start'); } catch { /* ignore */ }
     } catch (e) {
       this.log.error(`[lobby] ${room.code} match failed to start`, e);
       if (room.matchCtx === ctx) { room.match = null; room.matchCtx = null; room.matchKey = null; }
@@ -1870,6 +1931,12 @@ export class Lobby {
    */
   disposeRoom(room, reason) {
     if (room.disposed) return;
+    if (room.matchmaking) {
+      room.matchmaking = false;
+      room.matchmakingAt = 0;
+      room.matchmakingStartedAt = 0;
+      notifyPartyLeave(room);
+    }
     room.disposed = true;
     if (this.rooms.get(room.code) === room) { this.trustedRuntime?.event('roomClosed',{room:room.toState()}); this.rooms.delete(room.code); }
     const ctx = room.matchCtx;
@@ -1973,6 +2040,14 @@ Lobby.prototype.sweepOldRooms = function () {
     const now = this.now ? this.now() : Date.now();
     for (const room of [...this.rooms.values()]) {
       if (!room || room.match) continue;
+      // 正在匹配队友：暂停 15 分钟解散；超过 5 分钟按当前人数直接开局
+      if (room.matchmaking) {
+        const started = Number(room.matchmakingAt) || now;
+        if (now - started >= MATCHMAKING_TIMEOUT_MS) {
+          try { this.forceStartMatchmaking(room); } catch { /* ignore */ }
+        }
+        continue;
+      }
       const createdAt = Number(room.createdAt) || now;
       const base = Math.max(createdAt, Number(room.lastMatchEndAt) || 0);
       if (now - base < (room.ttlMs || roomTtlMs())) continue;
@@ -1982,6 +2057,27 @@ Lobby.prototype.sweepOldRooms = function () {
   } catch { /* ignore */ }
 };
 
+
+/** 匹配队友 5 分钟没凑满：按房间里当前人数直接开局，并通知匹配器移出队列。 */
+Lobby.prototype.forceStartMatchmaking = function (room) {
+  if (!room || room.match) return;
+  const humans = room.activeHumans();
+  if (!humans.length || !humans.some((s) => s.connected)) { this.disposeRoom(room, 'empty'); return; }
+  // 超时开局视为全员就绪（不再等人点准备）
+  for (const s of humans) {
+    s.ready = true;
+    if (room.modded) s.content = 'ready';
+  }
+  room.matchmaking = false;
+  room.matchmakingAt = 0;
+  room.matchmakingStartedAt = 0;
+  notifyPartyLeave(room);
+  const host = room.seatOf(room.hostId);
+  const hostSession = host && this.registry && this.registry.byId ? this.registry.byId(host.playerId) : null;
+  const key = hostSession ? hostSession.limitKey : null;
+  this.log?.info?.(`[lobby] ${room.code} 匹配超时，按当前 ${humans.length} 人开局`);
+  try { this.startMatch(room, key); } catch (e) { this.log?.warn?.('[lobby] 匹配超时开局失败 ' + (e && e.message)); }
+};
 
 /** 消极游戏：按玩家 id 踢出房间。 */
 Lobby.prototype.kickById = function (room, playerId) {

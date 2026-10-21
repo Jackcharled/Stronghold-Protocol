@@ -1661,6 +1661,52 @@ function MatchScreen() {
   // teammate's — m.public + live layers), your own piece's yours, a popup member card the popup's player; shop / reward
   // cards read the strip's (ui/watchBonds.js detailBondOwner)
   const detailOwner = detailBondOwner(detailTarget, { pub, myId, stripOwnerId: strip.ownerId });
+  // 详情立绘用「该干员所属玩家」的皮肤（观战/队友）；自己的干员用本机设置，
+  // 别人的干员没设皮肤时传 {}（默认立绘），绝不回退到查看者自己的皮肤
+  const detailSkins = (() => {
+    const unit = detailTarget && detailTarget.kind === 'unit' ? detailTarget.unit : null;
+    const unitOwner = unit?.ownerId;
+    const cid = resolved?.chess?.charId || resolved?.chess?.chessId || resolved?.chess?.id || unit?.charId || unit?.defId;
+    const unitSkin = unit?.skin;
+    const otherField = !!watchingOther || (!!field?.fieldId && field.fieldId !== ownFieldId(myId));
+    const map = {};
+    // 归属：单位 owner 优先；没有时用查看对象的战场归属；自己战场上的自己才用自己
+    let owner = null;
+    if (unitOwner && unitOwner !== myId) owner = unitOwner;
+    else if (unitOwner === myId && !otherField) owner = myId;
+    else if (!unitOwner) {
+      const stripOwner = strip && strip.ownerId && strip.ownerId !== myId ? strip.ownerId : null;
+      owner = stripOwner || (otherField ? null : myId);
+    }
+    if (owner) {
+      // 明确是别人的卡片（foreign / owner 非自己）时，绝不能把 owner 当成本地玩家
+      const foreignCard = !!(detailTarget && (detailTarget.foreign || (detailTarget.owner && detailTarget.owner !== myId)));
+      if (foreignCard && owner === myId) owner = null;
+    }
+    if (owner) {
+      const p = Array.isArray(pub?.players) ? pub.players.find((x) => x && x.playerId === owner) : null;
+      if (p && p.skins && typeof p.skins === 'object') Object.assign(map, p.skins);
+    }
+    // 只有确定是自己的干员（自己战场、owner 是自己）才合并本机皮肤
+    if (owner === myId && !otherField) {
+      try { Object.assign(map, JSON.parse(localStorage.getItem('sp.pref.skins') || '{}') || {}); } catch { /* ignore */ }
+    }
+    if (unitSkin && cid) map[cid] = unitSkin;
+    // 始终返回对象：详情卡不会再回落到查看者本机的 sp.pref.skins
+    return map;
+  })();
+  // 详情立绘的精确皮肤 id：场上单位的 skin 最准；否则取对应玩家皮肤表里该干员的条目
+  const detailSkinId = (() => {
+    const unit = detailTarget && detailTarget.kind === 'unit' ? detailTarget.unit : null;
+    if (unit && unit.skin) return unit.skin;
+    const cid = resolved?.chess?.charId || resolved?.chess?.chessId || resolved?.chess?.id || unit?.charId || unit?.defId;
+    if (detailOwner && detailOwner !== myId) {
+      const p = Array.isArray(pub?.players) ? pub.players.find((x) => x && x.playerId === detailOwner) : null;
+      const sid = p && p.skins && cid ? p.skins[cid] : null;
+      if (sid) return sid;
+    }
+    return null;
+  })();
   const detailBonds = detailOwner === strip.ownerId ? stripBonds : playerBonds({ pub, priv, myId, ownerId: detailOwner, live: liveLayers });
   // bonds this mode never activates (标准: 10 of 23, 奥术 among them) — shown 本局禁用 on cards, chips and the popup
   const offBonds = modeOffBonds(getMode(pub?.modeId));
@@ -1765,7 +1811,7 @@ function MatchScreen() {
 
       ${resolved ? html`<${DetailPanel} detail=${resolved} snapHp=${snapHp} onClose=${() => { setDetail(null); setSel(null); }}
         bonds=${detailBonds} offBonds=${offBonds} loadout=${detailLoadout} ops=${priv?.ops ?? null} side=${dSide} shopOpen=${shopOpen} live=${liveStats} voice=${true}
-        morphMode=${morphMode} unequipAllowed=${unequipAllow}
+        morphMode=${morphMode} unequipAllowed=${unequipAllow} skins=${detailSkins} skinId=${detailSkinId}
         onUnequip=${editable && unequipAllow ? (itemUid) => actions.unequip(itemUid) : null}
         onBond=${(id) => openBond(id, detailOwner, 'detail')} />` : null}
 

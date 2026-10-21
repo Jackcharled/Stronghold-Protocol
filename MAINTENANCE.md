@@ -1,114 +1,270 @@
-# 分支维护记录
+# 卫戍协议 · 运维维护手册（2026-10-20）
 
-> 本文件记录本分支相对上游所新增或修改的功能，供玩家与协作者查阅。
-
-## 一、房间与对局规则
-
-1. **跨节点邀请**：各节点定时向匹配服务上报自己的房间码，玩家用四位同盟密钥或邀请链接即可加入，无需知道房间在哪台机器上。
-2. **房间倒计时**：房间创建后 **15 分钟未开始对局自动解散**；界面上以「MM:SS 后同盟将自动销毁」提示，位置在同盟密钥面板左侧、与密钥字母块同高。
-3. **重启恢复**：服务端重启后，30 分钟内回到游戏会自动回到原同盟房间，并出现「返回同盟」提示；超时则回到大厅。
-4. **消极游戏判定**：仅前 4 回合生效——连续 2 个回合「有购买/刷新/升级但零部署」会被移出房间并提示；任意一回合有部署即清零计数。
-5. **挂机踢人**：默认关闭，避免误伤正在思考或临时离开的玩家。
-6. **AI 队友**：保留原版能力，支持添加 AI 补位与「AI 队友最后选择」。
-
-## 二、客户端界面
-
-> 全部通过注入脚本 `/mm/client.js` 实现，不修改游戏本体文件，上游更新时不会丢失。
-> 源码见本仓库 [`mm/client.js`](mm/client.js)，部署说明见 [`mm/README.md`](mm/README.md)。
-
-1. **节点状态角标**：延迟右侧显示「30/30 · 正常 · N 人在线」，点击展开节点状态列表；标题页固定在左上角，其余界面与延迟同一行显示。
-2. **临时公告**：后台发送后，玩家端在画面上方以滚动条显示（时间点自动高亮），滚动两遍后整条消失；同一版本只推一次，刷新不重复出现。
-3. **更新公告**：读取 `content/update.md`（版本号 + 更新条目），玩家每个版本弹一次「本次更新」提示。
-4. **同盟密钥倒计时**：见「房间与对局规则」第 2 条。
-5. **匹配队友按钮**：同盟房间内单独显示入口，仅房主可点击。
-6. **按钮与布局修复**：「停止搜寻」文字居中、左上角延迟与按钮同行、节点面板定位偏移等问题。
-7. **界面精简**：移除登录/注册入口、账号面板与退出按钮，游客直接进入游戏。
-
-## 三、维护约定
-
-1. 上游更新时优先合并 `public/` 与 `shared/`，避免直接覆盖本分支改过的服务端逻辑。
-2. 所有界面定制集中在注入脚本 `mm/client.js` 里，便于跟随上游升级；对局规则改动集中在服务端，两者互不干扰。
-3. 改动前先备份代码与配置；切换前保留旧版本，可随时回退。
-
-## 四、更新记录
-
-### 2026-10-19
-
-1. **修复匹配成功后卡在「正在进入模拟…」**：房主自动建房失败不再静默（重试 3 → 6 次并输出错误），匹配成功界面停留 12 秒后自动出现「返回房间」按钮。
-2. **有 AI 队友时禁止匹配**：房间内存在 AI 队友时「匹配队友」按钮置灰并提示先移除；已在队列中的房间会退出排队。
-3. **修复注入脚本被静态资源规则拦截**：反向代理需让 `/mm/` 优先于静态资源正则，`/mm/client.js` 使用 `Cache-Control: no-store`。
-4. **在线人数统计修正**：`humans` 改为 `sessions → sockets → humans` 依次回退，大厅与标题页玩家也能计入在线。
-5. **更新公告改为文件读取**：由 `content/update.md` 提供（第一行版本号，其余为正文），后台编辑即写入该文件。
+> 新会话接手必读。本文件覆盖：整体架构、30 节点、管理后台、数据库、控制台、日常运维、故障排查。
+> 配套文档：`docs/HANDOFF-2026-10-20.md`（开发交接）、`docs/GITHUB-RULES.md`（上传规则）。
 
 ---
 
+## 一、整体架构
 
+```
+玩家浏览器
+   │  HTTPS
+   ▼
+nginx 1.31.7（D:\Stronghold-Protocol\nginx，443）
+   ├── /              → 游戏静态页 + 注入脚本（/mm/client.js、/mm/account-title.js）
+   ├── /js/**         → 按 sp_route cookie 路由到 node-1..30（首次访问随机分配）
+   ├── /assets/**     → 已改为外部素材服务器（assets.luobomiao.love）
+   ├── /mm/**         → matchmaker 127.0.0.1:3090（账号、同步、后台、公告、日志）
+   ├── /mm/admin.html → 管理后台（需游戏登录态 + 邮箱验证码）
+   └── /ws            → 按 sp_route cookie 转发到 30 个游戏节点之一
+                          │
+                          ▼
+              node-1 … node-30（端口 3001–3030）
+              每个节点：房间、对局、WS、持久化
+                          ▲
+                          │ 注册/负载/分配
+                    matchmaker 3090
+                          ▲
+                          │ 读状态、重启
+                    dashboard 3080（运维控制台）
+```
 
-### 2026-10-20
+### 核心进程（PM2）
 
-1. **项目目录改为纯英文**：`D:\卫戍协议` → `D:\Stronghold-Protocol`，同时把节点内部 219 个目录联接（`data` / `node_modules`）重建到新路径；nginx、守护、证书续期、计划任务、开机自启全部改用英文路径，不再需要 `D:\sp-*` 共享目录。
-2. **nginx 重建并升级到 1.31.7**：配置包含 30 节点反代、`/mm/` 注入、HTTP→HTTPS、ACME 校验；补回 `sub_filter` 注入 `/mm/client.js`（缺失时全部界面定制会消失）。
-3. **PM2 统一由 `ecosystem.config.cjs` 管理**：`BASE` 指向新目录，30 个节点带 `PORT` / `SP_NODE_DIR` / `SP_REDIS_URL` / `SP_REDIS_PREFIX`。
-4. **持久化修复**：此前 30 个节点共用同一 Redis 前缀，空的节点会把有房间的存档覆盖成 0 条；现每个节点使用独立前缀 `sp:n<N>:`。
-5. **房间存档补齐 `createdAt` / `ttlMs`**：服务器重启后倒计时继续，不再重置回满值。
-6. **同盟解散时间后台可配置**：`shared/data/room-ttl.json`（分钟），后台「同盟解散时间」保存后 5 秒内生效；**只影响之后新建的房间**，已有房间沿用创建时的时长。
-7. **加入房间不重置计时**：始终从房间创建时刻计算，仅对局结束会重置起点。
-8. **皮肤系统**：为干员补齐 269 套时装（专属立绘 + 战斗 Spine）与 171 条精二立绘；皮肤列表顺序为「默认 → 精英二 → 时装」，名称只保留官方名。
+| 进程名 | 端口 | 作用 |
+|---|---|---|
+| `matchmaker` | 3090 | 账号、云端存档、管理后台 API、公告、匹配服务、节点状态聚合 |
+| `dashboard` | 3080 | 运维控制台（节点卡片、指标趋势、公告板、建房开关、房间时长） |
+| `node-1` … `node-30` | 3001–3030 | 游戏节点：WS、房间、对局、持久化 |
 
-_本地部署补丁，不含备案号相关内容。_
+启动方式：`pm2 start ecosystem.config.cjs`；保存：`pm2 save`。
 
+---
 
-### 服务端改动明细（2026-10-20）
+## 二、30 个节点
 
-**房间生命周期**（`node-*/server/lobby.js`）
+| 项目 | 说明 |
+|---|---|
+| 数量 | 30，PM2 名 `node-N` |
+| 端口 | `3000 + N`（node-1=3001 … node-30=3030） |
+| 目录 | `D:\Stronghold-Protocol\node-N`（`node-1` 是基线，其余内容一致） |
+| 健康检查 | `GET http://127.0.0.1:300N/healthz` → `{ sockets, sessions, rooms, matches, humans, bots, spectators }` |
+| 持久化 | 每个节点用独立 Redis 前缀 `sp:n<N>:` 保存房间/会话/对局检查点，每 10 秒一次；建房（`room.create`）与开局（`startMatch`）时立即 flush 一次，重启后恢复（日志 `[persist] restored N session(s), M room(s)`） |
+| 检查点 | 每 10 秒 |
+| 单节点容量 | 房间上限与每 IP 限制写在 `server/http/config.js` 的 `LOBBY_OPTION_KEYS` |
+| 节点分配 | 匹配服务按负载选择节点；客户端通过 `sp_route` cookie 固定上游，`sp_node` 供前端读取（pin 时两个 cookie 一起写） |
+| 重启影响 | 该节点上玩家掉线 1~2 秒自动重连，房间与对局由持久化恢复 |
 
-- 新增 `roomTtlMs()`：每 5 秒读取一次 `shared/data/room-ttl.json` 的 `minutes`（1~1440，缺省 15），配置改动无需重启节点。
-- `create()` 里执行 `room.ttlMs = roomTtlMs()`：解散时长在**建房时冻结**，之后改配置只影响新房间。
-- `toState()` 下发 `serverNow`、`expiresInMs`、`ttlMs`：客户端据此校正时钟差并按房间自身时长倒计时。
-- `sweepOldRooms()` 改用 `room.ttlMs` 判断到期；对局中的房间照旧跳过。
-- `join()` **不再**重置 `createdAt`：加入已有房间沿用创建时刻的剩余时间。
-- 对局结束（`onMatchEnd`）仍重置 `createdAt`，给玩家回房再开一局的时间。
+### 节点常用命令
 
-**断点存档**（`node-*/server/persist/lobbyState.js`）
+```powershell
+pm2 list                          # 全部进程状态
+pm2 logs node-1 --lines 50        # 看某节点日志
+pm2 restart node-7 --update-env   # 重启单个节点
+pm2 restart node-1; 1..30 | % { pm2 restart "node-$_" }   # 全量（慎用）
+curl http://127.0.0.1:3007/healthz
+```
 
-- `roomDoc()` 增加 `createdAt`、`lastMatchEndedAt`、`ttlMs` 三个字段。
-- 恢复时优先使用存档里的 `createdAt` / `ttlMs`，缺失才回退到当前时间与全局配置；服务器重启后倒计时连续，不再重置回满值。
+### 节点配置项（环境变量）
 
-**PM2 编排**（`ecosystem.config.cjs`）
+| 变量 | 作用 |
+|---|---|
+| `SP_NODE_DIR` | 节点目录（用于识别 node-N） |
+| `PORT` | 监听端口 |
+| `SP_MAX_BOTS_PER_ADDR` | 单 IP 最多 AI 数 |
+| `SP_IDLE_KICK_MS` | **已废弃**（挂机踢人已从代码移除，设置无效） |
 
-- `BASE` 指向 `D:\Stronghold-Protocol`。
-- 每个节点新增 `SP_REDIS_PREFIX=`sp:n<N>:``：此前 30 个节点共用 `sp:` 前缀，空大厅会覆盖有房间的存档（表现为重启后 `restored 0 room(s)`）。
+---
 
-**接口**
+## 三、管理后台
 
-- `matchmaker/server.js`：新增 `GET /mm/api/room-ttl` → `{ minutes }`，供客户端显示使用。
-- `dashboard/server.js`：新增 `GET/POST /api/room-ttl`，后台写 `shared/data/room-ttl.json`，保存即生效。
-- 后台页面新增「同盟解散时间」区块（1~1440 分钟输入 + 保存）。
+**入口**：大厅「公告」左侧的「管理后台」按钮（仅管理员可见），或直接访问 `https://stronghold.luobomiao.love/mm/admin.html`。
 
-**反向代理与守护**（与目录迁移配套）
+**登录流程**
 
-- `nginx/conf/nginx.conf`：30 节点反代、`/mm/` 注入、HTTP→HTTPS、ACME 校验，路径全部改为新目录；补回 `sub_filter '</body>' '<script src="/mm/client.js">'`。
-- `guard/nginx-autoban.ps1`：日志、状态、心跳路径改为 `D:\Stronghold-Protocol\...`。
-- 计划任务 `SP-Nginx`、`SP-Nginx-AutoBan`、`SP-LetsEncrypt-Renew` 与开机自启脚本同步改用英文路径。
+```
+1. 必须先在游戏里登录管理员账号（Cookie sp_sid 有效）
+2. 打开后台 → 显示当前账号
+3. 点「获取验证码」→ 发到该账号绑定邮箱（10 分钟有效）
+4. 输入 6 位码 → 「进入后台」
+5. 后台会话绑定 sp_sid，刷新/换浏览器需重新验证
+```
 
-> 以上为本地部署改动，仓库只保留注入脚本与本文档，不含服务端源码与美术资源。
+**权限等级**
 
+| 角色 | 等级 | 能力 |
+|---|---|---|
+| `player` | 0 | 无后台权限 |
+| `admin` | 2 | 查看账号、封禁/解封、重置密码、改昵称、看详情、看审计（只读） |
+| `owner` | 3 | 全部权限：改权限、删除/恢复账号、节点状态与重启、服务器设置、数据占用、审计导出 |
 
-### 补丁快照规范（重要）
+规则：只能操作**严格低于**自己的账号；不能把自己的等级授出。
 
-刷新 `deploy/server-patches/` 时，必须先把「仅本地保留」的页脚代码剔除，不能进入快照或仓库：
+**页签与功能**
 
-1. 复制 `matchmaker/public/client.js` 之前，删除页脚备案号代码段（页脚备案号组件及其样式）；
-2. 扫描确认命中数为 0：
+| 页签 | 功能 |
+|---|---|
+| 玩家账号 | 搜索（邮箱/昵称/代码）、封禁、改名、重置密码、删除、详情 |
+| 已删除账号 | 软删除列表，owner 可恢复 |
+| 审计日志 | 搜索、动作筛选、导出 CSV（最多 500 条） |
+| 节点状态 | 30 节点在线/人数/对局、AI 队友总数、指标趋势图、单节点重启 |
+| 数据占用 | 账号云端数据大小排行（Top 20） |
+| 服务器设置 | 公告板、创建房间开关（含独立模拟）、房间解散时长、建房状态提示 |
 
-   ```powershell
-   Get-ChildItem deploy\server-patches -Recurse -File | Select-String '页脚标识关键字'
-   ```
+**账号详情**包含：注册时间、最后登录、云端域数量与大小、活跃会话数、最近 10 条审计。
 
-3. 推送仓库的 `mm/client.js` 使用同一份剥离版；
-4. 文档、快照、提交信息中不得出现备案号数字与相关域名；
-5. 可用 `node deploy/_sanitize-patch-client.cjs` 生成剥离版，输出 `stripped still bad: false` 即通过。
+---
 
-> 目的：本地运行时保留页脚，对外产物（快照 / GitHub）一律不含该内容。
+## 四、数据库（MySQL 8）
 
-_最后更新：2026-10-20_
+库名 `stronghold`。应用账号 `sp_app`（非 root，仅有 `stronghold.*` 的增删改查/建表权限）；连接参数由 `matchmaker/account.cjs` 读取 `.secrets/secrets.json` 的 `dbHost` / `dbPort` / `dbUser` / `dbPassword` / `dbName`。root 口令只存在于 `dbRootPassword` 与 `.secrets/mysql-root.txt`（备份脚本用）。
+
+| 表 | 当前行数 | 作用 |
+|---|---|---|
+| `accounts` | 15 | 账号：邮箱、昵称、四位代码、密码 hash、角色、封禁、软删除时间 |
+| `user_sessions` | 139 | 游戏登录会话（`sp_sid`），30 天有效 |
+| `user_prefs` | 16 | 云端存档，按 `(user_id, domain)` 唯一，`payload` + `version` |
+| `admin_sessions` | 17 | 后台会话，`token` + 绑定 `sid` |
+| `admin_codes` | 0 | 后台邮箱验证码（一次性，10 分钟） |
+| `email_codes` | 1 | 注册邮箱验证码 |
+| `reset_codes` | 0 | 忘记密码验证码 |
+| `admin_audit` | 22 | 审计日志：操作人、动作、目标、详情、IP、时间 |
+| `admin_devices` | 1 | 管理员新设备记录（用于新设备提醒） |
+| `admin_users` | 2 | 历史遗留表（当前权限以 `accounts.role` 为准） |
+
+### 常用 SQL
+
+```sql
+-- 某账号云端数据
+SELECT domain, version, LENGTH(payload) FROM user_prefs WHERE user_id = ?;
+
+-- 最近审计
+SELECT actor_email, action, target_id, detail, ip, at
+FROM admin_audit ORDER BY id DESC LIMIT 20;
+
+-- 清理过期会话
+DELETE FROM user_sessions WHERE expires_at < NOW();
+
+-- 软删除恢复
+UPDATE accounts SET deleted_at = NULL WHERE id = ?;
+```
+
+### 备份
+
+- 计划任务 `SP-DB-Backup`，每天 **04:00**，保留 **14 天**；
+- 脚本：`backups/backup-stronghold.ps1`；
+- 恢复：解压对应日期 SQL 后 `mysql stronghold < backup.sql`（操作前先停写：停 matchmaker）。
+
+---
+
+## 五、控制台（dashboard :3080）
+
+| 功能 | 说明 |
+|---|---|
+| 节点卡片 | 30 个节点在线/离线、人数、对局、内存、重启/停止/启动 |
+| 汇总指标 | 在线节点、玩家、房间、AI 队友、内存、匹配服务状态 |
+| 指标趋势 | 玩家 / AI / 房间 三条点线图，30 秒采样，保留 24 小时，鼠标悬停看具体时刻 |
+| 公告板 | 标题、临时公告、公告列表（写入 `content/`） |
+| 建房开关 | 关闭后**包含独立模拟**在内都无法新建房间，5 秒内生效 |
+| 房间解散时长 | 1~1440 分钟，写入 `shared/data/room-ttl.json` |
+| 日志 | 查看 matchmaker/节点最近日志 |
+
+与管理后台的关系：后台的「服务器设置」是**代理** 3080 的同一套接口（仅 owner）。
+
+---
+
+## 六、日常运维手册
+
+### 改代码后怎么生效
+
+| 改动位置 | 生效方式 |
+|---|---|
+| `matchmaker/public/*.js`、`node-*/public/js/*`、`mm-mobile.css` | 静态文件，**刷新即可** |
+| `matchmaker/account.cjs`、`matchmaker/server.js` | `pm2 restart matchmaker` |
+| `node-*/server/*.js` | `pm2 restart node-1 … node-30` |
+| `nginx/conf/nginx.conf` | `nginx -t` → `nginx -s reload`（平滑） |
+| `shared/data/*.json` | 多数 5 秒内自动重读；房间时长/建房开关无需重启 |
+
+### 发布流程
+
+```powershell
+# 1. 备份
+.\backups\backup-stronghold.ps1
+
+# 2. 改代码 + 语法检查
+node --check matchmaker\account.cjs
+node --check node-1\server\lobby.js
+
+# 3. 重启对应进程
+pm2 restart matchmaker --update-env
+
+# 4. 验证
+curl -o NUL -s -w "%{http_code}" http://127.0.0.1:3090/api/health
+curl -o NUL -s -w "%{http_code}" http://127.0.0.1:3080/
+# 站点（本机解析）
+curl --resolve stronghold.luobomiao.love:443:127.0.0.1 -o NUL -s -w "%{http_code}" https://stronghold.luobomiao.love/
+```
+
+### 常见维护动作
+
+| 需求 | 操作 |
+|---|---|
+| 暂停建房（维护） | 后台 → 服务器设置 → 取消「允许创建房间」 |
+| 踢掉某玩家 | 房间内房主踢人；或封禁账号 |
+| 重置玩家密码 | 后台 → 玩家账号 → 重置密码（玩家也可自助找回） |
+| 解除误封 | 后台 → 封禁按钮切换 |
+| 恢复误删账号 | 后台 → 已删除账号 → 恢复 |
+| 修改玩家昵称 | 后台 → 改名（1~7 字，代码不变） |
+| 查看某人是否在线 | 控制台节点卡片或后台账号详情（活跃会话数） |
+| 关闭匹配 | 停 matchmaker 会影响账号与后台，**不要随便停**；应通过公告引导 |
+
+---
+
+## 七、故障排查速查
+
+| 现象 | 先查什么 | 处理 |
+|---|---|---|
+| 站点 502 | `pm2 list` 节点是否全在线；nginx 是否启动 | 启动节点/nginx；`pm2 start ecosystem.config.cjs` |
+| 建房弹「服务器内部错误」 | `pm2 logs node-N --err` 看异常方法名 | 补回被误删的方法/初始化，重启该节点 |
+| 全员卡「匹配成功」 | 浏览器控制台 `[mm-debug]`；`/mm/api/party/state` 返回 | 见 HANDOFF 第四节（转场补偿） |
+| 图片/立绘全空 | `/assets/~hash/...` 是否 200；素材机是否可访问 | 检查 nginx rewrite 与素材服务器 |
+| 云端数据「丢失」 | `SELECT version,LENGTH(payload) FROM user_prefs` | 若被空数据覆盖：本地 localStorage 恢复或备份还原；已有 `mass_removal_guard` 防护；`/api/prefs/merge` 路由与「云端空、本地有」回填已修 |
+| 换设备/清缓存后调配、皮肤空白 | 本地是否还有 `sp.pref.loadout` / `sp.pref.skins` | 打开站点登录后会自动回填云端（2026-10-20 已修 merge 路由） |
+| 节点重启后房间没恢复 | 是否在 2026-10-20 之前的节点代码上 | 已加建房/开局立即 flush（`lobby.persistFlush`）；若仍丢失，查 `SP_REDIS_PREFIX` 与 `[persist]` 日志 |
+| 后台收不到验证码 | 邮箱授权码是否过期；`admin_codes` 是否有行 | 更新 `.secrets`、重启 matchmaker；检查 IP 限流 |
+| 玩家刷新回旧房间 | 会话残留 `roomCode` | 已修：`onHello` 校验座位，无座位则清空 |
+| 登录 500 | matchmaker 日志 `Max call stack`（ipOf 递归）等 | 修复后重启 matchmaker |
+| 节点启动崩溃 `xxx is not a function` | 近期是否批量删过代码 | 从 `deploy/server-patches` 基线恢复该方法 |
+
+---
+
+## 八、关键文件索引
+
+| 文件 | 作用 |
+|---|---|
+| `matchmaker/account.cjs` | 账号、会话、云端存档、管理后台接口、邮件 |
+| `matchmaker/server.js` | 匹配服务、节点状态、房间目录、代理后台设置 |
+| `matchmaker/public/admin.html` | 管理后台前端（**不上传 GitHub**） |
+| `matchmaker/public/account-title.js` | 标题页登录/注册 UI、云同步、代号显示 |
+| `matchmaker/public/client.js` | 公告、管理入口、匹配 UI、自动建房流程 |
+| `matchmaker/public/mm-mobile.css` | 标题页响应式样式 |
+| `node-N/server/lobby.js` | 房间、房主迁移、消极判定、过期解散 |
+| `node-N/server/net.js` | WS 握手、hello、tag 同步 |
+| `node-N/server/match/*` | 对局逻辑、快照、结算 |
+| `node-N/public/js/*` | 前端：大厅、房间、对局、皮肤、商店 |
+| `node-N/public/js/boot.js` | 启动诊断 + 脚本加载自动重试 |
+| `nginx/conf/nginx.conf` | 反代、注入、缓存、HTTP/2 |
+| `ecosystem.config.cjs` | PM2 30 节点配置 |
+| `.secrets/secrets.json` | 数据库密码、邮箱授权码（**绝不外传**） |
+
+---
+
+## 九、安全与红线
+
+1. `.secrets/`、`admin.html`、`account.cjs` 不上传 GitHub（见 `GITHUB-RULES.md`）；
+2. 代码与文档不写明文密码；
+3. 管理后台必须走邮箱二次验证，不要绕过；
+4. 审计日志只追加不修改；
+5. 重启节点前先在控制台确认在线人数，避免影响对局；
+6. 改 `lobby.js` 前先备份（历史上批量删除曾误伤 5 处）。

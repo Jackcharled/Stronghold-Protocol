@@ -24,6 +24,26 @@
   const AUTO_START = q.get('mm') === '1';
   // 只有带 &n=<节点> 的完整邀请链接才自动加入；只贴房号的链接不生效
   const ROOM_PINNED = !!(q.get('room') && Number(q.get('n')) > 0);
+const SPECTATE = q.get('spectate') === '1';
+// 跨节点加入/观战：不把房间码写进地址栏，暂存在本标签页的 sessionStorage，跳转根路径后自动加入
+const PENDING_JOIN = (() => {
+  try {
+    const raw = sessionStorage.getItem('mm.pendingRoom');
+    if (!raw) return null;
+    sessionStorage.removeItem('mm.pendingRoom');
+    const p = JSON.parse(raw);
+    return p && typeof p.code === 'string' ? { code: p.code, spectate: !!p.spectate } : null;
+  } catch { return null; }
+})();
+// 邀请短链 /r/CODE：nginx 已把页面路由到正确节点，并用 sp_join cookie 传房号（地址栏只有 /r/CODE）
+const JOIN_COOKIE = (() => {
+  try {
+    const m = document.cookie.match(/(?:^|;\s*)sp_join=([A-Za-z0-9]{4,6})/);
+    if (!m) return null;
+    document.cookie = 'sp_join=; Path=/; Max-Age=0; SameSite=Lax';
+    return m[1].toUpperCase();
+  } catch { return null; }
+})();
 
   // 每个标签页一个稳定 id：刷新后仍然是「同一个客户端」，避免丢领队身份
   const CLIENT_ID = (() => {
@@ -41,6 +61,11 @@
   const nodeOf = () => {
     const m = document.cookie.match(/(?:^|;\s*)sp_node=(\d+)/);
     return m ? Number(m[1]) : 1;
+  };
+  // 切节点：sp_node 给 nodeOf() 读，sp_route 给 nginx 选上游，两者必须一致
+  const setNodeCookie = (node) => {
+    document.cookie = `sp_node=${node}; path=/; max-age=86400; SameSite=Lax`;
+    document.cookie = `sp_route=${node}; path=/; max-age=86400; SameSite=Lax`;
   };
   const seatsOf = (room) => (room && Array.isArray(room.seats) ? room.seats.filter(Boolean).length : 0);
 
@@ -68,7 +93,7 @@
     try {
       const u = new URL(location.href);
       const keepName = !(window.__SP__ && window.__SP__.store && window.__SP__.store.get().session.entered);
-      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'pmid', 'pcid', 'pd', 'mm'].forEach((k) => {
+      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'pmid', 'pcid', 'pd', 'mm', 'spectate'].forEach((k) => {
         if (k === 'name' && keepName) return;   // 还没进入大厅前保留名字，进房后再清
         u.searchParams.delete(k);
       });
@@ -120,7 +145,8 @@
       }
     } catch { /* ignore */ }
     const { store, net } = sp;
-    installInviteCopy();
+    // 复制链接按钮交给房间页自己处理（保持按钮尺寸/文案不变，由它弹出「已复制邀请链接」提示）
+
     installOverlayStyle();
 
     if (PIN_NODE && nodeOf() !== PIN_NODE) {
@@ -139,14 +165,18 @@
     if (IS_HOST && PMID && PCID) { partyHostFlow(sp); roomUi(sp); }
     else {
       if (IS_HOST && MID && TICKET && SECRET && DIFF) hostFlow(sp);
-      else if (ROOM && ROOM_PINNED) joinFlow(sp, ROOM);
-      else if (ROOM) resolveRoomNode(ROOM, () => joinFlow(sp, ROOM));
+      else if (JOIN_COOKIE) resolveRoomNode(JOIN_COOKIE, () => joinFlow(sp, JOIN_COOKIE, false));
+      else if (PENDING_JOIN) joinFlow(sp, PENDING_JOIN.code, PENDING_JOIN.spectate);
+      else if (ROOM && ROOM_PINNED) joinFlow(sp, ROOM, SPECTATE);
+      else if (ROOM) resolveRoomNode(ROOM, () => joinFlow(sp, ROOM, SPECTATE));
       roomUi(sp);
     }
     // 匹配成功的对局：不等房主手动点，自动准备 + 自动开始
     warnUnpinnedRoom();
     installJoinRedirect();
     installNodeBadge();
+    installAdminEntry();
+    
   installQQGroup();
   setInterval(cleanTopExtras, 1200);
   installAnnouncement();
@@ -242,11 +272,9 @@
       .then((d) => {
         const cur = nodeOf();
         if (d && d.node && d.node !== cur) {
-          document.cookie = 'sp_node=' + d.node + '; path=/; max-age=86400';
-          const u = new URL(location.href);
-          u.searchParams.set('room', code);
-          u.searchParams.delete('n');
-          location.replace(u.pathname + '?' + u.searchParams.toString());
+          setNodeCookie(d.node);
+          try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: SPECTATE })); } catch { /* ignore */ }
+          location.replace('/');
           return;
         }
         if (d && d.node === cur) { onSameNode && onSameNode(); return; }
@@ -255,33 +283,85 @@
       .catch(() => { onSameNode && onSameNode(); });
   }
 
-  /** 大厅「加入同盟」：先解析节点，必要时切过去再加入。 */
+  function mmToast(text) {
+    try {
+      const div = document.createElement('div');
+      div.style.cssText = 'position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:90;background:rgba(40,20,10,.95);border:1px solid #7a5a2a;color:#ffd9a8;padding:8px 14px;border-radius:10px;font:13px/1.6 "Noto Sans SC",sans-serif;max-width:90vw';
+      div.textContent = text;
+      document.body.appendChild(div);
+      setTimeout(() => div.remove(), 6000);
+    } catch { /* ignore */ }
+  }
+
+  // 优先复用游戏自带的 toast（与「房间已满」等提示同一套样式）；模块加载失败才退回 mmToast
+  let gameToastFn = null;
+  function showStyledToast(text, kind = 'error') {
+    const call = (fn) => { try { fn(text, kind); } catch { mmToast(text); } };
+    if (gameToastFn) return call(gameToastFn);
+    import('/js/ui/toasts.js')
+      .then((m) => { gameToastFn = m.toast; call(gameToastFn); })
+      .catch(() => mmToast(text));
+  }
+
+  /** 大厅「加入同盟 / 观战」：先在当前页面查房间状态（人数/是否开局/节点），能进才跳转；满员/已开局直接提示。 */
   function installJoinRedirect() {
     let bypass = false;
-    document.addEventListener('click', (e) => {
-      if (bypass) return;
-      const btn = e.target && e.target.closest ? e.target.closest('button') : null;
-      if (!btn || !/加入同盟/.test(btn.textContent || '')) return;
-      const input = document.querySelector('input');
-      const raw = input ? String(input.value || '') : '';
-      const m = raw.toUpperCase().match(/\b([A-Z]{4})\b/);
-      if (!m) return;
-      const code = m[1];
-      e.preventDefault();
-      e.stopPropagation();
+    const codeFrom = (s) => { const m = String(s || '').toUpperCase().match(/\b([A-Z]{4})\b/); return m ? m[1] : null; };
+    const findBtn = (spec) => [...document.querySelectorAll('button')].find((b) => {
+      const t = b.textContent || '';
+      return spec ? (/观战/.test(t) && !/加入同盟/.test(t)) : /加入同盟/.test(t);
+    });
+    const clickLocal = (spec) => {
+      const btn = findBtn(spec);
+      if (!btn) return;
+      bypass = true;
+      btn.click();
+      setTimeout(() => { bypass = false; }, 500);
+    };
+    const checkAndGo = (code, spec, btn) => {
       fetch('/mm/api/find-room?code=' + encodeURIComponent(code))
         .then((r) => r.json())
         .then((d) => {
-          if (d && d.node && d.node !== nodeOf()) {
-            document.cookie = 'sp_node=' + d.node + '; path=/; max-age=86400';
-            location.replace('/?room=' + encodeURIComponent(code));
+          if (d && d.node) {
+            if (d.mode === 'solo') { showStyledToast(spec ? '独立模拟房间不支持观战（观战只对同盟房间开放）' : '独立模拟房间无法加入'); return; }
+            if (spec && Number(d.spectators) >= 2) { showStyledToast('观战席位已满（2/2），请稍后再试'); return; }
+            if (!spec && d.started) { showStyledToast('该同盟已开始对局，无法加入；可以点「观战」进入'); return; }
+            if (!spec && d.full) { showStyledToast('该同盟人数已满，无法加入；可以点「观战」进入'); return; }
+            if (d.node === nodeOf()) { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); return; }
+            setNodeCookie(d.node);
+            try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: spec })); } catch { /* ignore */ }
+            location.replace('/');
             return;
           }
-          bypass = true;
-          btn.click();
-          setTimeout(() => { bypass = false; }, 500);
+          if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec);
         })
-        .catch(() => { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); });
+        .catch(() => { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); });
+    };
+    document.addEventListener('click', (e) => {
+      if (bypass) return;
+      const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+      if (!btn) return;
+      const label = btn.textContent || '';
+      const spec = /观战/.test(label) && !/加入同盟/.test(label);
+      if (!/加入同盟/.test(label) && !spec) return;
+      const input = document.querySelector('input[placeholder*="密钥"]')
+        || [...document.querySelectorAll('input')].find((i) => i.offsetWidth > 0);
+      const code = codeFrom(input && input.value);
+      if (!code) return;
+      e.preventDefault();
+      e.stopPropagation();
+      checkAndGo(code, spec, btn);
+    }, true);
+    // 回车提交同样先检查（游戏自己的 onEnter 会直接在当前节点加入，绕过按钮）
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || bypass) return;
+      const el = document.activeElement;
+      if (!el || el.tagName !== 'INPUT' || !/密钥|邀请链接/.test(el.placeholder || '')) return;
+      const code = codeFrom(el.value);
+      if (!code) return;
+      e.preventDefault();
+      e.stopPropagation();
+      checkAndGo(code, false, null);
     }, true);
   }
 
@@ -353,6 +433,7 @@
   function roomUi(sp) {
     const { store } = sp;
     let queued = false, matched = false, polling = false, entering = false;
+    let enteringAt = 0, lastCode = '';
     let startedAt = 0, tipIndex = 0, timerId = null, tipId = null;
     // 自动开局流程进行中先别显示「匹配队友」，对局开始后（或超时）恢复；对局结束后回到房间能再次匹配
     let autoArmed = AUTO_START;
@@ -428,13 +509,15 @@
         if (!queued) {
           const r = await api('/mm/api/party/join', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
+            body: JSON.stringify({ guest: !window.__SP_ACCOUNT_USER,
               roomCode: room.code, node: nodeOf(), difficulty: room.difficulty,
               size: Math.max(1, seatsOf(room)), clientId: CLIENT_ID,
             }),
           });
           if (r.error) { alert(r.error); return; }
           queued = true;
+          // 告诉节点：匹配期间暂停 15 分钟自动解散
+          try { await sp.net.request('room.matchmaking', { on: true }); } catch { /* ignore */ }
           showSearch(room.difficulty, r.state && r.state.waiting, true);
         } else {
           await api('/mm/api/party/leave', {
@@ -442,11 +525,15 @@
             body: JSON.stringify({ roomCode: room.code, node: nodeOf(), clientId: CLIENT_ID }),
           });
           queued = false;
+          try { await sp.net.request('room.matchmaking', { on: false }); } catch { /* ignore */ }
           hideOverlay();
         }
       } catch (e) {
         // 取消时出错也先把界面收起来（下一轮轮询会纠正真实状态），避免弹出让人卡住的对话框
-        if (queued) { queued = false; hideOverlay(); } else { alert(e.message); }
+        if (queued) {
+          queued = false; hideOverlay();
+          try { await sp.net.request('room.matchmaking', { on: false }); } catch { /* ignore */ }
+        } else { alert(e.message); }
       }
       ensureButton();
     };
@@ -458,16 +545,29 @@
       const room = s.room;
       // 地址栏只保留域名：房间码 / 节点 / 代号这些参数处理完就清掉
       if (room && (location.search.includes('room=') || location.search.includes('n=') || location.search.includes('name='))) cleanUrl();
-      if (!room || polling || seatsOf(room) >= 4 || room.inMatch) return;
+      // 房号留一份：成局后 room 可能被替换 / 清空，仍要按原房号继续拿 matched 状态
+      if (room && room.code) lastCode = room.code;
+      const code = (room && room.code) || lastCode;
+      if (room && room.inMatch) {
+        // 5 分钟超时由节点直接开局：收起搜寻面板，进入对局
+        if (queued || matched) { queued = false; matched = false; hideOverlay(); }
+        return;
+      }
+      if (!code || polling) return;
+      // matched 之后席位数量可能变化，但还要继续拿房间码用于跳转，不能因「满员」提前停下
+      if (!matched && seatsOf(room) >= 4) return;
       // 房间里有 AI 队友时不参与匹配（AI 无法跨节点加入）
-      if ((room.seats || []).some((x) => x && x.isBot)) {
-        if (queued) { queued = false; matched = false; hideOverlay(); }
+      if ((room && room.seats || []).some((x) => x && x.isBot)) {
+        if (queued) {
+          queued = false; matched = false; hideOverlay();
+          try { await sp.net.request('room.matchmaking', { on: false }); } catch { /* ignore */ }
+        }
         ensureButton();
         return;
       }
       polling = true;
       try {
-        const st = await api(`/mm/api/party/state?code=${encodeURIComponent(room.code)}&node=${nodeOf()}&client=${encodeURIComponent(CLIENT_ID)}`);
+        const st = await api(`/mm/api/party/state?code=${encodeURIComponent(code)}&node=${nodeOf()}&client=${encodeURIComponent(CLIENT_ID)}`);
         if (st.state === 'queued') {
           if (!queued) { queued = true; showSearch(room.difficulty, st.waiting, room.hostId === s.me.playerId); }
           updateSearch(st.waiting);
@@ -476,11 +576,21 @@
           queued = false;
           matched = true;
           ensureButton();
-          showFound(st.leader ? '正在创建对局…' : '正在连接游戏节点…');
-          if ((st.code || st.leader) && !entering) { entering = true; await enterParty(st); }
+          // 搜索结果面板只画一次，避免每轮轮询重画导致闪烁
+          if (!document.getElementById('mm-ov-foundsub')) showFound(st.leader ? '正在创建对局…' : '正在连接游戏节点…');
+          // 补偿触发：轮询还在跑 = 页面还没跳走。只要拿到领队身份或房间码，
+          // 每轮都重试一次 enterParty；跳转超过 4 秒还没发生（pin 失败 / 被拦）就解锁重试。
+          if (entering && Date.now() - enteringAt > 4000) entering = false;
+          if (!entering && (st.leader || st.code)) {
+            entering = true;
+            enteringAt = Date.now();
+            console.info('[mm-debug] party matched → enterParty', { leader: !!st.leader, code: st.code || null, node: st.node });
+            enterParty(st).then((ok) => { if (!ok) entering = false; });
+          }
         } else if (st.state === 'idle' && queued) {
           queued = false;
           hideOverlay();
+          try { await sp.net.request('room.matchmaking', { on: false }); } catch { /* ignore */ }
           ensureButton();
         }
       } catch (e) { /* 下轮再试 */ } finally { polling = false; }
@@ -641,6 +751,10 @@
   // ---------------------------------------------------------------- 重启后自动回到上次的房间（会话丢失时兜底）
 
   function installAutoRejoin() {
+    // 匹配转场期间不能自动回旧房间：房主要新建房间（否则会把旧房号当成新房间回报），
+    // 客人要加入匹配到的房间（否则会先回旧房，joinFlow 看到已有房间就不再加入目标房）。
+    if (IS_HOST && PMID && PCID) return;
+    if (ROOM) return;
     const sp = window.__SP__;
     if (!sp || !sp.store || !sp.store.subscribe || !sp.net) return;
     const KEY = 'sp.lastRoom';
@@ -939,6 +1053,13 @@
   // ---------------------------------------------------------------- 临时公告
 
 
+  
+
+
+
+
+
+
   // ---------------------------------------------------------------- 官方 QQ 群（右上角）
 
   // 顶部按钮助手：克隆「统计」按钮的样式与图标位，替换图标路径与文字
@@ -1053,20 +1174,23 @@
       st.id = 'mm-ticker-css';
       st.textContent = `
 #mm-ticker{position:fixed;top:9%;left:50%;transform:translateX(-50%);width:min(760px,92vw);height:30px;
-  overflow:hidden;pointer-events:none;z-index:60}
-#mm-ticker .line{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:8px;
-  white-space:nowrap;padding:0 24px;font:15px/1.3 "Noto Sans SC",system-ui,sans-serif;color:#e8f4ef;
-  background:linear-gradient(90deg,transparent,rgba(10,14,12,.97) 10%,rgba(10,14,12,.97) 90%,transparent);
-  border-top:1px solid rgba(255,198,0,.35);border-bottom:1px solid rgba(255,198,0,.35);
-  animation:ticker-in .42s cubic-bezier(.2,.8,.2,1), ticker-out .38s ease-in-out 4.8s forwards}
-@keyframes ticker-in{from{transform:translateX(80%);opacity:0}}
-@keyframes ticker-out{to{transform:translateX(-40%);opacity:0}}
+  overflow:hidden;pointer-events:none;z-index:60;
+  background:linear-gradient(90deg,rgba(10,14,12,.92),rgba(10,14,12,.97) 8%,rgba(10,14,12,.97) 92%,rgba(10,14,12,.92));
+  border-top:1px solid rgba(255,198,0,.35);border-bottom:1px solid rgba(255,198,0,.35)}
+#mm-ticker:empty{display:none}
+#mm-ticker .line{position:absolute;top:0;left:0;height:100%;display:flex;align-items:center;white-space:nowrap;
+  width:max-content;max-width:none;padding:0 24px;font:15px/1.3 "Noto Sans SC",system-ui,sans-serif;color:#e8f4ef;
+  letter-spacing:1.5px;will-change:transform}
+#mm-ticker .line > span{flex:none}
+#mm-ticker .gap{display:inline-block;width:160px}
 `;
       document.head.appendChild(st);
     }
 
     let queue = [];
     let showing = false;
+    let current = null;
+    let stopFlag = false;
     let lastKey = '';
 
     const strip = () => {
@@ -1079,35 +1203,81 @@
       return el;
     };
 
-    const showNext = () => {
-      if (showing) return;
-      const text = queue.shift();
-      if (!text) return;
+    // 一条公告滚 5 遍，每遍从右侧重新进入；同一时间只显示一份，避免多份并排
+    const play = (item) => {
+      if (!item || showing) return;
       showing = true;
+      stopFlag = false;
+      current = item;
       const el = strip();
       const line = document.createElement('div');
       line.className = 'line';
-      line.textContent = text;
+      line.textContent = item.text;
       el.appendChild(line);
-      setTimeout(() => {
+      const width = el.clientWidth || 760;
+      const textWidth = line.scrollWidth || item.text.length * 18;
+      const passMs = Math.min(20000, Math.max(5000, ((width + textWidth) / 95) * 1000));
+      let pass = 0;
+
+      const finish = () => {
         try { line.remove(); } catch { /* ignore */ }
         showing = false;
-        showNext();
-      }, 5600);
+        current = null;
+        setTimeout(showNext, 300);
+      };
+
+      const runPass = () => {
+        if (!line.isConnected || stopFlag) { finish(); return; }
+        line.style.transform = `translateX(${width}px)`;
+        const started = performance.now();
+        const step = (now) => {
+          if (!line.isConnected || stopFlag) { finish(); return; }
+          const p = Math.min(1, (now - started) / passMs);
+          line.style.transform = `translateX(${width - (width + textWidth) * p}px)`;
+          if (p < 1) requestAnimationFrame(step);
+          else {
+            pass += 1;
+            if (pass < 5) setTimeout(runPass, 900);
+            else finish();
+          }
+        };
+        requestAnimationFrame(step);
+      };
+      runPass();
+    };
+
+    const showNext = () => {
+      if (showing) return;
+      const item = queue.shift();
+      if (item) play(item);
+    };
+
+    const enqueue = (lines, key) => {
+      for (const text of lines) {
+        if ((current && current.text === text && current.key === key) || queue.some((q) => q.text === text && q.key === key)) continue;
+        queue.push({ text, key });
+      }
+      showNext();
     };
 
     const poll = () => fetch('/mm/api/announcement', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
-      const key = d && d.enabled && d.text ? (d.updatedAt || d.text) : null;
-      if (!key) { queue = []; return; }
+      const enabled = !!(d && d.enabled && d.text);
+      if (!enabled) {
+        // 关闭公告：停止当前这条并清空排队，不再显示
+        lastKey = '';
+        queue = [];
+        stopFlag = true;
+        return;
+      }
+      const key = String(d.updatedAt || d.text);
       if (key === lastKey) return;
       lastKey = key;
       const lines = String(d.text).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-      queue = lines;
-      showNext();
+      // 已有一条在播时，新公告进队列，等前面的 5 遍播完再出场
+      enqueue(lines, key);
     }).catch(() => {});
     poll();
     setInterval(poll, 5000);
-    setInterval(showNext, 800);
   }
 
 
@@ -1343,6 +1513,78 @@
 .server-status__dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--mint-400);margin-right:10px;vertical-align:middle}
 .server-status__table tr.off td{color:#c98b8b}
 `;
+  // 兜底修正：无论游戏模块版本，确保「DOCTOR #」显示账号代码
+  function replaceDoctorIn(root, tag) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let txt;
+    while ((txt = walker.nextNode())) {
+      if (/DOCTOR\s*#\s*\d{4}/.test(txt.nodeValue || '')) {
+        const next = txt.nodeValue.replace(/DOCTOR\s*#\s*\d{4}/, 'DOCTOR #' + tag);
+        if (next !== txt.nodeValue) txt.nodeValue = next;
+      }
+    }
+  }
+  function fixDoctorTag() {
+    const tag = (typeof window !== 'undefined' && window.__SP_ACCOUNT_TAG) || '';
+    if (!/^[0-9]{4}$/.test(tag)) return;
+    const nodes = document.querySelectorAll('.me-chip__text, .me-chip');
+    nodes.forEach((n) => replaceDoctorIn(n, tag));
+    // 同盟模拟：只改「自己」那张席位卡（含「你」标记或 self 类名）
+    document.querySelectorAll('[class*="seat"], [class*="card"], [class*="pcard"]').forEach((el) => {
+      if (el.children.length > 30) return;
+      if (!/self|is-me|you/i.test(el.className || '') && !/你/.test(el.textContent || '')) return;
+      replaceDoctorIn(el, tag);
+    });
+  }
+  setInterval(() => { try { fixDoctorTag(); } catch { /* 忽略 */ } }, 800);
+
+  // 管理员账号：仅在大厅（选择模拟协议）的「公告」旁加「管理后台」按钮
+  function installAdminEntry() {
+    const role = (typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE) || '';
+    const notice = document.getElementById('mm-notice-btn');
+    const old = document.getElementById('mm-admin-btn');
+    const onTitle = !!document.querySelector('.title-screen');
+    if (onTitle || !notice || !role || role === 'player') { if (old) old.remove(); return; }
+    if (old && document.body.contains(old)) return;
+    const btn = notice.cloneNode(true);
+    btn.id = 'mm-admin-btn';
+    btn.type = 'button';
+    btn.disabled = false;
+    btn.style.marginRight = '0px';
+    const dot = btn.querySelector('.mm-dot');
+    if (dot) dot.remove();
+    const svg = btn.querySelector('svg');
+    if (svg) {
+      const path = svg.querySelector('path');
+      // 盾牌图标，与管理权限语义一致
+      if (path) path.setAttribute('d', 'M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3zm0 5.5 3 2.6v3.3c0 2.3-1.3 4.4-3 5.3-1.7-.9-3-3-3-5.3V10l3-2.5z');
+    }
+    const label = btn.querySelector('.btn__label') || btn.querySelector('span');
+    if (label) label.textContent = '管理后台';
+    else btn.textContent = '管理后台';
+    btn.onclick = () => window.open('/mm/admin.html', '_blank');
+    notice.parentElement.insertBefore(btn, notice);
+  }
+  let __mmTagProbeDone = false;
+  async function probeAccountTag() {
+    if (__mmTagProbeDone) return;
+    if (window.__SP_ACCOUNT_TAG) { __mmTagProbeDone = true; return; }
+    __mmTagProbeDone = true;
+    try {
+      const r = await fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' });
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && j.user && j.user.tag) {
+        window.__SP_ACCOUNT_TAG = String(j.user.tag);
+        window.__SP_ACCOUNT_ROLE = String(j.user.role || '');
+        try { localStorage.setItem('mm.tag', String(j.user.tag)); } catch { /* 忽略 */ }
+        window.dispatchEvent(new Event('resize'));
+      }
+    } catch { /* 忽略 */ }
+  }
+  setTimeout(() => { try { probeAccountTag(); } catch { /* 忽略 */ } }, 800);
+  setInterval(() => { try { installAdminEntry(); } catch { /* 忽略 */ } }, 1500);
+
   function installNodeBadge() {
     try {
       if (!document.getElementById('mm-status-css2')) {
@@ -1642,26 +1884,48 @@
     if (ov) ov.remove();
   }
 
+  // 成功返回 true（已排好跳转）；pin 失败或缺少跳转参数返回 false，让调用方下一轮重试
   async function enterParty(st) {
+    const sp0 = window.__SP__;
+    // 先主动离开旧房间：服务端按 sp_sid 保存了 session.roomCode，不离开的话新页面会先被恢复回旧房间
+    // （房主于是把旧房号当成新房间回报，客人也会因为「已有房间」而不再加入匹配到的房间）
+    try {
+      if (sp0 && sp0.net && sp0.store && sp0.store.get().room) await sp0.net.request('room.leave', {});
+    } catch (e) { /* 不在房间 / 已经离开 */ }
     try {
       await api(`/mm/api/party/pin?matchId=${encodeURIComponent(st.matchId)}&node=${st.node}`);
-    } catch (e) { return; }
+    } catch (e) {
+      console.warn('[mm] 切换到匹配节点失败，稍后重试', e && e.message);
+      return false;
+    }
     const sp = window.__SP__;
     const name = encodeURIComponent((sp && sp.store.get().me.name) || '');
-    if (st.leader) {
-      setTimeout(() => {
-        location.href = `/?mmhost=1&pmid=${encodeURIComponent(st.matchId)}&pcid=${encodeURIComponent(CLIENT_ID)}&pd=${encodeURIComponent(st.difficulty)}&mm=1&name=${name}`;
-      }, 900);
-    } else if (st.code) {
-      setTimeout(() => {
-        location.href = `/?room=${encodeURIComponent(st.code)}&n=${st.node}&mm=1&name=${name}`;
-      }, 900);
-    }
+    let target = '';
+    if (st.leader) target = `/?mmhost=1&pmid=${encodeURIComponent(st.matchId)}&pcid=${encodeURIComponent(CLIENT_ID)}&pd=${encodeURIComponent(st.difficulty)}&mm=1&name=${name}`;
+    else if (st.code) target = `/?room=${encodeURIComponent(st.code)}&n=${st.node}&mm=1&name=${name}`;
+    if (!target) return false;
+    setTimeout(() => { location.href = target; }, 900);
+    return true;
   }
 
   // ---------------------------------------------------------------- 匹配成功后：房主自动建房
 
+
+  // GUEST_HOST_GUARD：游客可以排队，但不能成为房主（不能自动建房）
+  function guestHostBlocked() {
+    if (typeof window !== 'undefined' && window.__SP_ACCOUNT_USER) return false;
+    try { addFoundBack(); } catch { /* ignore */ }
+    try {
+      const t = document.querySelector('.mm-ov__foundtitle');
+      if (t) t.textContent = '游客不能成为房主';
+      const s = document.querySelector('.mm-ov__foundsub');
+      if (s) s.textContent = '游客可以加入他人房间，但不能新建房间；请登录后再匹配';
+    } catch { /* ignore */ }
+    return true;
+  }
+
   function partyHostFlow(sp) {
+    console.info('[mm-debug] partyHostFlow start');
     const { store, net } = sp;
     let creating = false, createdOk = false, reported = false, attempts = 0, lastAt = 0;
 
@@ -1679,12 +1943,14 @@
 
     const tick = () => {
       const s = store.get();
+      console.info('[mm-debug] party tick', { entered: s.session.entered, online: net.status, room: s.room && s.room.code, attempts });
       if (reported || !s.session.entered || net.status !== 'online') return;
       if (s.room && s.room.code) { report(s.room.code); return; }
+      if (guestHostBlocked()) return;
       if (creating || createdOk || attempts >= 6 || Date.now() - lastAt < 2000) return;
       attempts += 1; lastAt = Date.now(); creating = true;
       net.request('room.create', { mode: 'coop', difficulty: PDIFF })
-        .then(() => { createdOk = true; })
+        .then(() => { createdOk = true; console.info('[mm-debug] party room.create ok'); })
         .catch((e) => { console.error('[mm] 自动建房失败', e && e.message); try { addFoundBack(); } catch { /* ignore */ } })
         .finally(() => { creating = false; });
     };
@@ -1697,6 +1963,7 @@
   // ---------------------------------------------------------------- 单人匹配（/mm/ 页面）
 
   function hostFlow(sp) {
+    console.info('[mm-debug] hostFlow start');
     const { store, net } = sp;
     let creating = false, createdOk = false, reported = false, attempts = 0, lastAt = 0;
 
@@ -1716,10 +1983,11 @@
       const s = store.get();
       if (reported || !s.session.entered || net.status !== 'online') return;
       if (s.room && s.room.code) { report(s.room.code); return; }
+      if (guestHostBlocked()) return;
       if (creating || createdOk || attempts >= 3 || Date.now() - lastAt < 2000) return;
       attempts += 1; lastAt = Date.now(); creating = true;
       net.request('room.create', { mode: 'coop', difficulty: DIFF })
-        .then(() => { createdOk = true; })
+        .then(() => { createdOk = true; console.info('[mm-debug] room.create ok'); })
         .catch((e) => console.warn('[mm] 自动建房失败', e && e.message))
         .finally(() => { creating = false; });
     };
@@ -1729,7 +1997,17 @@
     setInterval(() => { if (!reported) tick(); }, 1500);
   }
 
-  function joinFlow(sp, code) {
+  function mmToast(text) {
+    try {
+      const div = document.createElement('div');
+      div.style.cssText = 'position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:90;background:rgba(40,20,10,.95);border:1px solid #7a5a2a;color:#ffd9a8;padding:8px 14px;border-radius:10px;font:13px/1.6 "Noto Sans SC",sans-serif;max-width:90vw';
+      div.textContent = text;
+      document.body.appendChild(div);
+      setTimeout(() => div.remove(), 6000);
+    } catch { /* ignore */ }
+  }
+
+  function joinFlow(sp, code, spectate) {
     const { store, net } = sp;
     let inFlight = false, joined = false;
     try { store.patch('ui', { pendingJoin: null }); } catch (e) { /* ignore */ }
@@ -1738,9 +2016,13 @@
       if (joined || inFlight || !s.session.entered || net.status !== 'online') return;
       if (s.room) { joined = true; return; }
       inFlight = true;
-      net.request('room.join', { code })
+      net.request(spectate ? 'room.spectate' : 'room.join', { code })
         .then(() => { joined = true; cleanUrl(); })
-        .catch((e) => console.warn('[mm] 加入房间失败', e && e.message))
+        .catch((e) => {
+          joined = true;
+          showStyledToast((spectate ? '观战失败：' : '加入失败：') + ((e && e.message) || '未知错误'));
+          console.warn('[mm] 加入房间失败', e && e.message);
+        })
         .finally(() => { inFlight = false; });
     };
     store.subscribe(tick);
