@@ -78,7 +78,9 @@ export class MatchCombat {
     if (this.clientCombat) { this._startCombatClient(); return; }
     this.phase = PHASE.COMBAT;
     const alive = this.alivePlayers();
+    this._normalAliveCount = alive.length;
     this.lastResults = new Map();
+    if (this.capacityExperiment) this._uniteBudget = null;
     this.fields = alive.map((ps) => ({ fieldId: `n:${ps.playerId}`, kind: 'normal', players: [ps.playerId], battle: this._normalBattle(ps), live: true }));
     const limit = this.wave ? this.wave.timeLimit : 60;
     this.deadline = this.sched.instant ? 0 : this.sched.now() + Math.round((limit / this.gameSpeed) * 1000);
@@ -91,7 +93,9 @@ export class MatchCombat {
   _startCombatClient() {
     this.phase = PHASE.COMBAT;
     const alive = this.alivePlayers();
+    this._normalAliveCount = alive.length;
     this.lastResults = new Map();
+    if (this.capacityExperiment) this._uniteBudget = null;
     this.watchers.clear();
     const fields = alive.map((ps) => this._ccField({ fieldId: `n:${ps.playerId}`, kind: 'normal', players: [ps.playerId], opts: this._normalOpts(ps) }));
     const limit = this.wave ? this.wave.timeLimit : 60;

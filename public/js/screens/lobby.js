@@ -313,8 +313,26 @@ export function LobbyScreen() {
       if (alive.current) setBusy(null);
     }
   };
+  // Opt-in experimental room, only offered to an owner/admin session and only when explicitly requested.
+  const experimentalForCreator = () => {
+    try {
+      const role = window.__SP_ACCOUNT_ROLE;
+      if (!role || role === 'player') return null;
+      const q = new URLSearchParams(location.search);
+      const capacity = Number(q.get('capacity') || q.get('exp') || 0);
+      if (!(Number.isInteger(capacity) && capacity >= 4 && capacity <= 20)) return null;
+      return {
+        revivalEnabled: q.get('revive') === '1',
+        disableSharedPool: q.get('pool') === '1',
+        playerCapacity: capacity,
+        ...(capacity > 4 && q.get('duck') === '1' ? { disableDuckLord: true } : {}),
+      };
+    } catch { return null; }
+  };
   const create = () => run('create', () => net.request('room.create', {
     mode: roomMode, difficulty, ...(testMode && asTest ? { test: true } : {}),
+    ...(typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE && window.__SP_ACCOUNT_ROLE !== 'player' ? { admin: true } : {}),
+    ...(() => { const experimental = experimentalForCreator(); return experimental ? { experimental } : {}; })(),
   }));
   const join = (c = code) => {
     // `onClick=${join}` hands the click EVENT as the first argument, and a default parameter only applies to

@@ -239,6 +239,15 @@ export function countdownState(deadline, now, total, warnAt = 10) {
  * @param {any} config data/config.json
  * @param {string|null} [myId]
  */
+/** The expanded-room 联防 budget shown above the top bar (server unitePhase.js uniteTimeLimit). */
+export function uniteBudgetInfo(pub) {
+  if (pub?.phase !== PHASE.UNITE) return null;
+  const total = pub.unite?.totalBudget;
+  const remaining = pub.unite?.remainingBudget;
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(remaining) || remaining < 0 || remaining > total) return null;
+  return { total, remaining };
+}
+
 export function phaseTotalSeconds(pub, config, myId = null) {
   if (!isObj(pub)) return null;
   const timers = isObj(config?.timers) ? config.timers : {};
@@ -255,8 +264,12 @@ export function phaseTotalSeconds(pub, config, myId = null) {
       return first ? (num(timers.spFirst) ?? 30) : (num(timers.spTurn) ?? 16);
     }
     case PHASE.PREP: return num(mode?.rounds?.[String(pub.round)]?.prepTime);
-    case PHASE.COMBAT:
-    case PHASE.UNITE: return num(mode?.rounds?.[String(pub.round)]?.combatTimeLimit);
+    case PHASE.COMBAT: return num(mode?.rounds?.[String(pub.round)]?.combatTimeLimit);
+    case PHASE.UNITE: {
+      const limit = num(pub.unite?.timeLimit);
+      const speed = num(pub.unite?.gameSpeed);
+      return limit && speed ? limit / speed : num(mode?.rounds?.[String(pub.round)]?.combatTimeLimit);
+    }
     // 最终攻势 / 隐秘核心: m.public.deadline is the level's 120 s countdown (maxPlayTime; the battle goes on past it)
     case PHASE.FINAL_ASSAULT:
     case PHASE.HIDDEN_CORE: return bossLevelSeconds(pub, config);

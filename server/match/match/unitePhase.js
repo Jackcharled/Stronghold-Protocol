@@ -5,7 +5,7 @@
 
 import { PHASE, GEO } from '../../../shared/constants.js';
 import { deriveSeed } from '../../sim/rng.js';
-import { uniteBattleOpts, uniteSurvivors } from '../unite.js';
+import { uniteBattleOpts, uniteSurvivors, planUniteRelay, uniteRelayHelpers } from '../unite.js';
 import { FieldRunner, timelineAt, uniteBillBounds } from '../fields.js';
 import { uniteLeft } from '../../sim/spec.js';
 import { FLOW_TICKER_PRIORITY, DELAYS } from './common.js';
@@ -14,31 +14,97 @@ import { onStartUnite } from '../botEmotes.js';
 
 export class MatchUnite {
   startUnite(plan) {
+    if (this.capacityExperiment && !this.alivePlayers().length) { this.settle(null, null); return; }
+    if (plan.uniteRound === 1) this._uniteRelay = { rounds: [], eligible: new Set() };
+    if (plan.uniteRound && !this.clientCombat) this.battleId = `${this.battlePrefix}.${this.round}.${++this._battleSeq}.relay${plan.uniteRound}`;
     if (this.clientCombat) { this._startUniteClient(plan); return; }
     this.phase = PHASE.UNITE;
     this.unitePlan = plan;
-    const limit = this.wave ? this.wave.timeLimit : 60;
+    const limit = this.uniteTimeLimit(plan);
+    if (this.capacityExperiment && !(limit > 0)) { this.settle(plan, null); return; }
     const battle = this.newBattle(this._uniteOpts(plan, limit));
-    this.fields = [{ fieldId: 'u', kind: 'unite', players: plan.helpers.map((p) => p.playerId), battle, live: true }];
+    this.fields = [{ fieldId: plan.uniteRound === 2 ? 'u:2' : 'u', kind: 'unite', players: plan.helpers.map((p) => p.playerId), battle, live: true }];
     this.deadline = this.sched.instant ? 0 : this.sched.now() + Math.round((limit / this.gameSpeed) * 1000);
     this._defaultWatch();
     this.markPublic();
-    this.tickerText(msg('联防阶段：{names} 迎战突破防线的敌人', { names: plan.helpers.map((p) => p.name) }), FLOW_TICKER_PRIORITY);
+    this.tickerText(msg('联防阶段：{names} 迎战突破防线的敌人{extra}', { names: plan.helpers.map((p) => p.name).join('、'),
+      extra: plan.totalBudget ? `（本段 ${plan.timeLimit} 游戏秒）` : '' }), FLOW_TICKER_PRIORITY);
     onStartUnite(this, plan); // an AI helper says "合作愉快" once on the open of a 联防 (enabled by default; SP_BOT_EMOTES=0 silences it)
     this._uniteLeftKey = null;
     this.runner = new FieldRunner(this, this.fields, {
       onTick: (runner) => this._uniteTick(runner),
       onDone: (runner) => {
-        if (this.phase !== PHASE.UNITE) return;
-        const res = runner.resultOf(this.fields[0]);
-        this._collectSimErrors(this.fields[0], res);
-        this.fields[0].live = false;
-        this.deadline = 0;
-        this.markPublic();
-        this.later(this.scaled(DELAYS.COMBAT_END), () => this.settle(plan, res));
+        if (this.phase !== PHASE.UNITE || this.unitePlan !== plan) return;
+        this._finishUniteField(plan, runner.resultOf(this.fields[0]), this.fields[0]);
       },
     });
     this.runner.start();
+  }
+
+  /** Expanded rooms get a 300-game-second budget; a viable relay splits it into 150 + 150. */
+  uniteTimeLimit(plan) {
+    const base = this.wave ? this.wave.timeLimit : 60;
+    if (!this.capacityExperiment) return base;
+    if (!this._uniteBudget) {
+      this._uniteBudget = {
+        total: 300,
+        remaining: 300,
+        allocations: uniteRelayHelpers(this, plan).length ? [150, 150] : [300],
+      };
+    }
+    const budget = this._uniteBudget;
+    plan.totalBudget = budget.total;
+    plan.remainingBudget = budget.remaining;
+    plan.gameSpeed = this.gameSpeed;
+    plan.timeLimit = Math.min(budget.remaining, budget.allocations[plan.uniteRound === 2 ? 1 : 0] ?? 0);
+    plan.budgetSpent = 0;
+    return plan.timeLimit;
+  }
+
+  _consumeUniteBudget(plan, res, field) {
+    if (!this.capacityExperiment || !this._uniteBudget || this.disposed || this.ended
+      || this.phase !== PHASE.UNITE || this.unitePlan !== plan || !this.fields.includes(field)
+      || !field.battle?.finished) return;
+    const time = Number.isFinite(res?.time) ? res.time : Number(field.battle?.time) || 0;
+    const spent = Math.min(plan.timeLimit, Math.max(plan.budgetSpent, time, 0));
+    this._uniteBudget.remaining = Math.max(0, this._uniteBudget.remaining - (spent - plan.budgetSpent));
+    plan.budgetSpent = spent;
+  }
+
+  /** Archive one field; on an expanded room start the relay or settle once. */
+  _finishUniteField(plan, res, field) {
+    if (this.disposed || this.ended || this.phase !== PHASE.UNITE || this.unitePlan !== plan
+      || !this.fields.includes(field) || field.uniteCompleted) return;
+    field.uniteCompleted = true;
+    this._consumeUniteBudget(plan, res, field);
+    this._collectSimErrors(field, res);
+    field.live = false;
+    this.deadline = 0;
+    if (this._uniteRelay && plan.uniteRound) {
+      const survivors = res && !res.synthetic ? uniteSurvivors(plan, res) : new Map(plan.notReentered);
+      if (!res || res.synthetic) for (const l of plan.leaked) {
+        survivors.set(l.sourcePlayerId, (survivors.get(l.sourcePlayerId) || 0) + 1);
+      }
+      const eligible = this._revivalHelpers(plan, res);
+      for (const pid of eligible) {
+        const pp = res?.perPlayer?.[pid];
+        if (pp && pp.perfect !== false && !(pp.leaked || []).some((l) => l && l.counted !== false)) this._uniteRelay.eligible.add(pid);
+      }
+      this._uniteRelay.rounds.push({ plan, result: res, survivors });
+    }
+    this.markPublic();
+    this.later(this.scaled(DELAYS.COMBAT_END), () => {
+      if (this.phase !== PHASE.UNITE || this.unitePlan !== plan || !this.fields.includes(field) || field.uniteReleased) return;
+      field.uniteReleased = true;
+      const next = this.capacityExperiment && !(Math.min(this._uniteBudget.remaining, this._uniteBudget.allocations[1] ?? 0) > 0) ? null
+        : planUniteRelay(this, plan, res, field.battle?.opts?.spawns);
+      if (next) {
+        this.runner?.stop();
+        this.runner = null;
+        this._stopClientCombat();
+        this.startUnite(next);
+      } else this.settle(plan, res);
+    });
   }
 
   /**
@@ -50,7 +116,8 @@ export class MatchUnite {
   _uniteOpts(plan, limit) {
     const { wave, players } = uniteBattleOpts(this, plan, limit);
     return {
-      seed: deriveSeed(this.seed, `u:${this.round}`),
+      seed: deriveSeed(this.seed, plan.uniteRound === 2 ? `u:${this.round}:2` : `u:${this.round}`),
+      ...(plan.uniteRound ? { battleId: plan.battleId || this.battleId } : {}),
       kind: 'unite',
       modeId: this.modeId,
       round: this.round,
@@ -62,7 +129,7 @@ export class MatchUnite {
       routes: wave.routes,
       sharedBoss: null,
       flags: { layerGainsEnabled: false, ...this.gd.dp },
-      fieldId: 'u',
+      fieldId: plan.uniteRound === 2 ? 'u:2' : 'u',
       // leaked enemies re-enter with the stats they had: the round template's stat overrides apply again
       enemyOverrides: this.wave && this.wave.overrides ? this.wave.overrides : {},
       waveId: wave.templateId,
@@ -72,31 +139,29 @@ export class MatchUnite {
   _startUniteClient(plan) {
     this.phase = PHASE.UNITE;
     this.unitePlan = plan;
-    const limit = this.wave ? this.wave.timeLimit : 60;
-    const f = this._ccField({ fieldId: 'u', kind: 'unite', players: plan.helpers.map((p) => p.playerId), opts: this._uniteOpts(plan, limit) });
+    const limit = this.uniteTimeLimit(plan);
+    if (this.capacityExperiment && !(limit > 0)) { this.settle(plan, null); return; }
+    const fieldId = plan.uniteRound === 2 ? 'u:2' : 'u';
+    const f = this._ccField({ fieldId, kind: 'unite', players: plan.helpers.map((p) => p.playerId), opts: this._uniteOpts(plan, limit) });
     this.deadline = this.sched.instant ? 0 : this.sched.now() + Math.round((limit / this.gameSpeed) * 1000);
     this.watchers.clear();
     this._launch([f]);
     // helpers and everyone else (as observers, spectator seats included) simulate the same 联防 spec locally
     for (const ps of this._viewers()) {
-      this.watchers.set(ps.playerId, 'u');
+      this.watchers.set(ps.playerId, fieldId);
       this._sendStart(ps.playerId, f, { watch: !f.players.includes(ps.playerId) });
     }
     this.markPublic();
-    this.tickerText(msg('联防阶段：{names} 迎战突破防线的敌人', { names: plan.helpers.map((p) => p.name) }), FLOW_TICKER_PRIORITY);
+    this.tickerText(msg('联防阶段：{names} 迎战突破防线的敌人{extra}', { names: plan.helpers.map((p) => p.name).join('、'),
+      extra: plan.totalBudget ? `（本段 ${plan.timeLimit} 游戏秒）` : '' }), FLOW_TICKER_PRIORITY);
   }
 
   _finishUniteClient() {
     if (this.phase !== PHASE.UNITE) return;
     const f = this.fields[0];
-    const res = f.result;
-    this._collectSimErrors(f, res);
-    this._stopClientCombat();
-    f.live = false;
-    this.deadline = 0;
-    this.markPublic();
     const plan = this.unitePlan;
-    this.later(this.scaled(DELAYS.COMBAT_END), () => this.settle(plan, res));
+    this._stopClientCombat();
+    this._finishUniteField(plan, f.result, f);
   }
 
   /**

@@ -117,7 +117,11 @@ export class LobbyPersister {
     const m = this.localMatch(room);
     if (!m) return null;
     const rec = this.matches.get(m);
-    return rec && rec.json ? { kind: 'local', id: rec.id, seed: rec.seed, matchNo: rec.matchNo } : null;
+    return rec && rec.json ? {
+      kind: 'local', id: rec.id, seed: rec.seed, matchNo: rec.matchNo,
+      round: Number.isFinite(m.round) ? m.round : null,
+      phase: typeof m.phase === 'string' ? m.phase : null,
+    } : null;
   }
 
   /** One round of writes (never throws): local checkpoints, the lobby document, then stale checkpoints. */
@@ -154,20 +158,21 @@ export class LobbyPersister {
   /** What a session's stored record is made of: a change in any of these (by reference) rewrites it. */
   sessionKey(s) {
     return [s.token, s.name, s.roomCode, s.notice, !!s.connected, s.disconnectedAt, s.resumeWindowMs, !!s.matchHeld, s.skins,
+      s.accountId, s.accountTag,
       ...SESSION_FIELDS.map((k) => s[k])];
   }
 
   /** What a room's stored record is made of (scalars and references; the match's by identity): a change rewrites it. */
   roomKey(room) {
     const key = [room.hostId, room.mode, room.difficulty, room.aiPicksLast, room.experimental, room.source, room.ownerKey, room.ownerKeys,
-      room.matchKey, room.matchKeys, room.matchCount, room.createdAt, room.disposed, room.match, room.spectators.length];
+      room.matchKey, room.matchKeys, room.matchCount, room.createdAt, room.disposed, room.match, room.liveRound, room.livePhase, room.spectators.length];
     for (const s of room.spectators) key.push(s.playerId, s.name, s.owner);
     for (const s of room.seats) {
       if (!s) { key.push(null); continue; }
       key.push(s.playerId, s.name, s.isBot, s.ready, s.left, s.band, s.revivalVote, s.owner, s.skins, s.card, s.loadout, s.ops, s.notOwned,
         s.diy, s.loadoutCs, s.notOwnedCs, s.diyCs);
     }
-    if (room.match) key.push(this.cluster ? this.lobby.remoteMatchKey(room) : this.matches.get(room.match)?.json != null);
+    if (room.match) key.push(this.cluster ? this.lobby.remoteMatchKey(room) : this.matches.get(room.match)?.json != null, room.match.round, room.match.phase);
     return key;
   }
 

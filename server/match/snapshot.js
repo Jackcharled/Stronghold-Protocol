@@ -292,7 +292,7 @@ function buildSnapshot(m) {
   const doc = {
     v: SNAPSHOT_VERSION, phase: m.phase, round: m.round, seed: m.seed, battlePrefix: m.battlePrefix, savedAt: now,
     mode: m.mode, difficulty: m.difficulty, modeId: m.modeId, experimental: { ...m.experimental }, aiPicksLast: m.aiPicksLast,
-    seats: matchSeats(m), spectators: [...m.spectators.keys()],
+    seats: matchSeats(m), spectators: [...m.spectators.keys()].filter((id) => !(m.hiddenSpectators && m.hiddenSpectators.has(id))),
     // the phase clock travels as *remaining* time: the match is frozen while the server is down
     deadlineRemainingMs: m.deadline > 0 ? Math.max(0, Math.round(m.deadline - now)) : 0,
     startedAtAgoMs: Math.max(0, Math.round(now - (Number(m.startedAt) || now))),

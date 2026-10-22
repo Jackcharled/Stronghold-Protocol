@@ -58,6 +58,7 @@ import { installRehearsal } from './battle/rehearsal.js';
 import { recordResult, installStatsRecorder } from './ui/stats.js';
 import { installLoadoutSync, installOwnershipSync, installDiySync, installSkinsSync } from './ui/loadoutSync.js';
 import { startBuildGuard } from './ui/buildGuard.js';
+import { installAccountObserver } from './ui/accountObserver.js';
 import { initLang, useLang, tickerText } from './ui/lang.js';
 import { t, N_, translateWire } from '../../shared/i18n.js';
 import { recordError, installTrafficMeter } from './diag.js';
@@ -99,7 +100,7 @@ let joinInFlight = false;
 let rehearsal = null;
 
 function clearPendingJoin() {
-  store.patch('ui', { pendingJoin: null });
+  store.patch('ui', { pendingJoin: null, pendingSpectate: false });
   clearRoomParam();
 }
 
@@ -107,6 +108,7 @@ function clearPendingJoin() {
 function schedulePendingJoin() {
   clearTimeout(joinTimer);
   joinTimer = setTimeout(async () => {
+    if (window.__SP_ACCOUNT_RESUME_PENDING) return;
     const s = store.get();
     const code = s.ui.pendingJoin;
     if (!code || joinInFlight || !s.session.entered || net.status !== 'online') return;
@@ -117,7 +119,7 @@ function schedulePendingJoin() {
     }
     joinInFlight = true;
     try {
-      await joinKnown('room.join', code);
+      await joinKnown(s.ui.pendingSpectate ? 'room.spectate' : 'room.join', code);
     } catch (err) {
       toastError(err);
     } finally {
@@ -201,7 +203,12 @@ function onRoomState(msg) {
   roomStateAt = Date.now();
   const myId = store.get().me.playerId;
   const seats = Array.isArray(room.seats) ? room.seats : [];
-  if (myId != null && seats.length && !seats.some((s) => s && s.playerId === myId) && !isSpectating(room, myId)) {
+  const adminWatch = (() => {
+    try {
+      return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
+    } catch { return false; }
+  })();
+  if (!adminWatch && myId != null && seats.length && !seats.some((s) => s && s.playerId === myId) && !isSpectating(room, myId)) {
     // We are no longer seated (kicked / left elsewhere) — neither in a player seat nor a spectator seat.
     if (store.get().room) toast(t('你已不在该同盟中'), 'warn');
     store.set({ room: null, match: emptyMatch() });
@@ -224,6 +231,7 @@ const CLOSE_REASON = {
 };
 
 function wireNet() {
+  installAccountObserver();
   net.on('status', (snap) => {
     const cur = store.get().connection;
     store.set({
@@ -280,6 +288,7 @@ function wireNet() {
     store.set((s) => ({ ticker: [...s.ticker.slice(-(TICKER_KEEP - 1)), { id: ++seq, text, at: Date.now(), type, playerId, round: s.match?.public?.round ?? null, priority }] }));
   });
   net.on('m.emote', (msg) => {
+    try { window.__SP_LAST_EMOTE = { playerId: msg.playerId, id: msg.id, at: Date.now() }; } catch { /* ignore */ }
     store.set((s) => ({ emotes: [...s.emotes.slice(-(EMOTE_KEEP - 1)), { seq: ++seq, playerId: msg.playerId, id: msg.id, at: Date.now() }] }));
   });
 
@@ -303,7 +312,23 @@ function wireNet() {
  */
 function warmGameData() {
   // a room with gameplay plugins: content.js downloads its content set's files instead (DESIGN §32.6)
-  const go = () => { if (store.get().room?.content?.vanilla === false) return; data.loadAll(GAME_FILES).catch(() => {}); };
+  const go = () => {
+    if (store.get().room?.content?.vanilla === false) return;
+    const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(String(globalThis.navigator?.userAgent || ''))
+      || !!globalThis.matchMedia?.('(pointer: coarse)').matches;
+    if (!mobile) { data.loadAll(GAME_FILES).catch(() => {}); return; }
+    // Phones: one file at a time, yielding between files. A 13-file Promise.all made room entry janky on
+    // cellular and could trip the browser's per-host request limit.
+    const files = [...new Set(GAME_FILES)];
+    let i = 0;
+    const next = () => {
+      if (i >= files.length) return;
+      Promise.resolve(data.load(files[i++])).catch(() => {}).finally(() => {
+        if (i < files.length) setTimeout(next, 120);
+      });
+    };
+    next();
+  };
   if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(go, { timeout: 2500 });
   else setTimeout(go, 600);
 }
@@ -385,12 +410,13 @@ async function boot() {
   const identityReady = identity.init();
 
   const pendingJoin = parseRoomParam(location.search);
+  const pendingSpectate = /(?:^|[?&])spectate=1(?:&|$)/.test(location.search);
   const savedName = sanitizeName(identity.loadName());
   const entered = identity.wasEntered() && !!savedName;
   store.set((s) => ({
     me: { ...s.me, name: savedName },
     session: { entered },
-    ui: { ...s.ui, pendingJoin },
+    ui: { ...s.ui, pendingJoin, pendingSpectate },
   }));
 
   wireNet();

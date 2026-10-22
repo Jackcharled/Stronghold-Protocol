@@ -1,4 +1,4 @@
-// server/match/player/items.js — PlayerState methods: items — g.equip (max 2, a 3rd replaces the one the player picks;
+// server/match/player/items.js �?PlayerState methods: items �?g.equip (max 2, a 3rd replaces the one the player picks;
 // consume-on-equip items), g.art (Arts on a tile, rotated by the facing), g.destroy (hand / temp items; equipped
 // ones are locked) and g.unequip (DESIGN §34.15, only when the room's unequip rule is allow).
 // Installed on PlayerState.prototype by server/match/PlayerState.js (a method container: never instantiated; `this` is
@@ -20,15 +20,15 @@ export class PlayerItems {
    */
   releaseItemStock(piece) {
     if (!piece || piece.kind !== 'item' || !this.m?.itemPool) return 0;
-    return this.m.itemPool.repay(piece.id, this.m.itemPool.need(piece.id));
+    return this.itemPool.repay(piece.id, this.itemPool.need(piece.id));
   }
 
   /**
    * g.equip {itemUid, targetUid, replaceUid?}. A third item on a carrier with both slots used replaces the equipped item
-   * the player picked in the replace dialog (`replaceUid`, research 09 §1.2 UseEquipUp.unloadInstId; absent ⇒ the
+   * the player picked in the replace dialog (`replaceUid`, research 09 §1.2 UseEquipUp.unloadInstId; absent �?the
    * oldest); the replaced item is destroyed. A `replaceUid` that is not one of the target's equipped items is refused.
    * A consume-on-equip item replaces the same way before it resolves (GitHub #263): the carrier keeps a free slot, and a
-   * target its effect refuses (博士投影 on an elite) gets the picked item back — nothing is destroyed.
+   * target its effect refuses (博士投影 on an elite) gets the picked item back �?nothing is destroyed.
    */
   equip(itemUid, targetUid, replaceUid = null) {
     const g = this._gate(); if (g) return g;
@@ -42,15 +42,14 @@ export class PlayerItems {
     const target = tloc.piece;
     if (replaceUid != null && !(Number.isInteger(replaceUid) && (target.items || []).some((x) => x.uid === replaceUid))) return fail(ERR.BAD_TARGET, 'replace: not equipped on the target');
     const policy = this._slotPolicy();
-    // [ASSUMED] a second 变形同构体 is refused before anything moves. Official accepts() is always true.
+    // [ASSUMED] a second 变形同构�?is refused before anything moves. Official accepts() is always true.
     if (!policy.accepts(target.items || [], rec)) return fail(ERR.BAD_TARGET, 'morph already equipped');
     const consume = typeof rec.kind === 'string' && rec.kind.startsWith('consume_on_equip');
     if (consume) {
       const key = 'item:' + itemKey(item.id);
       if (!this.m.registry.has(key)) return fail(ERR.BAD_TARGET, 'effect not available');
       // a full carrier replaces first, consumables included (PRTS Stronghold-Protocol/帮助 "达到上限强行佩戴会改为替换装备：指定一件已佩戴
-      // 装备替换为将要佩戴的装备，并销毁被指定的装备"; GitHub #263): the pick (else the oldest) comes off before the effect —
-      // which so sees the carrier without it (its bonds) — and is destroyed once the effect went through, leaving the slot
+      // 装备替换为将要佩戴的装备，并销毁被指定的装�?; GitHub #263): the pick (else the oldest) comes off before the effect �?      // which so sees the carrier without it (its bonds) �?and is destroyed once the effect went through, leaving the slot
       // free (the normal 博士投影 then takes it: ev.keep, so it no longer pushes the oldest item out). A refusal puts it back.
       const off = this._takeReplaced(target, replaceUid, rec);
       const ev = { item, target, golden: !!rec.isGolden, keep: false, error: null, consumed: true };
@@ -63,7 +62,7 @@ export class PlayerItems {
         this.m.dispatchItem(this, off.piece, target, 'onDestroy', { item: off.piece, holder: target, reason: 'replace' });
         this.releaseItemStock(off.piece);
       }
-      // the handler may have destroyed the target (信标) — resolve the item again
+      // the handler may have destroyed the target (信标) �?resolve the item again
       const again = this.find(item.uid);
       if (again && again.area !== 'equipped') this._detach(again);
       if (ev.keep) {
@@ -79,7 +78,7 @@ export class PlayerItems {
     }
     this._detach(iloc);
     if (this.completesItemMerge(item.id)) {
-      // an identical normal copy is already owned (equipped somewhere): merge instead of equipping — the golden
+      // an identical normal copy is already owned (equipped somewhere): merge instead of equipping �?the golden
       // item goes to the hand (research 04 §2 "copies in hand and on operators both count")
       if (this._mergeItem(item.id, item)) { this.recompute(); return OK; }
       if (!this.find(item.uid)) this.stow(item, { allowTemp: true });
@@ -119,8 +118,8 @@ export class PlayerItems {
   }
 
   /**
-   * A consume-on-equip item on a full carrier: take the item `replaceUid` names (else the oldest) off `target` — not yet
-   * destroyed — and return { piece, idx } (null while a slot is free).
+   * A consume-on-equip item on a full carrier: take the item `replaceUid` names (else the oldest) off `target` �?not yet
+   * destroyed �?and return { piece, idx } (null while a slot is free).
    */
   _takeReplaced(target, replaceUid = null, incoming = null) {
     target.items = target.items || [];
@@ -133,7 +132,7 @@ export class PlayerItems {
     return { piece, idx };
   }
 
-  /** g.art {itemUid, row, col, dir?}: the Art's range grid is rotated by `dir` (absent ⇒ RIGHT). */
+  /** g.art {itemUid, row, col, dir?}: the Art's range grid is rotated by `dir` (absent �?RIGHT). */
   useArt(itemUid, row, col, dir) {
     const g = this._gate(); if (g) return g;
     const d = parseDir(dir);

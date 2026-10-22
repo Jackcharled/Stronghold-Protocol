@@ -52,7 +52,7 @@ export class MatchViews {
         return this.draft && this.draftTurn() === ps.playerId ? 'deciding' : 'acting';
       case PHASE.SP_DRAFT:
         if (this.sp && this.sp.picks[ps.playerId] != null) return 'ready';
-        return this.sp && this.spTurn() === ps.playerId ? 'deciding' : 'acting';
+        return this.sp && (this.sp.concurrent ? this.spPending(ps) : this.spTurn() === ps.playerId) ? 'deciding' : 'acting';
       case PHASE.PREP: return ps.ready ? 'ready' : 'acting';
       case PHASE.COMBAT: case PHASE.FINAL_ASSAULT: case PHASE.HIDDEN_CORE: {
         const f = this.fields.find((x) => x.players.includes(ps.playerId));
@@ -79,6 +79,9 @@ export class MatchViews {
       serverNow: this.sched.now(),
       modeId: this.modeId,
       difficulty: this.difficulty,
+      playerCapacity: this.playerCapacity,
+  ...(this.capacityExperiment ? { poolGroups: this.poolGroups.map((g) => ({ id: g.id, scale: g.scale || 1, playerIds: g.playerIds.slice() })) } : {}),
+      experimental: { ...this.experimental },
       stageId: this.stageId,
       setupRevision: this.setupRevision,
       rerollVote: this.setupVote ? {
@@ -101,6 +104,14 @@ export class MatchViews {
       combatMode: this.clientCombat ? 'client' : 'server',
       // solo pause (g.pause, DESIGN §14): the battle, its field clock and every deadline are frozen while true
       paused: !!this.paused,
+      // experimental rescue: the client shows the window and each donor/target predicate; the server rechecks all
+      revival: this.revivalEnabled ? {
+        enabled: true,
+        matchId: this.battlePrefix,
+        windowOpen: this.revivalWindowOpen(),
+        deadline: this.revivalWindowOpen() ? this._revival.deadline : 0,
+        eligible: this.revivalWindowOpen() ? this.order.filter((ps) => this.revivalDonorEligible(ps)).map((ps) => ps.playerId) : [],
+      } : { enabled: false },
       players: this.order.map((ps) => ({
         playerId: ps.playerId,
         seat: ps.seat,
@@ -109,8 +120,12 @@ export class MatchViews {
         connected: ps.isBot || (ps.connected && !ps.left),
         alive: ps.alive,
         lp: Math.max(0, ps.lp),
+        pendingDeath: ps.pendingDeath === true,
+        revived: ps.revived === true,
+        ...(ps.revivalUnavailableReason ? { revivalUnavailableReason: ps.revivalUnavailableReason } : {}),
         bandId: ps.bandId,
         shopLevel: ps.shop.level,
+        poolGroup: this.poolGroupOf(ps),
         boardCount: ps.deployCount,
         ready: this.phase === PHASE.INFO_CHECK ? ps.infoReady : ps.ready,
         // the strip of a teammate watching this player (DESIGN §20.15): every bond with members, layers or an active tier
@@ -119,7 +134,7 @@ export class MatchViews {
         // nobody can watch an eliminated player (g.watch refuses them, they have no field) and the result screen reads
         // m.result's own bonds, so their layers would only cost every m.public bytes for the rest of the match
         // (the mode-off bonds with members included, `off: true`, as in m.private — bondsMeta.offBondCounts)
-        bonds: ps.alive ? bondList(this.gd, ps.bondsView(), { off: offBondCounts(ps.gd || this.gd, ps) }) : [],
+        bonds: ps.alive || ps.pendingDeath ? bondList(this.gd, ps.bondsView(), { off: offBondCounts(ps.gd || this.gd, ps) }) : [],
         fieldId: this.fieldOf(ps),
         status: this.statusOf(ps),
         autoplay: ps.autoplay,
@@ -148,17 +163,25 @@ export class MatchViews {
       v.draft = {
         order: d.order.slice(), turn: this.draftTurn(), picks: { ...d.picks }, skipsLeft: { ...d.skipsLeft }, turnDeadline: d.turnDeadline || 0,
         turnSeconds: d.untimed ? 0 : this.bandTurnMs() / 1000, untimed: !!d.untimed,
+        ...(this.capacityExperiment ? { allowRepeat: true } : {}),
+        ...(d.concurrent ? { concurrent: true } : {}),
       };
     }
     if (this.phase === PHASE.SP_DRAFT && this.sp) {
       const s = this.sp;
       v.sp = {
         family: s.family, name: s.name, desc: s.desc, eventId: s.eventId,
-        cards: s.cards.map(c => ({ ...cardView(c), soldOut: c.kind === 'item' && !this.itemPool.canGain(c.id) })), order: s.order.slice(),
+        cards: s.cards.map(c => ({ ...cardView(c), soldOut: c.kind === 'item'
+          && !this.alivePlayers().some((p) => this.itemPoolFor(p).canGain(c.id)) })), order: s.order.slice(),
         turn: this.spTurn(), picks: { ...s.picks }, taken: { ...s.taken }, untimed: !!s.untimed,
+        ...(this.capacityExperiment ? { allowRepeat: true } : {}),
+        ...(s.concurrent ? { concurrent: true } : {}),
       };
     }
-    if (this.phase === PHASE.UNITE && this.unitePlan) v.unite = { helpers: this.unitePlan.helpers.map((p) => p.playerId), leakers: this.unitePlan.leakers.map((p) => p.playerId) };
+    if (this.phase === PHASE.UNITE && this.unitePlan) v.unite = { helpers: this.unitePlan.helpers.map((p) => p.playerId), leakers: this.unitePlan.leakers.map((p) => p.playerId),
+      ...(this.capacityExperiment ? { round: this.unitePlan.uniteRound || 1, timeLimit: this.unitePlan.timeLimit || 0,
+        gameSpeed: this.unitePlan.gameSpeed || 1,
+        totalBudget: this.unitePlan.totalBudget || 0, remainingBudget: this.unitePlan.remainingBudget || 0 } : {}) };
     // SETTLE after a 联防: its outcome as data (settle.js uniteResultView; GitHub #235, PR #112) — { through, helpers,
     // leakers, losses: { playerId: the LP settlement charged this round } } — the client's result box reads the viewer's
     // own charge from it; absent when no 联防 resolved (the client then shows the round's own battle result)

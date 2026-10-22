@@ -44,6 +44,7 @@ import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import { C2S, validateC2S } from '../shared/protocol.js';
 import { ERR, ERR_TEXT, NAME_MAX_LEN, PROTOCOL_VERSION } from '../shared/constants.js';
+import { verifyAdminToken, readUserToken } from './adminAuth.js';
 
 /** Tunables (all overridable through the Network / SessionRegistry constructors). */
 export const NET_DEFAULTS = Object.freeze({
@@ -130,6 +131,10 @@ export class Session {
     this.addr = '?';
     /** @type {string | null} per-network limit key of the latest connection (null = not limited), see clientAddress */
     this.limitKey = null;
+    /** @type {string | null} signed account identity (uid), only from a verified user token */
+    this.accountId = null;
+    /** @type {string | null} signed 4-digit account tag */
+    this.accountTag = null;
     /**
      * @type {number | null} lobby-owned extension of the reconnect window for this session (ms; null = the registry's
      * window). A solo run keeps its session resumable for the official `singleReconnectTime` (24 h) — see lobby.js.
@@ -185,6 +190,23 @@ export class SessionRegistry {
 
   /** @param {string} playerId @returns {Session | null} */
   byId(playerId) { return this.byPlayerId.get(playerId) || null; }
+
+  /** @param {string} accountId @returns {Session[]} sessions currently bound to this account */
+  byAccount(accountId) {
+    if (typeof accountId !== 'string' || !accountId) return [];
+    return [...this.byPlayerId.values()].filter((s) => s.accountId === accountId);
+  }
+
+  /** Rotate a session's reconnect token (account takeover invalidates the old device's token). */
+  rotateToken(s) {
+    if (!s) return null;
+    if (this.byTokenMap.get(s.token) === s) this.byTokenMap.delete(s.token);
+    let token;
+    do token = newToken(); while (this.byTokenMap.has(token));
+    s.token = token;
+    this.byTokenMap.set(token, s);
+    return token;
+  }
 
   /** @param {Session} s */
   remove(s) {
@@ -696,8 +718,14 @@ export class Network {
       session.disconnectedAt = null;
     }
     // 每次 hello（含重连/重复）都同步 tag，避免重连后丢失账号代码
-    session.tag = (typeof msg.tag === 'string' && /^[0-9]{4}$/.test(msg.tag)) ? msg.tag : null;
+    const account = readUserToken(msg.accountToken);
+    if (account) {
+      session.accountId = String(account.uid);
+      session.accountTag = account.tag;
+      session.tag = account.tag || session.tag;
+    }
     session.guest = msg.guest === true;
+    session.admin = verifyAdminToken(msg.adminToken);
     session.name = name;
     session.lastSeen = now;
     session.addr = conn.ip;

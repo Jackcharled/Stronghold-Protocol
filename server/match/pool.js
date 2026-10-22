@@ -1,4 +1,6 @@
 // server/match/pool.js — the SHARED chess pool (copies per base chess, across all players), per-match bans,
+import { MAX_SEATS } from '../../shared/constants.js';
+import { MAX_PLAYER_CAPACITY } from '../../shared/playerCapacity.js';
 // copy-weighted shop rolls (research 00-INDEX §3, §6; DESIGN §6.2).
 //
 // Model:
@@ -277,8 +279,8 @@ export function createPoolGroups(gd, players, { banned = [], experimental = fals
   if (!Array.isArray(players) || players.length < 1 || players.length > MAX_PLAYER_CAPACITY) throw new RangeError('pool groups require 1..20 players');
   const sorted = players.slice().sort((a, b) => a.seat - b.seat);
   const count = sorted.length;
-  const chunked = experimental && fixedChunks && !independent;
-  const groups = independent ? count : chunked || experimental && count >= 7 ? Math.ceil(count / 4) : 1;
+  const chunked = experimental && !independent && (fixedChunks || count > MAX_SEATS);
+  const groups = independent ? count : chunked ? Math.ceil(count / 4) : 1;
   const size = Math.floor(count / groups), remainder = count % groups;
   let offset = 0;
   return Array.from({ length: groups }, (_, i) => {

@@ -32,6 +32,10 @@ export async function createPersistence({ opts = {}, registry, lobby, log }) {
   try { restored = await persister.restore(); }
   catch (e) { restored = { ok: false, reason: e.message }; log.warn?.(`[persist] restore failed (${e.message}); starting fresh`); }
   persister.start();
+  // 建房 / 开局时立刻落盘一次，把「首次持久化 10 秒窗口」缩到 0（room.create / startMatch 调用）
+  lobby.persistFlush = (reason = 'event') => {
+    try { persister.flush(reason).catch(() => {}); } catch { /* ignore */ }
+  };
   log.info?.(`[persist] checkpoints on (every ${persister.saveMs / 1000} s)`);
   return {
     persister, store, restored,

@@ -71,7 +71,13 @@ export async function quitMatch() {
 export function ExitModal({ open, onClose, solo, onAway }) {
   const [busy, setBusy] = useState(null);
   // a spectator seat (community report #26) only leaves its seat: nothing of the match is given up
-  const spectator = useStore((s) => isSpectating(s.room, s.me.playerId));
+  // hidden admin watchers are not in room.spectators by design, but must use the same leave copy
+  const adminWatch = (() => {
+    try {
+      return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
+    } catch { return false; }
+  })();
+  const spectator = useStore((s) => isSpectating(s.room, s.me.playerId)) || adminWatch;
   const quit = async () => {
     setBusy('quit');
     await quitMatch();

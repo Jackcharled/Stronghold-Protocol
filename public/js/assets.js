@@ -771,6 +771,32 @@ export function unloadSpineData(entry, _value, keep) {
 
 /** Spine LRU memory budget: estimated bytes (`spineDataWeight`) of idle skeletons kept while a scene is shown. */
 export const SPINE_IDLE_BYTES = 48 * 1024 * 1024;
+/**
+ * Spine downloads in flight. A 20-seat room loads roughly three files per operator; the original six
+ * serialized those into many round trips. Desktop/high-core machines can safely run 10–12 at once,
+ * while phones keep the original six (memory and mobile network).
+ */
+export function defaultSpineConcurrency(nav = globalThis.navigator) {
+  const ua = String(nav?.userAgent || '');
+  if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) {
+    const conn = nav?.connection || nav?.mozConnection || nav?.webkitConnection;
+    if (conn?.saveData) return 2;
+    if (/(^|-)2g|(^|-)3g/i.test(String(conn?.effectiveType || ''))) return 3;
+    const mem = Number(nav?.deviceMemory) || 0;
+    return mem > 0 && mem <= 4 ? 3 : 4;
+  }
+  const cores = Number(nav?.hardwareConcurrency) || 4;
+  const mem = Number(nav?.deviceMemory) || 0;
+  if (mem > 0 && mem <= 4) return 8;
+  return Math.min(12, Math.max(8, Math.round(cores * 0.75)));
+}
+
+/** Phones keep a smaller idle Spine cache; reload-on-demand is cheaper than holding models until OOM. */
+export function defaultSpineIdleBytes(nav = globalThis.navigator) {
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(String(nav?.userAgent || ''))
+    ? 32 * 1024 * 1024
+    : SPINE_IDLE_BYTES;
+}
 /** How long a released skeleton is safe from the weight budget (a prep ⇄ battle switch re-acquires within it). */
 export const SPINE_IDLE_GRACE_MS = 15000;
 /**
@@ -920,13 +946,13 @@ export function createAssets(options) {
     },
     max: opts.spineMax ?? 60,
     timeout: opts.spineTimeout ?? 20000,
-    concurrency: opts.spineConcurrency ?? 6,
+    concurrency: opts.spineConcurrency ?? defaultSpineConcurrency(),
     // memory budget (a parsed skeleton holds ~0.1–12 MB): idle skeletons beyond SPINE_IDLE_BYTES go, and all of
     // them once no scene has referenced or held any for SPINE_QUIET_DELAY_MS (lobby / room / result; a field view in
     // battle mode holds the cache — see the header), each after a grace that covers a prep ⇄ battle switch; evictions
     // run SPINE_EVICT_DELAY_MS after the release that allows them (a scene switch takes its models back first)
     weigh: opts.spineWeigh || ((key, value) => spineDataWeight(value)),
-    maxIdleWeight: opts.spineIdleBytes ?? SPINE_IDLE_BYTES,
+    maxIdleWeight: opts.spineIdleBytes ?? defaultSpineIdleBytes(),
     quietWeight: opts.spineQuietBytes ?? 0,
     idleGrace: opts.spineIdleGrace ?? SPINE_IDLE_GRACE_MS,
     quietDelay: opts.spineQuietDelay ?? SPINE_QUIET_DELAY_MS,
@@ -1038,12 +1064,19 @@ export function createAssets(options) {
      */
     async preload(urls, onProgress) {
       const list = [...new Set((Array.isArray(urls) ? urls : []).map(str).filter(Boolean))];
-      let done = 0, ok = 0;
-      await Promise.all(list.map((u) => image(u).then((img) => {
-        done++;
-        if (img) ok++;
-        try { onProgress?.(done, list.length, u); } catch { /* ignore */ }
-      })));
+      const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(String(globalThis.navigator?.userAgent || ''));
+      const limit = mobile ? 3 : 8;
+      let next = 0, done = 0, ok = 0;
+      const worker = async () => {
+        while (next < list.length) {
+          const u = list[next++];
+          const img = await image(u);
+          done++;
+          if (img) ok++;
+          try { onProgress?.(done, list.length, u); } catch { /* ignore */ }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
       return { ok, failed: list.length - ok, total: list.length };
     },
     /**

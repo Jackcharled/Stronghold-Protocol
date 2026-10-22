@@ -43,7 +43,7 @@ const noopLog = { info() {}, warn() {}, error() {}, debug() {} };
 /** The lobby options a worker can take (JSON-safe: no callbacks, no data, no class). */
 export function wireOptions(opts) {
   const out = {};
-  for (const k of ['roomCode', 'mode', 'difficulty', 'modeId', 'aiPicksLast', 'seats', 'spectators', 'seed', 'matchNo', 'cs', 'vs', 'requireCs', 'kitted']) {
+  for (const k of ['roomCode', 'mode', 'difficulty', 'modeId', 'aiPicksLast', 'seats', 'spectators', 'hiddenSpectators', 'seed', 'matchNo', 'cs', 'vs', 'requireCs', 'kitted']) {
     if (opts[k] !== undefined) out[k] = opts[k];
   }
   // A test room must arrive as a test match. Forwarding these only when the flag is set keeps every other
@@ -134,7 +134,7 @@ export class MatchProxy {
     this.opts.hostId = typeof playerId === 'string' ? playerId : null;
     this._notify('setHost', [playerId]);
   }
-  addSpectator(playerId) { this._notify('addSpectator', [playerId]); }
+  addSpectator(playerId, hidden = false) { this._notify('addSpectator', [playerId, hidden === true]); }
   removeSpectator(playerId) { this._notify('removeSpectator', [playerId]); }
   /** The match's diagnostics in the worker (tests). @returns {Promise<any>} */
   diag() { return this.disposed ? Promise.resolve(null) : this._request('diag', [], true); }

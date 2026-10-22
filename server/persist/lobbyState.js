@@ -36,7 +36,7 @@ const clone = (v) => (v == null ? null : structuredClone(v));
 /** A session's settings (the lobby replaces these frozen values, never mutates them: a reference compare finds a change). */
 export const SESSION_FIELDS = Object.freeze(['loadout', 'ops', 'notOwned', 'diy', 'card', 'loadoutCs', 'notOwnedCs', 'diyCs']);
 const SEAT_FIELDS = ['seat', 'playerId', 'name', 'isBot', 'ready', 'left', 'loadout', 'revivalVote', 'ops', 'notOwned', 'diy', 'card',
-  'owner', 'loadoutCs', 'notOwnedCs', 'diyCs', 'band'];
+  'owner', 'loadoutCs', 'notOwnedCs', 'diyCs', 'band', 'accountId'];
 
 /** A room the document can carry: not disposed, no gameplay plugins. */
 export function persistableRoom(room) {
@@ -71,6 +71,8 @@ export function roomDoc(room, matchRef, sessionOf) {
     code: room.code, mode: room.mode, difficulty: room.difficulty, aiPicksLast: !!room.aiPicksLast, hostId: room.hostId,
     experimental: room.experimental, source: room.source, ownerKey: room.ownerKey, ownerKeys: room.ownerKeys ? [...room.ownerKeys] : null,
     matchKey: room.matchKey, matchKeys: room.matchKeys ? [...room.matchKeys] : null, matchCount: room.matchCount | 0, createdAt: room.createdAt,
+    ttlMs: room.ttlMs, noExpire: room.noExpire === true,
+    matchLive: !!room.match, liveRound: room.liveRound | 0, livePhase: room.livePhase || null,
     seats: room.seats.map(seat),
     spectators: room.spectators.map((s) => ({ playerId: s.playerId, name: s.name, ...(s.owner ? { owner: true } : {}) })),
     match,
@@ -80,6 +82,7 @@ export function roomDoc(room, matchRef, sessionOf) {
 /** One session's record (its settings by reference: JSON.stringify serializes them, nothing is copied). */
 export function sessionDoc(s) {
   const doc = { playerId: s.playerId, token: s.token, name: s.name, roomCode: s.roomCode, notice: s.notice || null,
+    accountId: s.accountId || null, accountTag: s.accountTag || null,
     connected: !!s.connected, disconnectedAt: s.disconnectedAt ?? null,
     resumeWindowMs: typeof s.resumeWindowMs === 'number' && s.resumeWindowMs > 0 ? s.resumeWindowMs : null, matchHeld: !!s.matchHeld,
     skins: s.skins || {} };
@@ -130,6 +133,8 @@ export function restoreLobby({ doc, registry, lobby, now = Date.now(), log = nul
       session.connected = false;
       session.disconnectedAt = since;
       session.resumeWindowMs = own;
+      session.accountId = typeof s.accountId === 'string' ? s.accountId : null;
+      session.accountTag = typeof s.accountTag === 'string' && /^[0-9]{4}$/.test(s.accountTag) ? s.accountTag : null;
       session.matchHeld = !!s.matchHeld;
       session.roomCode = typeof s.roomCode === 'string' && ROOM_RE.test(s.roomCode) ? s.roomCode : null;
       session.notice = typeof s.notice === 'string' ? s.notice : null;
@@ -166,6 +171,7 @@ function roomFrom(r, sessions, lobby, now) {
     || !DIFFICULTIES.includes(r.difficulty) || !isExperimental(r.experimental) || !Array.isArray(r.seats)) return null;
   const room = new Room(r.code, r.mode, r.difficulty, Number.isFinite(r.createdAt) ? r.createdAt : now, experimentalOptions(r.experimental));
     room.ttlMs = Number.isFinite(r.ttlMs) ? r.ttlMs : null;
+    room.noExpire = r.noExpire === true;
   if (r.seats.length !== room.seats.length) return null;
   const inMatch = !!r.match;
   room.content = lobby.vanilla;
@@ -174,6 +180,8 @@ function roomFrom(r, sessions, lobby, now) {
   room.ownerKey = typeof r.ownerKey === 'string' ? r.ownerKey : null;
   room.ownerKeys = Array.isArray(r.ownerKeys) ? new Set(r.ownerKeys.filter((k) => typeof k === 'string')) : null;
   room.matchCount = Number.isSafeInteger(r.matchCount) && r.matchCount >= 0 ? r.matchCount : 0;
+  room.liveRound = Number.isSafeInteger(r.liveRound) && r.liveRound >= 0 ? r.liveRound : 0;
+  room.livePhase = typeof r.livePhase === 'string' ? r.livePhase : null;
   if (inMatch) {
     room.matchKey = typeof r.matchKey === 'string' ? r.matchKey : null;
     room.matchKeys = Array.isArray(r.matchKeys) ? new Set(r.matchKeys.filter((k) => typeof k === 'string')) : null;
@@ -210,6 +218,7 @@ function fallbackRoom(r, lobby, now) {
   try {
     const room = new Room(r.code, r.mode, r.difficulty, Number.isFinite(r.createdAt) ? r.createdAt : now);
     room.content = lobby.vanilla;
+    room.noExpire = r.noExpire === true;
     room.matchCount = Number.isSafeInteger(r.matchCount) ? r.matchCount : 0;
     room.aiPicksLast = r.mode === 'coop' && r.aiPicksLast === true;
     (Array.isArray(r.seats) ? r.seats : []).forEach((s, i) => {

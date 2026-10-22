@@ -29,13 +29,13 @@
 
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { PHASE } from '../../../shared/constants.js';
-import { html, Button, Icon, PingPill, Countdown, Tooltip, MicroLabel, DifficultyTag, Modal, useTicker } from './components.js';
+import { html, Button, Icon, PingPill, Countdown, Tooltip, MicroLabel, DifficultyTag, Modal, useTicker, secondsLeft } from './components.js';
 import { Sprite, LpTower, GIcon, LocalSprite } from './gameComponents.js';
 import { data, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
 import { reducedMotion } from './device.js';
 import { serverNow } from '../store.js';
-import { isCombatPhase, isBossPhase, prepCapsuleLabel, bossFrac, bossPctText, fmtNum, shopBlockReason } from './gameLogic.js';
+import { isCombatPhase, isBossPhase, prepCapsuleLabel, bossFrac, bossPctText, fmtNum, shopBlockReason, uniteBudgetInfo } from './gameLogic.js';
 import { overtimeState, overtimeDrainPerSec, remainAt } from './matchStatus.js';
 import { hotkeyLabelOf } from './settings.js';
 import { t, tParts, N_ } from '../../../shared/i18n.js';
@@ -458,6 +458,27 @@ export function PauseButton({ paused, busy = false, onToggle }) {
  *   live: the own battle's pending LP loss (liveLp): the tower keeps the settled lp and adds a red −N tick, 联防中 during 联防;
  *     `left` (a leaker in 联防): its enemies still standing — the capsule's ×N tag
  */
+/** Expanded-room 联防 budget above the top bar (reference UniteBudgetNote). */
+export function UniteBudgetNote({ pub }) {
+  const budget = uniteBudgetInfo(pub);
+  useTicker(pub?.deadline > 0 ? 250 : 0);
+  if (!budget) return null;
+  // Show the segment that is actually being played (150 for a relay segment), not the unused 300 total.
+  const segment = Number.isFinite(Number(pub?.unite?.timeLimit)) && Number(pub.unite.timeLimit) > 0
+    ? Number(pub.unite.timeLimit)
+    : budget.remaining;
+  const speed = Number(pub?.unite?.gameSpeed) > 0 ? Number(pub.unite.gameSpeed) : 2;
+  const segmentSeconds = Math.round((segment / speed) * 100) / 100;
+  const total = Number(pub?.unite?.totalBudget) || budget.total || 0;
+  const relay = total > segment && segment > 0;
+  const round = Math.max(1, Math.min(2, Number(pub?.unite?.round) || 1));
+  const realLeft = secondsLeft(pub?.deadline);
+  return html`<div class="gtop__budget" data-testid="unite-budget" data-total=${budget.total} data-remaining=${budget.remaining}>
+    <span>${relay ? t('联防第 {round}/2 段：{n} 秒', { round, n: segmentSeconds }) : t('联防时间：{n} 秒', { n: segmentSeconds })}</span>
+    <span>${realLeft == null ? t('现实倒计时：--') : t('现实倒计时：{n} 秒', { n: realLeft })}</span>
+  </div>`;
+}
+
 export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, onReady, readyBusy, readyCount, playerCount, pen = false, penAvail = false, onPen = () => {},
   config = null, frozenAt = null, pause = null, live = null, spectator = false,
   spectators = null, myId = null, isHost = false, onRemoveSpectator = null, room = null }) {
@@ -530,6 +551,7 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
       <${OvertimeWarning} ot=${ot} />
       ${showReady ? html`<${ReadyToggle} priv=${priv} onToggle=${onReady} busy=${readyBusy} readyCount=${readyCount} total=${playerCount} />` : null}
     </div>
+    <${UniteBudgetNote} pub=${pub} />
   </header>`;
 }
 

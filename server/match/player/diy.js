@@ -1,41 +1,38 @@
-// server/match/player/diy.js — PlayerState methods: 自选编队 (0.2.0 DIY; research 0.2.0 §2, the owner's decisions of
-// 2026-10-05) — the human's picks for the four DIY slots and what a slotted operator changes in the player's own state.
+// server/match/player/diy.js �?PlayerState methods: 自选编�?(0.2.0 DIY; research 0.2.0 §2, the owner's decisions of
+// 2026-10-05) �?the human's picks for the four DIY slots and what a slotted operator changes in the player's own state.
 //   * setDiy: the seat's picks when the match started (seats[].diy, server/lobby.js room.diy), re-checked against this
 //     match's data and kit registry (shared/protocol.js checkDiyPicks, server/sim/content/kits/index.js KITTED_CHARS) and
-//     fixed for the match — an out-of-match setting: a change during a match applies to the next one. Bots field no 自选
-//     piece [ASSUMED]. `diy` = { [slotBaseId]: { charId, skillIndex, uniEquipId } } (frozen; uniEquipId null = none).
+//     fixed for the match �?an out-of-match setting: a change during a match applies to the next one. Bots field no 自�?//     piece [ASSUMED]. `diy` = { [slotBaseId]: { charId, skillIndex, uniEquipId } } (frozen; uniEquipId null = none).
 //   * the player's data view (diyGameData): with picks, `ps.gd` is a view of the match's GameData whose chess(id) is the
-//     composed 自选 record of a slotted slot, both forms (shared/diy.js diyRecord: the slot's identity — tier, price, sell
-//     price, the 3 → elite merge, status: E2 Lv1 skill rank 4 / E2 Lv60 rank 7 with the module at stage 1 at tier 5, 3 at
-//     tier 6 — and the operator's body: name, class, position, stats, range, the pick's skill and module, no 特质, the
+//     composed 自�?record of a slotted slot, both forms (shared/diy.js diyRecord: the slot's identity �?tier, price, sell
+//     price, the 3 �?elite merge, status: E2 Lv1 skill rank 4 / E2 Lv60 rank 7 with the module at stage 1 at tier 5, 3 at
+//     tier 6 �?and the operator's body: name, class, position, stats, range, the pick's skill and module, no 特质, the
 //     bonds derived from its factions; `diyFor` = the slot, `charId` = the operator). Every rule that reads a record
-//     through ps.gd — bonds (bondsMeta), the 特质 / meta effects (effectsMeta makeCtx), placement and summon ranges, the
-//     AI 托管 evaluation, names in toasts and tickers — sees the operator. A player without picks keeps the match's
-//     GameData itself: nothing changes for anyone else. token(id) also finds the 自选 summons (data/backups.json
+//     through ps.gd �?bonds (bondsMeta), the 特质 / meta effects (effectsMeta makeCtx), placement and summon ranges, the
+//     AI 托管 evaluation, names in toasts and tickers �?sees the operator. A player without picks keeps the match's
+//     GameData itself: nothing changes for anyone else. token(id) also finds the 自�?summons (data/backups.json
 //     `tokens`) and placeableTokens() reads their variant of the owner form (`<charId>@<statusKey>`, shared/diy.js
-//     diyTokenOwner), so a placeable 自选 summon comes to the hand like any operator's (PRTS Stronghold-Protocol/帮助 §战斗部署).
+//     diyTokenOwner), so a placeable 自�?summon comes to the hand like any operator's (PRTS Stronghold-Protocol/帮助 §战斗部署).
 //   * the per-player stock (initDiyStock, called by the match once its bans are drawn): each slotted DIY piece has copies
-//     of its own — the tier's pool copies, 8 at tier 5 and 5 at tier 6 [ASSUMED: research 0.2.0 §2.5, the excel has no
-//     stock field] — drawn by this player only; it never enters the shared pool (PR #71's shared shop was the mistake to
-//     avoid); in co-op its copies double like the shared pool's (gamedata.js poolCopies × coopPoolMultiplier: 16 / 10 —
-//     the maintainer's decision of 2026-10-15, GitHub #650, DESIGN §32.14.31). A piece all of whose bonds are switched
+//     of its own �?the tier's pool copies, 8 at tier 5 and 5 at tier 6 [ASSUMED: research 0.2.0 §2.5, the excel has no
+//     stock field] �?drawn by this player only; it never enters the shared pool (PR #71's shared shop was the mistake to
+//     avoid); in co-op its copies double like the shared pool's (gamedata.js poolCopies × coopPoolMultiplier: 16 / 10 �?//     the maintainer's decision of 2026-10-15, GitHub #650, DESIGN §32.14.31). A piece all of whose bonds are switched
 //     off this match (本局禁用: the drawn bans and the mode's static list)
-//     gets no stock and so leaves the shop, like a preset chess whose bonds are all off (PRTS Stronghold-Protocol：盟约 "禁用盟约有可能
-//     影响自选的支援干员"); 协防 (emptyShip) is never banned, so a prototype always stays. poolOf(baseId) routes every copy
+//     gets no stock and so leaves the shop, like a preset chess whose bonds are all off (PRTS Stronghold-Protocol：盟�?"禁用盟约有可�?//     影响自选的支援干员"); 协防 (emptyShip) is never banned, so a prototype always stays. poolOf(baseId) routes every copy
 //     taken or returned for a slotted slot to that stock (buy, reward picks, merges, promotions, sells, temp, elimination).
 //   * the shop's draws (diyRollEntries): the stock of each slotted slot joins this player's copy-weighted shop rolls,
 //     weighted like any chess of its tier, once the 调度中心 has reached the slot's shopLevel (activity_table
 //     shopLevelDisplayDataDict lists the tier-5 slots at level 5 and the tier-6 slots at level 6; PRTS 帮助 "仅在调度中心
-//     等级 ≥ 干员所在等阶" is that persistent shop). The price is the slot's (any chess of its tier: 4).
+//     等级 �?干员所在等�? is that persistent shop). The price is the slot's (any chess of its tier: 4).
 //   * the promotion reward (pushRewardOffer with no explicit ids) draws diyStockEntries() under the reward tier
-//     min(shopLevel + 1, 6): a tier-5 自选 piece can appear when the 调度中心 reaches 4, a tier-6 piece when it reaches
+//     min(shopLevel + 1, 6): a tier-5 自�?piece can appear when the 调度中心 reaches 4, a tier-6 piece when it reaches
 //     5, one shop level before the ordinary shop. Stronghold-Protocol/帮助 干员晋升 names that refresh and no second pool; the owner
-//     decided on 2026-10-12 that it includes 自选 of the newly reached tier. 0.2.0 had [ASSUMED] the shop-level gate
+//     decided on 2026-10-12 that it includes 自�?of the newly reached tier. 0.2.0 had [ASSUMED] the shop-level gate
 //     for this refresh too (DESIGN §25); §30.23 reverses it. A piece is not guaranteed. Banned slots and `left <= 0`
 //     stay out. Explicit-id offers do not use this draw.
 //   * random grants (diyStockEntries, 0.2.0 WE2 #9): an effect, reward or 机变 card that grants this player a random
-//     operator from the pool draws its stock too — 「自选干员放入后模拟中的补给池随机范围也将被相应扩大」 (bilibili), "调度中心
-//     随机资源的范围将被扩大" (PRTS 新手教程) — under the roll's own tier rules (the effect's tier / maxTier: no 调度中心 gate,
+//     operator from the pool draws its stock too �?「自选干员放入后模拟中的补给池随机范围也将被相应扩大�?(bilibili), "调度中心
+//     随机资源的范围将被扩�? (PRTS 新手教程) �?under the roll's own tier rules (the effect's tier / maxTier: no 调度中心 gate,
 //     as for a preset chess) and filters (bonds read through the player's data view).
 // Installed on PlayerState.prototype by server/match/PlayerState.js (a method container: never instantiated; `this` is
 // the player state).
@@ -49,8 +46,8 @@ const posIntOr = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 
 /**
- * The copies of a player's slotted DIY pieces — the shared pool's copy interface (has / cap / left / take / give) for
- * those base ids only. `entries`: baseId → { cap, left, tier, shopLevel }.
+ * The copies of a player's slotted DIY pieces �?the shared pool's copy interface (has / cap / left / take / give) for
+ * those base ids only. `entries`: baseId �?{ cap, left, tier, shopLevel }.
  */
 export class DiyStock {
   constructor() {
@@ -90,7 +87,7 @@ export class DiyStock {
 
 /**
  * The player's view of the match's GameData (see the header): `records` maps the ids of the slotted slots (normal and
- * elite) to their composed 自选 records; every other lookup is the match's own.
+ * elite) to their composed 自�?records; every other lookup is the match's own.
  * @param {import('../gamedata.js').GameData} gd
  * @param {Map<string, object>} records
  * @returns {import('../gamedata.js').GameData}
@@ -107,11 +104,10 @@ export function diyGameData(gd, records) {
     token: { value: (id) => gd.token(id) || tokenOf(id) },
     /**
      * GameData.placeableTokens for a slotted slot: the summons its record lists (the pick's skill and talents) that are
-     * placeable, by the variant of the owner form (`bySkill[skillIndex]` sources) — the deploy limit as the count (PRTS
-     * Stronghold-Protocol/帮助 "根据召唤物部署数量上限（非初始持有量）"), the active module's own when its variant has one (`byModule`:
-     * 望's TRP-X "可同时部署的陷阱数量提升", 6 → 7 棋子; SUM-Y stage 2+ 4 drones / summons). The data's deploy limit holds the
-     * token's own talent additions (tools/build-data.mjs tokenTalentDeckBonus, 0.2.0): 麦哲伦 / 令 / 电弧 3, 白铁 2, 夜莺 3 幻影 —
-     * at the owner's potential (`loadout.potential`, PlayerState.loadoutFor; 0.2.2: 望's 棋子 6 below 潜能3, 7 from it).
+     * placeable, by the variant of the owner form (`bySkill[skillIndex]` sources) �?the deploy limit as the count (PRTS
+     * Stronghold-Protocol/帮助 "根据召唤物部署数量上限（非初始持有量�?), the active module's own when its variant has one (`byModule`:
+     * �?s TRP-X "可同时部署的陷阱数量提升", 6 �?7 棋子; SUM-Y stage 2+ 4 drones / summons). The data's deploy limit holds the
+     * token's own talent additions (tools/build-data.mjs tokenTalentDeckBonus, 0.2.0): 麦哲�?/ �?/ 电弧 3, 白铁 2, 夜莺 3 幻影 �?     * at the owner's potential (`loadout.potential`, PlayerState.loadoutFor; 0.2.2: �?s 棋子 6 below 潜能3, 7 from it).
      */
     placeableTokens: {
       value: (chessId, loadout = null) => {
@@ -141,7 +137,7 @@ export function diyGameData(gd, records) {
 
 export class PlayerDiy {
   /**
-   * Fix the 自选 picks for the match (see the header): the seat's picks re-checked against this match's data and kits;
+   * Fix the 自�?picks for the match (see the header): the seat's picks re-checked against this match's data and kits;
    * a slot whose record cannot be composed is left empty. With picks, `this.gd` becomes the player's data view.
    * @param {any} picks `{ [slotBaseId]: { charId, skillIndex?, uniEquipId? } | null }`
    * @param {{ kitted?: Iterable<string> }} [opts] the operators with a kit (default: the registry's KITTED_CHARS; tests may
@@ -154,7 +150,7 @@ export class PlayerDiy {
     const data = gd.raw;
     const res = checkDiyPicks(picks, { data, kitted });
     if (!res || !('ok' in res)) {
-      this.m.log?.warn?.(`[match ${this.m.roomCode}] 自选 picks of ${this.playerId} ignored: ${res && res.detail}`);
+      this.m.log?.warn?.(`[match ${this.m.roomCode}] 自�?picks of ${this.playerId} ignored: ${res && res.detail}`);
       return false;
     }
     const kept = {};
@@ -209,12 +205,12 @@ export class PlayerDiy {
 
   /** The copy accounting of base chess `baseId` for this player: its own stock for a slotted DIY slot, else the shared pool. */
   poolOf(baseId) {
-    return this.diyStock && this.diyStock.has(baseId) ? this.diyStock : this.m.pool;
+    return this.diyStock && this.diyStock.has(baseId) ? this.diyStock : this.m.poolFor(this);
   }
 
   /**
    * The stock entries this player's ordinary shop draws from now ([baseId, entry] with copies left and the 调度中心 at
-   * the slot's shopLevel), or null (none — the shared pool's roll alone, exactly as without picks). The promotion
+   * the slot's shopLevel), or null (none �?the shared pool's roll alone, exactly as without picks). The promotion
    * reward does not use this gate (`diyStockEntries`).
    * @returns {Array<[string, { cap: number, left: number, tier: number, shopLevel: number }]> | null}
    */
@@ -238,7 +234,7 @@ export class PlayerDiy {
   }
 
   /**
-   * The 自选 pick a chess id (normal or elite) of this player fields — its slot's — or null (not a slotted slot).
+   * The 自�?pick a chess id (normal or elite) of this player fields �?its slot's �?or null (not a slotted slot).
    * @param {string} id
    * @returns {{ charId: string, skillIndex: number, uniEquipId: string|null } | null}
    */

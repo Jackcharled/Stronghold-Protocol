@@ -204,14 +204,18 @@
 //   common.js        what the modules share (FLOW_TICKER_PRIORITY, DELAYS, BAND_TURN_SECONDS — re-exported here, OK,
 //                    fail, BOSS_CLOCK_MS)
 
-import { PHASE, modeIdFor } from '../../shared/constants.js';
+import { PHASE, ERR, modeIdFor } from '../../shared/constants.js';
+import { msg } from '../../shared/i18n.js';
+import { REVIVAL_COST, REVIVAL_MIN_DONOR_LP, REVIVAL_WINDOW_SECONDS, REVIVAL_UNAVAILABLE_REASONS } from './match/common.js';
 import { isContentHash } from '../../shared/plugins/identity.js';
 import { Battle } from '../sim/Battle.js';
 import { DataSource } from '../sim/simdata.js';
 import { createRng, deriveSeed } from '../sim/rng.js';
 import { GameData } from './gamedata.js';
 import { RealScheduler } from './scheduler.js';
-import { SharedPool, SharedItemPool, drawDisabledBonds } from './pool.js';
+import { SharedPool, drawDisabledBonds, createPoolGroups, createItemPools } from './pool.js';
+import { experimentalOptions } from '../../shared/experimental.js';
+import { roomCapacity } from '../../shared/playerCapacity.js';
 import { PlayerState } from './PlayerState.js';
 import { EffectDispatcher, getDefaultRegistry } from './effectsMeta.js';
 import { setupMatchWaves } from './waves.js';
@@ -311,6 +315,21 @@ export class Match {
     this.gd = new GameData(this.data, this.modeId);
     if (!this.difficulty) this.difficulty = this.gd.difficulty;
     this.isSolo = this.mode === 'solo' || this.gd.isSolo;
+    /** Locked room-owned rules; absent for ordinary rooms. */
+    this.experimental = experimentalOptions(opts.experimental ?? {
+      revivalEnabled: opts.revivalEnabled === true,
+      disableSharedPool: opts.disableSharedPool === true,
+    });
+    this.revivalEnabled = !this.isSolo && this.experimental.revivalEnabled;
+    this.disableSharedPool = !this.isSolo && this.experimental.disableSharedPool;
+    this.playerCapacity = roomCapacity(this.isSolo ? 'solo' : this.mode, this.experimental);
+    this.capacityExperiment = !this.isSolo && this.playerCapacity > 4;
+    this.twentyPlayerMode = this.capacityExperiment && this.playerCapacity === 20;
+    this.disableDuckLord = this.capacityExperiment && this.experimental.disableDuckLord === true;
+    this.gd.disableDuckLord = this.disableDuckLord;
+    if (opts.seats.length > this.playerCapacity) throw new RangeError('Match: seats exceed room capacity');
+    /** SETTLE-only rescue state: { round, eligible: Set<playerId>, windowOpen, deadline }. */
+    this._revival = null;
     /** 「AI 队友最后选择」 (opts.aiPicksLast, GitHub #338): humans draft before AI seats (MatchPhases.humansFirst) */
     this.aiPicksLast = !this.isSolo && opts.aiPicksLast === true;
     this.ownsScheduler = !opts.scheduler;
@@ -405,10 +424,14 @@ export class Match {
 
     /** @type {Map<string, PlayerState>} */
     this.players = new Map();
-    const seen = new Set();
+    const seen = new Set(), seatIndexes = new Set();
     for (const s of opts.seats) {
       if (!s || typeof s.playerId !== 'string' || seen.has(s.playerId)) continue;
+      if (!Number.isInteger(s.seat) || s.seat < 0 || s.seat >= this.playerCapacity || seatIndexes.has(s.seat)) {
+        throw new TypeError('Match: unique seat index within room capacity required');
+      }
       seen.add(s.playerId);
+      seatIndexes.add(s.seat);
       this.players.set(s.playerId, new PlayerState(this, s));
     }
     if (!this.players.size) throw new TypeError('Match: seats required');
@@ -419,7 +442,10 @@ export class Match {
      * @type {Map<string, { playerId: string, isBot: false, left: false, alive: false, connected: true, spectator: true }>}
      */
     this.spectators = new Map();
+    /** @type {Set<string>} invisible admin watchers: watched like spectators, never listed or counted */
+    this.hiddenSpectators = new Set(Array.isArray(opts.hiddenSpectators) ? opts.hiddenSpectators : []);
     for (const id of Array.isArray(opts.spectators) ? opts.spectators : []) this._spectator(id);
+    for (const id of this.hiddenSpectators) this._spectator(id);
     /**
      * Exactly one human seat at the start (独立模拟, or a 同盟 room started alone / with AI teammates only): nobody waits
      * on anybody, so no phase outside a battle is timed — soloUntimed (user playtest #4 item 3). The mode's own rules
@@ -438,8 +464,18 @@ export class Match {
     this.disabledBonds = bans.drawn;
     this.staticInactiveBonds = bans.staticOff;
     this.bannedChess = bans.banned;
-    this.pool = new SharedPool(this.gd, { banned: bans.banned });
-    this.itemPool = new SharedItemPool(this.gd, () => this.order);
+    this.poolGroups = createPoolGroups(this.gd, this.order, {
+      banned: bans.banned,
+      experimental: this.capacityExperiment,
+      independent: this.disableSharedPool,
+      fixedChunks: this.twentyPlayerMode,
+    });
+    this.pool = this.disableSharedPool ? new SharedPool(this.gd, { banned: bans.banned }) : this.poolGroups[0].pool;
+    this.playerPools = this.disableSharedPool || this.capacityExperiment
+      ? new Map(this.poolGroups.flatMap((g) => g.playerIds.map((id) => [id, g.pool])))
+      : null;
+    this.playerItemPools = createItemPools(this.gd, this.poolGroups, (id) => this.players.get(id));
+    this.itemPool = this.playerItemPools.get(this.poolGroups[0].playerIds[0]);
     // 自选编队 (0.2.0): each human's slotted DIY pieces get their own stock — none for one whose bonds are all off this
     // match (player/diy.js initDiyStock); no randomness is drawn here
     const off = new Set([...bans.drawn, ...bans.staticOff]);
@@ -499,6 +535,10 @@ export class Match {
     this._uniteLeftKey = null;
     /** 联防: { plan, bounds } — per leaker the most survivors settlement can bill (_uniteLeft's clamp) */
     this._uniteBounds = null;
+    /** expanded-room 联防 relay: { rounds: [], eligible: Set } across the two fields */
+    this._uniteRelay = null;
+    this._uniteBudget = null;
+    this._normalAliveCount = 0;
     this.teamLp = null;
     this.bossPool = null;
     this.hiddenLayerSum = 0;
@@ -509,6 +549,130 @@ export class Match {
     // so one callback cannot run to HARD_CAP_SECONDS. Virtual time stays unbounded (the defaults
     // above). The input journal records the steps that callback took; replay stops there.
     if (this.test && opts.journal !== false) installTestTrace(this, opts);
+  }
+
+  /** Helpers of this round's 联防 who cleared their own battle without a counted leak. */
+  _revivalHelpers(plan, uniteResult) {
+    const eligible = new Set();
+    if (!this.revivalEnabled || !plan || !uniteResult || uniteResult.synthetic
+      || (uniteResult.reason && !['cleared', 'timeout'].includes(uniteResult.reason))) return eligible;
+    for (const ps of plan.helpers || []) {
+      const normal = this.lastResults.get(ps.playerId);
+      if (this.players.get(ps.playerId) !== ps || !uniteResult.perPlayer?.[ps.playerId]
+        || !normal || normal.synthetic || normal.perfect === false
+        || (normal.leaked || []).some((l) => l && l.counted !== false)) continue;
+      eligible.add(ps.playerId);
+    }
+    return eligible;
+  }
+
+  revivalWindowOpen() {
+    const state = this._revival;
+    return !!(this.revivalEnabled && !this.ended && !this.disposed && this.phase === PHASE.SETTLE
+      && this.teamLp == null && state && state.windowOpen && state.round === this.round
+      && this.sched.now() < state.deadline);
+  }
+
+  revivalDonorEligible(ps) {
+    return !!(ps && !ps.isBot && !ps.left && ps.alive && Number.isFinite(ps.lp) && ps.lp >= REVIVAL_MIN_DONOR_LP
+      && this._revival?.round === this.round && this._revival.eligible.has(ps.playerId));
+  }
+
+  revivalTargetEligible(ps) { return !!(ps && ps.pendingDeath && !ps.alive && !ps.left && !ps.revived); }
+
+  _revivalDeathReason(ps) {
+    if (ps.left) return 'left';
+    if (ps.revived) return 'already-used';
+    if (!this.revivalEnabled) return 'disabled';
+    if (this.teamLp != null || this.ended || this.disposed) return 'match-ended';
+    const helpers = this.order.filter((p) => this.players.get(p.playerId) === p && !p.isBot && !p.left && p.alive
+      && this._revival?.round === this.round && this._revival.eligible.has(p.playerId));
+    if (!helpers.length) return 'no-helper';
+    return helpers.every((p) => Number.isFinite(p.lp) && p.lp < REVIVAL_MIN_DONOR_LP) ? 'donor-lp' : 'window-closed';
+  }
+
+  _deferDeath(ps) {
+    ps.revivalUnavailableReason = null;
+    ps.lp = 0;
+    ps.alive = false;
+    ps.pendingDeath = true;
+    ps.dirty();
+    this.toast(ps, 'warn', msg('你的目标生命值耗尽，等待救援'));
+  }
+
+  _finalizeDeath(ps, { round = this.round, notify = true, reason = this._revivalDeathReason(ps) } = {}) {
+    if (!ps.alive && !ps.pendingDeath) return false;
+    if (ps.revivalUnavailableReason == null) {
+      ps.revivalUnavailableReason = REVIVAL_UNAVAILABLE_REASONS.includes(reason) ? reason : 'window-closed';
+    }
+    ps.lp = 0;
+    ps.eliminate(round);
+    if (notify) {
+      this.toast(ps, 'error', msg('你的目标生命值耗尽，已被淘汰'));
+      this.tickerText(msg('{name}博士的目标生命值已耗尽', { name: ps.name }), 25);
+    }
+    return true;
+  }
+
+  _finalizePendingDeaths({ notify = true, reason = this.ended || this.disposed ? 'match-ended'
+    : this._revival?.deadline > 0 && this.sched.now() >= this._revival.deadline ? 'window-expired' : 'window-closed' } = {}) {
+    if (this._revival) this._revival.windowOpen = false;
+    for (const ps of this.order) if (ps.pendingDeath) this._finalizeDeath(ps, { notify, reason });
+  }
+
+  revive(ps, message) {
+    if (!this.revivalEnabled) return { error: ERR.WRONG_PHASE, detail: 'revival-disabled' };
+    if (!this.revivalWindowOpen()) return { error: ERR.WRONG_PHASE, detail: 'revival-window-closed' };
+    if (message.matchId !== this.battlePrefix) return { error: ERR.BAD_TARGET, detail: 'stale-match' };
+    if (!Number.isInteger(message.round) || message.round !== this.round) return { error: ERR.WRONG_PHASE, detail: 'stale-round' };
+    if (!ps || ps.isBot || ps.left) return { error: ERR.NOT_IN_ROOM };
+    if (!ps.alive) return { error: ERR.ELIMINATED };
+    if (!this.revivalDonorEligible(ps)) return { error: ERR.BAD_TARGET, detail: ps.lp < REVIVAL_MIN_DONOR_LP ? 'revival-lp-insufficient' : 'revival-not-helper' };
+    const target = this.players.get(message.playerId);
+    if (target && !target.alive && !target.pendingDeath && !target.left && !target.revived) return { error: ERR.BAD_TARGET, detail: 'revival-target-finalized' };
+    if (target === ps || !this.revivalTargetEligible(target)) return { error: ERR.BAD_TARGET, detail: 'revival-target-ineligible' };
+    target.revived = true;
+    target.alive = true;
+    target.pendingDeath = false;
+    target.revivalUnavailableReason = null;
+    target.lp = 1;
+    ps.lp -= REVIVAL_COST;
+    ps.stats.lpLost += REVIVAL_COST;
+    target.dirty();
+    ps.dirty();
+    this.markPublic();
+    return { ok: true };
+  }
+
+  /** The chess stock a seat draws from (its pool group; the shared pool in an ordinary match). */
+  poolFor(player) {
+    const id = typeof player === 'string' ? player : player?.playerId;
+    if (this.capacityExperiment && !this.players.has(id)) throw new TypeError('player card pool required');
+    if (!this.playerPools) return this.pool;
+    const pool = this.playerPools.get(id);
+    if (!pool) throw new TypeError('player card pool required');
+    return pool;
+  }
+
+  /** Experimental expanded rooms draft every seat at once instead of waiting for a turn. */
+  concurrentDraft() {
+    return !!this.capacityExperiment && !this.isSolo;
+  }
+
+  /** Experimental room card-pool bucket number (1-based); ordinary rooms are always group 1. */
+  poolGroupOf(player) {
+    const id = typeof player === 'string' ? player : player?.playerId;
+    const group = this.poolGroups.find((g) => g.playerIds.includes(id));
+    return group ? group.id : 1;
+  }
+
+  /** The equipment stock a seat draws from: its chess-pool group's. */
+  itemPoolFor(player) {
+    const id = typeof player === 'string' ? player : player?.playerId;
+    const pool = this.playerItemPools.get(id);
+    if (pool) return pool;
+    if (this.poolGroups.length > 1) throw new TypeError('player item stock required');
+    return this.itemPool;
   }
 }
 

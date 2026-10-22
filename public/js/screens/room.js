@@ -99,7 +99,11 @@ export function roomFacts(room, myId) {
     myContent: modded ? (mine?.content || 'loading') : 'ready',
     // spectator seats (never players: not in `humans`, never counted for ready / start)
     spectators: Array.isArray(room?.spectators) ? room.spectators.filter((s) => s && typeof s === 'object') : [],
-    spectating: isSpectating(room, myId),
+    spectating: isSpectating(room, myId) || (() => {
+      try {
+        return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
+      } catch { return false; }
+    })(),
   };
 }
 
@@ -116,7 +120,7 @@ export function aiLastOption(room, myId) {
   return { on: room.aiPicksLast === true, editable: room.hostId != null && room.hostId === myId };
 }
 
-/** Invite link for a room code (current page URL with ?room=CODE). */
+/** Invite link for a room code: `?room=CODE` (no node parameter; the client resolves the node when opened). */
 export function inviteLink(code) {
   const loc = globalThis.location;
   const base = loc ? `${loc.origin}${loc.pathname}` : '';
@@ -209,8 +213,8 @@ function SpectatorBar({ facts, myId, busy, onRemove, onSit }) {
 
 function InviteBox({ code, name, difficulty }) {
   const copy = async (what) => {
-    // the copied link carries an invitation line (#103): 「{name}邀请你加入Stronghold-Protocol：盟约【{difficulty}】」
-    const invite = t('{name}邀请你加入Stronghold-Protocol：盟约【{difficulty}】', { name: name ?? '', difficulty: DIFFICULTY_NAMES[difficulty] ? t(DIFFICULTY_NAMES[difficulty]) : '' });
+    // the copied link carries an invitation line (#103): 「{name}邀请你加入卫戍协议：盟约【{difficulty}】」
+    const invite = t('{name}邀请你加入卫戍协议：盟约【{difficulty}】', { name: name ?? '', difficulty: DIFFICULTY_NAMES[difficulty] ? t(DIFFICULTY_NAMES[difficulty]) : '' });
     const ok = await copyText(what === 'code' ? code : `${inviteLink(code)} ${invite}`);
     if (ok) toast(what === 'code' ? t('已复制同盟密钥 {code}', { code }) : t('已复制邀请链接'), 'success');
     else toast(t('复制失败，请手动复制'), 'warn');
@@ -253,6 +257,96 @@ function AiLastToggle({ option, busy, onToggle }) {
       </button>
     <//>
     ${option.editable ? null : html`<span class="t-dim">${t('由创建者设置')}</span>`}
+  </div>`;
+}
+
+/** Experimental room button (owner/admin host): a settings-like popover next to 「AI 队友最后选择」. */
+function ExperimentalControl({ room, isHost, busy, onApply }) {
+  const role = typeof window !== 'undefined' ? window.__SP_ACCOUNT_ROLE : null;
+  const [open, setOpen] = useState(false);
+  const [capacity, setCapacity] = useState(4);
+  const [capOpen, setCapOpen] = useState(false);
+  const [revival, setRevival] = useState(false);
+  const [independent, setIndependent] = useState(false);
+  const [noDuck, setNoDuck] = useState(false);
+  if (room?.mode === 'solo') return null;
+  // The host alone may change the options; every other seat can open the same panel read-only.
+  const canEdit = isHost && !!role && role !== 'player';
+  const exp = room?.experimental || {};
+  const currentCap = Number(room?.capacity) || Number(exp.playerCapacity) || 4;
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) {
+      setCapacity(currentCap);
+      setCapOpen(false);
+      setRevival(exp.revivalEnabled === true);
+      setIndependent(exp.disableSharedPool === true);
+      setNoDuck(exp.disableDuckLord === true);
+    }
+  };
+  const apply = () => {
+    if (!canEdit) return;
+    const experimental = {
+      revivalEnabled: revival,
+      disableSharedPool: independent,
+      ...(capacity > 4 ? { playerCapacity: capacity } : {}),
+      ...(capacity > 4 && noDuck ? { disableDuckLord: true } : {}),
+    };
+    setOpen(false);
+    setCapOpen(false);
+    onApply(experimental);
+  };
+  return html`<div class="exp-wrap">
+    <button type="button" class=${`dpick__opt exp-btn${open ? ' is-active' : ''}`} disabled=${!!busy} onClick=${toggle}
+      title=${t('实验性选项')} aria-haspopup="dialog" aria-expanded=${open ? 'true' : 'false'}>
+      <${Icon} name="gear" />${t('实验性功能')}
+    </button>
+    ${open ? html`<div class="exp-backdrop" onClick=${() => setOpen(false)}></div>
+      <div class=${`exp-pop set-list${canEdit ? '' : ' exp-pop--readonly'}`} role="dialog" aria-label=${t('实验性选项')}>
+      <div class="exp-pop__stripe" aria-hidden="true"></div>
+      <div class="exp-pop__head"><${MicroLabel}>EXPERIMENTAL<//><strong>${t('实验性选项')}</strong>
+        <button type="button" class="exp-pop__x" aria-label=${t('关闭')} onClick=${() => setOpen(false)}>×</button>
+      </div>
+      <div class="set-row">
+        <span class="set-row__label">${t('同盟人数')}<${MicroLabel}>CAPACITY<//></span>
+        <div class="exp-cap">
+          <button type="button" class=${`exp-cap__btn${capOpen ? ' is-open' : ''}`} disabled=${!!busy || !canEdit}
+            aria-haspopup="listbox" aria-expanded=${capOpen ? 'true' : 'false'}
+            onClick=${() => canEdit && !busy && setCapOpen(!capOpen)}>
+            <span>${capacity}</span><${Icon} name="chevronRight" class="exp-cap__arrow" />
+          </button>
+          ${capOpen ? html`<div class="exp-cap__menu" role="listbox" aria-label=${t('同盟人数')}>
+            ${Array.from({ length: 17 }, (_, i) => i + 4).map((n) => html`<button key=${n} type="button" role="option"
+              aria-selected=${capacity === n ? 'true' : 'false'} class=${capacity === n ? 'is-selected' : ''}
+              onClick=${() => { setCapacity(n); setCapOpen(false); }}>${n}</button>`)}
+          </div>` : null}
+        </div>
+      </div>
+      <div class="set-row">
+        <span class="set-row__label">${t('队友复活')}<${MicroLabel}>REVIVAL<//></span>
+        <button type="button" class=${`set-toggle${revival ? ' is-on' : ''}`} role="switch"
+          aria-checked=${revival ? 'true' : 'false'} disabled=${!!busy || !canEdit}
+          onClick=${() => canEdit && setRevival(!revival)}><i></i><span>${revival ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
+      </div>
+      <div class="set-row">
+        <span class="set-row__label">${t('独立卡池')}<${MicroLabel}>CARD POOL<//></span>
+        <button type="button" class=${`set-toggle${independent ? ' is-on' : ''}`} role="switch"
+          aria-checked=${independent ? 'true' : 'false'} disabled=${!!busy || !canEdit}
+          onClick=${() => canEdit && setIndependent(!independent)}><i></i><span>${independent ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
+      </div>
+      <div class="set-row" hidden=${capacity <= 4}>
+        <span class="set-row__label">${t('禁用鸭爵策略')}<${MicroLabel}>NO DUCK LORD<//></span>
+        <button type="button" class=${`set-toggle${noDuck ? ' is-on' : ''}`} role="switch"
+          aria-checked=${noDuck ? 'true' : 'false'} disabled=${!!busy || !canEdit || capacity <= 4}
+          onClick=${() => canEdit && setNoDuck(!noDuck)}><i></i><span>${noDuck ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
+      </div>
+      <div class="exp-pop__foot">
+        <span class="t-dim">${canEdit ? t('开局后不可更改') : t('由创建者设置，只有创建者可以修改')}</span>
+        ${canEdit ? html`<button type="button" class="btn btn--primary btn--sm" disabled=${!!busy} onClick=${apply}>${t('应用')}</button>`
+          : html`<span class="exp-pop__ro">${t('只读')}</span>`}
+      </div>
+    </div>` : null}
   </div>`;
 }
 
@@ -362,7 +456,7 @@ export function RoomScreen() {
       </div>
     </header>
 
-    <main class=${`seats${coop ? '' : ' seats--solo'}`}>
+    <main class=${`seats${coop ? '' : ' seats--solo'}${facts.seats.length > 4 ? ' seats--expanded' : ''}`}>
       ${facts.seats.map((s, i) => html`<${SeatCard} key=${s ? `p${s.playerId}` : `e${i}`} seat=${s} index=${i} room=${room} facts=${facts}
         myId=${me.playerId} busy=${busy} onAddBot=${addBot} onRemoveBot=${removeBot} onKick=${kick} />`)}
       ${coop ? null : html`<aside class="solo-brief brackets">
@@ -383,7 +477,11 @@ export function RoomScreen() {
         <span class="room-bar__label">${t('模拟难度')}<${MicroLabel}>DIFFICULTY<//></span>
         <div class="room-bar__opts">
           <${DifficultyPicker} room=${room} isHost=${facts.isHost} busy=${busy} onPick=${setDifficulty} />
-          <${AiLastToggle} option=${aiLastOption(room, me.playerId)} busy=${busy} onToggle=${setAiLast} />
+          <div class="ailast-row">
+            <${AiLastToggle} option=${aiLastOption(room, me.playerId)} busy=${busy} onToggle=${setAiLast} />
+            <${ExperimentalControl} room=${room} isHost=${facts.isHost} busy=${busy}
+              onApply=${(experimental) => run('experimental', () => net.request('room.setExperimental', { experimental }))} />
+          </div>
         </div>
       </div>
       <div class="room-bar__center">

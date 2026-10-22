@@ -48,6 +48,13 @@ export function toast(text, kind = 'info', opts = {}) {
   const k = TOAST_KINDS.includes(kind) ? kind : 'info';
   const msg = String(text ?? '').slice(0, 200).trim();
   if (!msg) return -1;
+  // Hidden admin watch enters an already-running room; the normal "simulation
+  // already started" warning is noise for a spectator.
+  try {
+    const adminWatch = new URLSearchParams(location.search).get('adminWatch') === '1'
+      || !!sessionStorage.getItem('sp_admin_watch_code');
+    if (adminWatch && (msg === '模拟已开始' || msg === 'Simulation already started')) return -1;
+  } catch { /* ignore */ }
   const now = Date.now();
   const ttl = Number.isFinite(opts.ttl) && opts.ttl > 0 ? opts.ttl : DEFAULT_MS[k];
   const same = toasts.find((t) => !t.leaving && t.text === msg && t.kind === k && now - t.at < MERGE_WINDOW_MS + t.ttl);
@@ -120,6 +127,11 @@ export function describeError(err) {
  */
 export function toastError(err) {
   recordError('request', err);
+  try {
+    const adminWatch = new URLSearchParams(location.search).get('adminWatch') === '1'
+      || !!sessionStorage.getItem('sp_admin_watch_code');
+    if (adminWatch && err && err.code === 'ROOM_STARTED') return -1;
+  } catch { /* ignore */ }
   return toast(describeError(err), 'error');
 }
 

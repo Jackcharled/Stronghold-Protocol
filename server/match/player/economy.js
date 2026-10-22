@@ -1,6 +1,6 @@
-// server/match/player/economy.js — PlayerState methods: the economy — funds, spending (onSpend), prep-side bond layer
+// server/match/player/economy.js �?PlayerState methods: the economy �?funds, spending (onSpend), prep-side bond layer
 // gains (clamped by layerGainRoom), the shop (onPrice prices, copy-weighted rolls from the shared pool plus the player's
-// own 自选 stock — player/diy.js —, freeze) and its intents: g.buy, g.refresh, g.freeze, g.levelUp, g.sell.
+// own 自�?stock �?player/diy.js �? freeze) and its intents: g.buy, g.refresh, g.freeze, g.levelUp, g.sell.
 // Installed on PlayerState.prototype by server/match/PlayerState.js (a method container: never instantiated; `this` is
 // the player state).
 
@@ -38,8 +38,8 @@ export class PlayerEconomy {
   }
 
   /**
-   * Bond layer gain (prep-side). `requireActive` = "使已激活的【X】层数+N". Returns layers added: at most the room left
-   * under BOND_LAYER_CAP (999, shared/constants.js) — a gain at the cap adds 0 and dispatches nothing.
+   * Bond layer gain (prep-side). `requireActive` = "使已激活的【X】层�?N". Returns layers added: at most the room left
+   * under BOND_LAYER_CAP (999, shared/constants.js) �?a gain at the cap adds 0 and dispatches nothing.
    */
   addLayers(bondId, n, { requireActive = false, reason = '' } = {}) {
     if (!this.gd.bond(bondId) || !Number.isFinite(n) || n <= 0) return 0;
@@ -67,8 +67,8 @@ export class PlayerEconomy {
   }
 
   _rollChessSlot() {
-    // the slotted 自选 pieces join the draw once the 调度中心 reaches their slot's level (player/diy.js diyRollEntries)
-    const id = this.m.pool.roll(this.m.rngShop, { maxTier: this.shop.level, extra: this.diyRollEntries() });
+    // the slotted 自�?pieces join the draw once the 调度中心 reaches their slot's level (player/diy.js diyRollEntries)
+    const id = this.pool.roll(this.m.rngShop, { maxTier: this.shop.level, extra: this.diyRollEntries() });
     return id ? { kind: 'chess', id, basePrice: this.gd.chessPrice(id), frozen: false, sold: false } : null;
   }
 
@@ -82,12 +82,12 @@ export class PlayerEconomy {
       bias = new Set();
       for (const [id, st] of Object.entries(bonds)) if (st && st.active) bias.add(id);
     }
-    const id = this.m.pool.rollItem(this.m.rngShop, this.shop.level, this.m.itemPool, bias);
+    const id = this.pool.rollItem(this.m.rngShop, this.shop.level, this.itemPool, bias);
     return id ? { kind: 'item', id, basePrice: this.gd.itemPrice(id), frozen: false, sold: false } : null;
   }
 
   /**
-   * Reroll the shop. keepFrozen → frozen unsold slots survive (round start); otherwise everything is rerolled
+   * Reroll the shop. keepFrozen �?frozen unsold slots survive (round start); otherwise everything is rerolled
    * (manual refresh). Slot counts follow the current level.
    */
   rollShop({ keepFrozen = false } = {}) {
@@ -137,13 +137,13 @@ export class PlayerEconomy {
   }
 
   /**
-   * The 调度中心's upgrade opens the new level's extra slots at once — EMPTY: no card is drawn into them (a `null` slot).
+   * The 调度中心's upgrade opens the new level's extra slots at once �?EMPTY: no card is drawn into them (a `null` slot).
    * The next roll (a manual refresh or the round start) fills them with the other unfrozen slots; the cards already shown
-   * stay where they are (chess slots keep their index, the item slot stays after them). Official: the footage of a 1→2
+   * stay where they are (chess slots keep their index, the item slot stays after them). Official: the footage of a 1�?
    * upgrade (bilibili BV1AXwuzdEys 1:39, GitHub #332 / PR #333 by @2321Robin) shows the new slot appear and stay empty, and
-   * the texts only name the slots — the tutorial's 休整期 page 「升级后将出现更多的商品栏位」, PRTS 帮助 「增加刷新栏位」 —,
+   * the texts only name the slots �?the tutorial's 休整�?page 「升级后将出现更多的商品栏位�? PRTS 帮助 「增加刷新栏位�?�?
    * never a card that comes with them. 0.2.0 drew a card into each new slot instead (item 19 of the community report of
-   * 2026-10-06, 「升级商店获得新的商店位时用新卡补上，而不是空着」, one uncorroborated remark; its follow-on, that the new card
+   * 2026-10-06, 「升级商店获得新的商店位时用新卡补上，而不是空着�? one uncorroborated remark; its follow-on, that the new card
    * follows the freeze toggle, was [ASSUMED]); until then the extra slots waited for the next roll as well.
    */
   _openLevelSlots() {
@@ -167,8 +167,7 @@ export class PlayerEconomy {
 
   /**
    * g.buy {slot}. A full regular hand refuses every purchase, also one whose copy would complete a merge at once (PRTS
-   * Stronghold-Protocol/帮助 §手牌区 "当常规手牌区全满无空位时，玩家将无法执行使手牌溢出的操作" — "例如招募/购入等通常情况下会增加手牌的
-   * 操作"; BWIKI 盟约 "当整备区达到上限后将无法进行涉及到整备区的操作（购买、撤回等）"; GitHub #82: the reporter's first-hand
+   * Stronghold-Protocol/帮助 §手牌�?"当常规手牌区全满无空位时，玩家将无法执行使手牌溢出的操作" �?"例如招募/购入等通常情况下会增加手牌�?   * 操作"; BWIKI 盟约 "当整备区达到上限后将无法进行涉及到整备区的操作（购买、撤回等�?; GitHub #82: the reporter's first-hand
    * check in the official game, "哪怕是已经有了两个相同干员情况"). Until 0.1.3 such a purchase was let through.
    */
   buy(slotIdx) {
@@ -183,10 +182,10 @@ export class PlayerEconomy {
     let piece;
     if (slot.kind === 'chess') {
       const rec = this.gd.chess(slot.id);
-      // a DIY slot sells only as this player's own 自选 piece (a slotted slot's record carries `diyFor`)
+      // a DIY slot sells only as this player's own 自�?piece (a slotted slot's record carries `diyFor`)
       if (!rec || (rec.isDiy && !rec.diyFor)) return fail(ERR.BAD_TARGET);
       // Already displayed operators stay purchasable after stock runs out (#498; 路标月报#2,
-      // BV1eLXXBqEgF 2:50–2:57: nine owned + four shop offers => thirteen owned).
+      // BV1eLXXBqEgF 2:50�?:57: nine owned + four shop offers => thirteen owned).
       // acquireChess records every copy, including the deficit; future rolls still exclude empty stock.
       if (handFull) return fail(ERR.HAND_FULL);
       this.spend(price);

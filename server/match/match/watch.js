@@ -16,15 +16,17 @@ export class MatchWatch {
    * A spectator seat (community report #26; server/lobby.js spectate) joined during the match, came back or asked for a
    * resync: registered once, then resent what an eliminated player watching sees (_resync — never an m.private).
    */
-  addSpectator(playerId) {
+  addSpectator(playerId, hidden = false) {
     if (this.disposed) return;
     const s = this._spectator(playerId);
+    if (hidden && this.hiddenSpectators) this.hiddenSpectators.add(playerId);
     if (s) this.guard(() => this._resync(s));
   }
 
   /** The spectator left (room.leave / g.leave, removed by the host, reconnect window expired). */
   removeSpectator(playerId) {
     if (this.spectators.delete(playerId)) this.watchers.delete(playerId);
+    if (this.hiddenSpectators) this.hiddenSpectators.delete(playerId);
   }
 
   /** The stand-in of a spectator seat, created once (null for a player's id or a bad id). */

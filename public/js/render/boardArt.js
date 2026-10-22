@@ -33,7 +33,7 @@ export function sourceUrl(assets, path) {
 /** @param {any} assets store of public/js/assets.js (needs local(), localUrl(), image()) */
 export function loadBoardArt(assets) {
   if (cached) return cached;
-  cached = (async () => {
+  const p = (async () => {
     if (!assets || typeof assets.local !== 'function' || typeof assets.image !== 'function') return null;
     const manifest = await assets.local().catch(() => null);
     if (!manifest) return null;
@@ -42,7 +42,8 @@ export function loadBoardArt(assets) {
     const dir = atlasUrl.replace(/\/[^/]*$/, '');
     let tiles = null;
     try {
-      const res = await fetch(`${dir}/tiles.json`, { cache: 'no-cache' });
+      let res = await fetch(`${dir}/tiles.json`, { cache: 'no-cache' });
+      if (!res.ok) res = await fetch(`${dir}/tiles.json?retry=${Date.now()}`, { cache: 'no-cache' });
       tiles = res.ok ? await res.json() : null;
     } catch { tiles = null; }
     if (!isObj(tiles) || !isObj(tiles.materials) || !isObj(tiles.source)) return null;
@@ -50,12 +51,17 @@ export function loadBoardArt(assets) {
     await Promise.all(Object.entries(tiles.source).map(async ([k, s]) => {
       const url = isObj(s) && typeof s.path === 'string' && s.path ? sourceUrl(assets, s.path) : null;
       if (!url) return;
-      const img = await assets.image(url).catch(() => null);
+      const img = await assets.image(url, { retry: true }).catch(() => null);
       if (img && img.width > 0) images[k] = img;
     }));
     if (!images.D) return null;
     return { key: `${atlasUrl}#${tiles.version || 0}`, tiles, images };
   })().catch(() => null);
+  cached = p.then((art) => {
+    // A failed first attempt must not be cached forever: the next board mount retries.
+    if (!art) cached = null;
+    return art;
+  });
   return cached;
 }
 

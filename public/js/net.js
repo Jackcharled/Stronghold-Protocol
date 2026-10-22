@@ -390,6 +390,42 @@ export class Net {
     }
     const rid = this._nextRid();
     const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, guest: !window.__SP_ACCOUNT_USER };
+    // 服务端验签的管理员能力令牌；没有令牌时客户端里的 admin 布尔值不会生效。
+    try {
+      if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) msg.adminToken = window.__SP_ADMIN_TOKEN;
+      if (typeof window.__SP_ACCOUNT_TOKEN === 'string' && window.__SP_ACCOUNT_TOKEN.length > 0) msg.accountToken = window.__SP_ACCOUNT_TOKEN;
+    } catch { /* 隐私模式 */ }
+    if (!this._accountTokenProbed) {
+      this._accountTokenProbed = true;
+      fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          if (j && j.user) {
+            window.__SP_ACCOUNT_USER = j.user.name || window.__SP_ACCOUNT_USER || null;
+            if (j.user.tag && /^[0-9]{4}$/.test(String(j.user.tag))) window.__SP_ACCOUNT_TAG = String(j.user.tag);
+          }
+          const t = j && typeof j.userToken === 'string' ? j.userToken : null;
+          if (t && t !== window.__SP_ACCOUNT_TOKEN) {
+            window.__SP_ACCOUNT_TOKEN = t;
+            if (this.name) this.reconnectNow(this.name);
+          }
+          try { window.dispatchEvent(new Event('sp-account-token')); } catch { /* ignore */ }
+        })
+        .catch(() => {});
+    }
+    if (!this._adminTokenProbed) {
+      this._adminTokenProbed = true;
+      fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          const t = j && typeof j.adminToken === 'string' ? j.adminToken : null;
+          if (t && t !== window.__SP_ADMIN_TOKEN) {
+            window.__SP_ADMIN_TOKEN = t;
+            if (this.name) this.reconnectNow(this.name);
+          }
+        })
+        .catch(() => {});
+    }
     // 账号四位代码：直接写入 hello，服务器会随 welcome / room.state 下发给所有界面
     try {
       const tag = localStorage.getItem('mm.tag');
@@ -914,6 +950,18 @@ export function createIdentity(deps = {}) {
       }
       return initPromise;
     },
+    /** Adopt a seat token issued by an account takeover (not a local tab history pick). */
+    adopt(token) {
+      if (!isToken(token)) return false;
+      current = token;
+      owned = token;
+      welcomed = false;
+      welcomeAt = null;
+      sset(session, K_TOKEN, token);
+      sset(session, K_WELCOME, JSON.stringify({ hash: tokenHash(token), at: null }));
+      writeRecent([token, ...readRecent().filter((t) => t !== token)]);
+      return true;
+    },
     /** Record only display metadata; the existing recent-token ring remains the authority. */
     rememberMatch,
     recoverable() {
@@ -994,3 +1042,9 @@ export const identity = createIdentity({ onYield: () => net.reconnectNow(net.hel
 
 /** Browser connection singleton (created lazily-safe: nothing touches the network until connect()). */
 export const net = new Net({ getToken: () => identity.getToken(), getTokenClaim: () => identity.getTokenClaim() });
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('sp-account-token', () => {
+    try { if (net.name) net.reconnectNow(net.name); } catch { /* the next status event reports it */ }
+  });
+}

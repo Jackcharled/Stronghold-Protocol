@@ -466,7 +466,47 @@
 }
 
 /* ---- team panel ------------------------------------------------------------------------------------------- */
+.gtop__budget { grid-column: 1 / -1; justify-self: center; display: flex; flex-wrap: wrap; justify-content: center; gap: .04rem .2rem; max-width: 100%; font-size: max(calc(.14 * var(--t)), calc(12px * var(--ui))); line-height: 1.4; color: var(--text-md); text-align: center; text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }
+.gtop__budget span { overflow-wrap: anywhere; }
+.gm--unite-budget .gm__bonds { top: 1.8rem; }
+.gm--unite-budget .ticker { top: 1.55rem; }
+.gm--unite-budget .team { top: 2.85rem; }
+@media (max-width: 600px) and (orientation: portrait) {
+  .gm--expanded .gtop { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "connection clock" "phase phase"; padding-inline: 16px; gap: .18rem; }
+  .gm--expanded .gtop__left { grid-area: connection; min-width: 0; }
+  .gm--expanded .gtop__center { grid-area: phase; justify-self: center; max-width: 100%; }
+  .gm--expanded .gtop__right { grid-area: clock; }
+  .gm--expanded .ticker { top: 2.7rem; max-width: calc(100% - 32px); }
+  .gm--expanded .gm__bonds { top: 3.2rem; right: .3rem; }
+  .gm--expanded .team { top: 4.1rem; }
+  .gm--expanded.gm--unite-budget .gtop { grid-template-areas: "connection clock" "phase phase" "budget budget"; }
+  .gm--expanded .gtop__budget { grid-area: budget; }
+  .gm--expanded.gm--unite-budget .ticker { top: 3.7rem; }
+  .gm--expanded.gm--unite-budget .gm__bonds { top: 4.2rem; }
+  .gm--expanded.gm--unite-budget .team { top: 5.1rem; }
+}
 .team { position: absolute; left: .22rem; top: 2.36rem; display: flex; flex-direction: column; gap: .14rem; pointer-events: none; }
+.team__players { display: flex; flex-direction: column; gap: .14rem; min-height: 0; }
+.team__players[hidden] { display: none; }
+.team__head { pointer-events: auto; }
+.team__toggle { display: inline-flex; align-items: center; gap: .06rem; height: .3rem; padding: 0 .1rem; border: 1px solid var(--line-2); background: rgba(8, 11, 10, .82); color: var(--text-md); font: inherit; font-size: .13rem; cursor: pointer; }
+.team__toggle .icon { width: .15rem; height: .15rem; }
+.team__toggle b { color: var(--mint-400); font-family: var(--font-num); }
+.team__chev { transform: rotate(90deg); transition: transform var(--t-fast); }
+.team.is-folded .team__chev { transform: rotate(0); }
+.team--many { bottom: 2.9rem; max-height: none; overflow-y: auto; overflow-x: hidden; padding-right: .08rem; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: var(--mint-800) transparent; pointer-events: auto; }
+.team--many::-webkit-scrollbar { width: .05rem; }
+.team--many::-webkit-scrollbar-thumb { background: var(--mint-800); border-radius: 1rem; }
+.team__pool { display: inline-flex; align-items: center; height: .21rem; padding: 0 .05rem; border: 1px solid rgba(78, 216, 175, .3); border-radius: .04rem; color: var(--mint-400); font-size: .12rem; line-height: 1; white-space: nowrap; }
+.team__pool-summary { display: flex; align-items: center; gap: .05rem; max-width: 100%; padding: .04rem .08rem; border: 1px solid rgba(78, 216, 175, .18); background: rgba(8, 11, 10, .6); color: var(--text-dim); font-size: .12rem; line-height: 1.4; pointer-events: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.team__pool-summary b { color: var(--mint-400); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.team__notice:empty { display: none; }
+.team-rescue { pointer-events: auto; max-width: 2.75rem; display: flex; flex-wrap: wrap; align-items: center; gap: .04rem .12rem; padding: .1rem .12rem; color: var(--mint-400); background: rgba(13, 26, 21, .95); border-left: 2px solid var(--mint-500); font-size: .14rem; }
+.team-rescue > strong { display: flex; gap: .06rem; align-items: center; }
+.team-rescue > small { flex-basis: 100%; font-size: .12rem; color: var(--text-lo); }
+.team-rescue-action { display: flex; flex-direction: column; align-items: flex-start; gap: .02rem; margin-top: .04rem; max-width: 1.8rem; pointer-events: auto; }
+.team-rescue-action > small { color: var(--text-dim); font-size: .11rem; line-height: 1.35; }
+.team-rescue-action .btn { min-height: .32rem; }
 .team__row { position: relative; display: flex; align-items: center; gap: .1rem; pointer-events: auto; }
 .team__btn {
   position: relative; padding: 0; background: none; border: 0;
@@ -518,6 +558,33 @@
 .team__frame--plain { inset: -.04rem; background: none; -webkit-mask: none; mask: none; border: 2px solid var(--mint-500); box-shadow: 0 0 .14rem rgba(78, 216, 175, .65); }
 .team__row.is-self.is-team .pavatar { box-shadow: none; }
 .team__bubble { position: absolute; left: calc(100% + .06rem); top: 50%; transform: translateY(-50%); width: max-content; max-width: 3.2rem; }
+/* 5+ roster is a narrow vertical scroller: a bubble to the right of the row is clipped by overflow-x:hidden. */
+.team--many .team__bubble { left: auto; right: .08rem; max-width: calc(100% - .16rem); }
+
+/* ---- emotes as field danmaku (reference team.css; used by the 5+ roster) ------------------------------------------ */
+/* This fork has --t but no --ui scale variable: keep the reference dimensions in px so the lane height is valid. */
+.gm__hud > .danmaku {
+  --dm-lane-h: max(.5rem, 40px);
+  position: absolute; left: 0; right: 0; top: 2.16rem; height: calc(var(--dm-lanes, 3) * var(--dm-lane-h));
+  overflow: hidden; pointer-events: none;
+}
+.danmaku__item {
+  position: absolute; left: 100%; top: calc(var(--dm-lane, 0) * var(--dm-lane-h) + 2px); height: calc(var(--dm-lane-h) - 4px);
+  display: flex; align-items: center; gap: 6px; padding: 0 8px 0 2px; white-space: nowrap;
+  background: rgba(8, 11, 10, .66); border: 1px solid rgba(78, 216, 175, .3); border-radius: calc(var(--dm-lane-h) / 2);
+  animation: danmaku-fly var(--dm-dur, 6000ms) linear forwards; will-change: transform;
+}
+.danmaku__item.is-self { border-color: var(--mint-500); background: rgba(13, 44, 36, .78); }
+.danmaku__who { display: flex; flex: none; }
+.danmaku__who .pavatar { --pa: calc(var(--dm-lane-h) - 10px); border-radius: 50%; overflow: hidden; }
+.danmaku__who .pavatar + .pavatar { margin-left: -12px; }
+.danmaku__name { max-width: 7em; overflow: hidden; text-overflow: ellipsis; font-size: max(calc(.15 * var(--t)), 13px); font-weight: 500; color: var(--text-hi); text-shadow: 0 1px 2px #000; }
+.danmaku__n { font-size: max(calc(.15 * var(--t)), 13px); color: var(--gold); }
+.danmaku__art { flex: none; width: calc(var(--dm-lane-h) - 6px); height: calc(var(--dm-lane-h) - 6px); display: grid; place-items: center; }
+@keyframes danmaku-fly { from { transform: translateX(0); } to { transform: translateX(calc(-100vw - 100%)); } }
+.danmaku--still .danmaku__item { left: 50%; transform: translateX(-50%); will-change: auto;
+  animation: danmaku-out 1ms linear calc(var(--dm-dur, 3000ms) - 1ms) forwards; }
+@keyframes danmaku-out { to { opacity: 0; } }
 /* 前往查看 / 返回战场 (research 09 §3.1: tapping a teammate's avatar expands a mint button under it) */
 .team__row.is-open .pavatar { box-shadow: 0 0 0 2px var(--mint-400), 0 0 .2rem rgba(23, 249, 183, .45); }
 .team__row.is-open .team__info { background: linear-gradient(90deg, rgba(13, 44, 36, .92), rgba(8, 11, 10, 0)); }

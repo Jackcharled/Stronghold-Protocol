@@ -240,6 +240,10 @@ export class PlayerState {
     this.eliminatedRound = null;
     this.creditedKills = 0;
     this.lpAtFinal = null;
+    /** experimental rescue: death is waiting for a teammate's payment, then finalizes at the window's end */
+    this.pendingDeath = false;
+    this.revived = false;
+    this.revivalUnavailableReason = null;
     /** last combat result for this player (unite carry state, bounties) */
     this.lastResult = null;
     this._deployMap = null;
@@ -251,6 +255,12 @@ export class PlayerState {
     this._botPrepToken = 0;
     this.bonds = computeBonds(this.gd, this);
   }
+
+  /** This seat's chess stock (Match.poolFor: shared for ordinary rooms). */
+  get pool() { return this.m.poolFor(this); }
+
+  /** This seat's equipment stock (Match.itemPoolFor). */
+  get itemPool() { return this.m.itemPoolFor(this); }
 }
 
 // the method modules, in this order (a name defined twice is an error, never a silent override)

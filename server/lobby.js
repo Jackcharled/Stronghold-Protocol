@@ -161,10 +161,40 @@
 //     code; a player never switches to spectating in place (ALREADY). Disconnect / grace / reconnect / expiry work as for
 //     a player seat (the seat is kept and given back on resume).
 
-import { randomBytes, randomInt } from 'node:crypto';
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const __roomTtlFile = new URL('../data/room-ttl.json', import.meta.url);
 const __createRoomFile = new URL('../data/create-room.json', import.meta.url);
+const __watchSecretFile = new URL('../../.secrets/watch-secret', import.meta.url);
+const __gateFile = new URL('../../content/game-gate.json', import.meta.url);
+let __gateCache = { at: 0, start: true, match: true, reason: '' };
+function gameGate() {
+  if (Date.now() - __gateCache.at < 1000) return __gateCache;
+  try {
+    const j = JSON.parse(readFileSync(__gateFile, 'utf8'));
+    __gateCache = { at: Date.now(), start: j.start !== false, match: j.match !== false, reason: String(j.reason || '') };
+  } catch {
+    __gateCache = { at: Date.now(), start: true, match: true, reason: '' };
+  }
+  return __gateCache;
+}
+function watchSecret() {
+  try { return readFileSync(__watchSecretFile, 'utf8').trim(); } catch { return ''; }
+}
+function verifyWatchToken(token, code) {
+  if (typeof token !== 'string' || !token.includes('.')) return false;
+  const sec = watchSecret();
+  if (!sec) return false;
+  const [payload, sig] = token.split('.');
+  if (!payload || !sig) return false;
+  const want = createHmac('sha256', sec).update(payload).digest('base64url');
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return data && data.c === code && Number(data.exp) > Date.now();
+  } catch { return false; }
+}
 let __roomTtlCache = { ms: 15 * 60 * 1000, at: 0 };
 let __createCfg = { at: 0, enabled: true };
 function roomCreateEnabled() {
@@ -188,8 +218,8 @@ function roomTtlMs() {
   }
   return __roomTtlCache.ms;
 }
-/** 匹配队友最长搜索时间（默认 5 分钟；测试可用 SP_MATCHMAKING_TIMEOUT_MS 缩短）。 */
-const MATCHMAKING_TIMEOUT_MS = Math.max(1000, Number(process.env.SP_MATCHMAKING_TIMEOUT_MS) || 5 * 60 * 1000);
+/** 匹配队友最长搜索时间（默认 2 分钟；测试可用 SP_MATCHMAKING_TIMEOUT_MS 缩短）。 */
+const MATCHMAKING_TIMEOUT_MS = Math.max(1000, Number(process.env.SP_MATCHMAKING_TIMEOUT_MS) || 2 * 60 * 1000);
 function currentNodeNumber() {
   return Number((String(process.env.SP_NODE_DIR || '').match(/node-(\d+)/i) || [])[1])
     || (Number(process.env.PORT) > 3000 ? Number(process.env.PORT) - 3000 : 0);
@@ -206,6 +236,13 @@ function notifyPartyLeave(room) {
   } catch { /* 匹配器通知失败不能影响房间创建/解散 */ }
 }
 import { DIFFICULTIES, ERR, MAX_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
+import { EXPERIMENTAL_DEFAULTS, experimentalOptions, isExperimental } from '../shared/experimental.js';
+import { roomCapacity } from '../shared/playerCapacity.js';
+
+/** Experimental rooms are opt-in per process; normal nodes keep them disabled. */
+const experimentalOpen = () => typeof process !== 'undefined' && process.env?.SP_EXPERIMENTAL === '1';
+const experimentalRequested = (value) => !!(value && (value.revivalEnabled === true || value.disableSharedPool === true
+  || value.disableDuckLord === true || Number(value.playerCapacity) > MAX_SEATS));
 import { checkLoadout, checkLoadoutOps, cultivationCharIds, checkNotOwned, checkDiyPicks, charPotentialChanges, checkSkinSelection, operatorCharIds } from '../shared/protocol.js';
 import { encode, isDroppable, isErrCode, sendRaw, sendSession } from './net.js';
 import { getData as defaultGetData, lookup } from './data.js';
@@ -309,10 +346,13 @@ function freezeSkins(skins, hasOperator) {
 /** One room: 4 seat slots, host, difficulty, optional running match. */
 export class Room {
   /** @param {string} code @param {'solo'|'coop'} mode @param {string} difficulty @param {number} now */
-  constructor(code, mode, difficulty, now) {
+  constructor(code, mode, difficulty, now, experimental = EXPERIMENTAL_DEFAULTS) {
     this.code = code;
     this.mode = mode;
     this.difficulty = difficulty;
+    /** Room-owned experimental rules; frozen at create. Solo runs never carry co-op experiments. */
+    this.experimental = experimentalOptions(mode === 'solo' ? EXPERIMENTAL_DEFAULTS : experimental);
+    this.revivalLocked = null;
     /**
      * 「AI 队友最后选择」 (room.setAiPicksLast, GitHub #338; co-op only, off by default): the match's strategy and 机变 drafts
      * put every human seat before every AI seat (Match opts.aiPicksLast). Kept across the room's matches.
@@ -321,13 +361,16 @@ export class Room {
     /** @type {string | null} */
     this.hostId = null;
     /** @type {(Seat | null)[]} */
-    // exp8：按房间容量建席位（默认 4，实验性扩容 8）
-    this.capacity = Math.min(20, Math.max(1, Number(arguments[0]?.capacity) || MAX_SEATS));
-    this.seats = new Array(this.capacity).fill(null);
+    this.seats = new Array(mode === 'solo' ? MAX_SEATS : this.capacity).fill(null);
     /** @type {{ playerId: string, name: string, connected: boolean }[]} spectator seats, ≤ MAX_SPECTATORS (header) */
     this.spectators = [];
+    /** @type {{ playerId: string, name: string, connected: boolean }[]} invisible admin watchers, never counted or shown */
+    this.hiddenSpectators = [];
     /** @type {any} running Match instance */
     this.match = null;
+    /** current public match round/phase, for the room directory (works for hosted matches too) */
+    this.liveRound = 0;
+    this.livePhase = null;
     /** @type {{ live: boolean, ended: boolean, disposed: boolean, match: any } | null} */
     this.matchCtx = null;
     this.matchCount = 0;
@@ -346,7 +389,9 @@ export class Room {
     /** @type {string | null} per-network limit key of whoever started the running match */
     this.matchKey = null;
     this.createdAt = now;
-    /** 匹配队友进行中：暂停 15 分钟自动解散，并在 5 分钟时按当前人数开局 */
+    /** admin-created rooms are kept until explicitly closed (no idle TTL expiry) */
+    this.noExpire = false;
+    /** 匹配队友进行中：暂停 15 分钟自动解散，并在 2 分钟时按当前人数开局 */
     this.matchmaking = false;
     this.matchmakingAt = 0;
     this.matchmakingStartedAt = 0;
@@ -377,12 +422,21 @@ export class Room {
 
   /** @param {string} playerId @returns {{ playerId: string, name: string, connected: boolean } | null} */
   spectatorOf(playerId) { return this.spectators.find((s) => s.playerId === playerId) || null; }
+  hiddenSpectatorOf(playerId) { return this.hiddenSpectators.find((s) => s.playerId === playerId) || null; }
+  watcherOf(playerId) { return this.spectatorOf(playerId) || this.hiddenSpectatorOf(playerId); }
 
   /** Lowest free seat index, or -1. */
-  freeSeat() { return this.seats.indexOf(null); }
+  freeSeat() {
+    for (let i = 0; i < this.capacity; i++) if (!this.seats[i]) return i;
+    return -1;
+  }
 
   /** Humans that have not departed, in seat order. @returns {Seat[]} */
   activeHumans() { return this.seats.filter((s) => s && !s.isBot && !s.left); }
+
+  get capacity() { return roomCapacity(this.mode, this.experimental); }
+
+  admitsSeat(seat) { return Number.isInteger(seat) && seat >= 0 && seat < this.capacity; }
 
   /** `room.state` frame (DESIGN §8.1) plus `inMatch`. */
   toState() {
@@ -392,11 +446,15 @@ export class Room {
       hostId: this.hostId,
       mode: this.mode,
       difficulty: this.difficulty,
+      capacity: this.capacity,
       aiPicksLast: this.aiPicksLast,
+      experimental: { ...this.experimental },
+      revival: { enabled: this.mode === 'coop' && this.experimental.revivalEnabled },
       createdAt: this.createdAt,
+      noExpire: this.noExpire,
       serverNow: Date.now(),
-      expiresInMs: Math.max(0, this.createdAt + (this.ttlMs || roomTtlMs()) - (this.matchmaking ? (Number(this.matchmakingStartedAt) || Date.now()) : Date.now())),
-        ttlMs: this.ttlMs || roomTtlMs(),
+      expiresInMs: this.noExpire ? null : Math.max(0, this.createdAt + (this.ttlMs || roomTtlMs()) - (this.matchmaking ? (Number(this.matchmakingStartedAt) || Date.now()) : Date.now())),
+        ttlMs: this.noExpire ? null : (this.ttlMs || roomTtlMs()),
       inMatch: !!this.match,
       seats: this.seats.map((s) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, tag: s.tag || null, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left,
@@ -465,6 +523,7 @@ export class Lobby {
     this.testHost = '';
     this.testEnabled = false;
     this.testWarn = this.testUnrecognized;
+    this.limitLog = { at: 0, suppressed: 0 };
     if (testHostOpt != null) this.setTestHost(testHostOpt);
     /** @type {Map<string, Room>} */
     this.rooms = new Map();
@@ -540,12 +599,14 @@ export class Lobby {
     let humans = 0;
     let bots = 0;
     let spectators = 0;
+    let hiddenWatchers = 0;
     for (const r of this.rooms.values()) {
       if (r.match) matches++;
       for (const s of r.seats) if (s && !s.left) (s.isBot ? bots++ : humans++);
       spectators += r.spectators.length;
+      hiddenWatchers += r.hiddenSpectators.length;
     }
-    return { rooms: this.rooms.size, matches, humans, bots, spectators };
+    return { rooms: this.rooms.size, matches, humans, bots, spectators, hiddenWatchers };
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -586,6 +647,8 @@ export class Lobby {
     let changed = !seat.connected;
     seat.connected = true;
     if (!room.match && seat.name !== session.name) { seat.name = session.name; changed = true; }
+    if (seat.tag !== (session.tag || null)) { seat.tag = session.tag || null; changed = true; }
+    if (seat.accountId !== (session.accountId || null)) { seat.accountId = session.accountId || null; changed = true; }
     if (!room.hostId) { this.migrateHost(room); changed = true; }
     if (changed) this.broadcastState(room);
     else this.sendState(room, session);
@@ -673,6 +736,7 @@ export class Lobby {
       case 'room.ready': return this.ready(session, msg);
     case 'room.matchmaking': return this.matchmaking(session, msg);
       case 'room.setDifficulty': return this.setDifficulty(session, msg);
+  case 'room.setExperimental': return this.setExperimental(session, msg);
       case 'room.setAiPicksLast': return this.setAiPicksLast(session, msg);
       case 'room.addBot': return this.addBot(session);
       case 'room.removeBot': return this.removeBot(session, msg);
@@ -686,6 +750,7 @@ export class Lobby {
       case 'room.skins': return this.skins(session, msg);
       case 'room.spectate': return this.spectate(session, msg);
       case 'room.removeSpectator': return this.removeSpectator(session, msg);
+      case 'account.resume': return this.resumeAccount(session);
       case 'room.setPlugins': return this.setPlugins(session, msg);
       case 'room.setMode': return this.setMode(session, msg);
       case 'room.contentReady': return this.contentReady(session, msg, ctx);
@@ -704,7 +769,7 @@ export class Lobby {
     session.resumeWindowMs = room && room.match ? (room.mode === 'solo' ? this.soloResumeWindowMs() : 30 * 60 * 1000) : null;
     if (!room) return;
     const player = room.seatOf(session.playerId);
-    const seat = player || room.spectatorOf(session.playerId);
+    const seat = player || room.watcherOf(session.playerId);
     seat.connected = false;
     // the page may come back as a new one (a reload): it loads and checks the room's content again (header "Gameplay
     // plugins") — and a room.contentReady of the page that went, still on the room's queue, no longer counts (seatGen)
@@ -766,13 +831,16 @@ export class Lobby {
   // room.* handlers
   // ---------------------------------------------------------------------------------------------------
 
-  async create(session, { mode, difficulty, test } = {}) {
+  async create(session, { mode, difficulty, test, admin, experimental = EXPERIMENTAL_DEFAULTS } = {}) {
+    if (!isExperimental(experimental)) return fail(ERR.BAD_MSG, 'invalid experimental options');
+    if (mode === 'solo') experimental = EXPERIMENTAL_DEFAULTS;
+    if (experimentalRequested(experimental) && !experimentalOpen()) return fail(ERR.BAD_MSG, 'experimental rooms are disabled');
     if (session.guest) return fail(ERR.BAD_MSG, '游客不能创建同盟房间或开始独立模拟，请先登录');
     if (session.tag) {
       for (const r0 of this.rooms.values()) {
         for (const st0 of r0.seats) {
           if (!st0 || st0.isBot || st0.left) continue;
-          if (st0.tag === session.tag && st0.playerId !== session.playerId) {
+          if (st0.accountId && session.accountId && st0.accountId === session.accountId && st0.playerId !== session.playerId) {
             return fail(ERR.BAD_MSG, r0.code === '' ? '该账号已在该房间中，请勿重复加入' : '该账号已在其他同盟房间中');
           }
         }
@@ -797,8 +865,9 @@ export class Lobby {
     const code = this.genCode();
     if (!code) return fail(ERR.INTERNAL, 'no room code available');
     if (cur) this.removeMember(cur, session.playerId);
-    const room = new Room(code, mode, difficulty, this.now());
+    const room = new Room(code, mode, difficulty, this.now(), experimental);
     room.ttlMs = roomTtlMs();
+    room.noExpire = session.admin === true;
     room.test = test === true;
     room.content = this.vanilla;
     // the server owner's default plugins (plugins/config.json `default`; header "Gameplay plugins"): none — the original game
@@ -815,7 +884,7 @@ export class Lobby {
     session.roomCode = code;
     session.notice = null;
     session.pendingResult = null;
-    this.log.info(`[lobby] ${code} created (${mode}/${difficulty}${room.test ? ', test' : ''}) by ${session.name}`);
+    this.log.info(`[lobby] ${code} created (${mode}/${difficulty}${room.test ? ', test' : ''}, ${room.capacity} seats) by ${session.name}`);
     this.broadcastState(room);
     // 立刻持久化：避免建房后 10 秒内重启丢房间
     try { this.persistFlush?.('room-create'); } catch { /* ignore */ }
@@ -832,7 +901,7 @@ export class Lobby {
       for (const r0 of this.rooms.values()) {
         for (const st0 of r0.seats) {
           if (!st0 || st0.isBot || st0.left) continue;
-          if (st0.tag === session.tag && st0.playerId !== session.playerId) {
+          if (st0.accountId && session.accountId && st0.accountId === session.accountId && st0.playerId !== session.playerId) {
             return fail(ERR.BAD_MSG, r0.code === (typeof room !== 'undefined' && room ? room.code : '') ? '该账号已在该房间中，请勿重复加入' : '该账号已在其他同盟房间中');
           }
         }
@@ -867,21 +936,34 @@ export class Lobby {
    * room.spectate: one of a co-op room's MAX_SPECTATORS spectator seats, in its lobby or during its match (header). In a
    * running match the match registers the spectator and resends what it may see (Match.addSpectator).
    */
-  spectate(session, { code, testAck }) {
+  spectate(session, { code, testAck, hidden, adminToken }) {
     const norm = String(code).trim().toUpperCase();
     const room = norm.length === ROOM_CODE_LEN ? this.rooms.get(norm) : undefined;
     if (!room) return fail(ERR.ROOM_NOT_FOUND);
     if (room.test && testAck !== true) return fail(ERR.TEST_CONFIRM);
+    const wantHidden = hidden === true;
+    if (wantHidden && !verifyWatchToken(adminToken, room.code)) return fail(ERR.BAD_MSG, 'admin watch denied');
     const cur = this.roomOf(session);
     if (cur === room) {
-      if (!room.spectatorOf(session.playerId)) return fail(ERR.ALREADY, 'seated as a player');
+      if (wantHidden && room.hiddenSpectatorOf(session.playerId)) { this.sendState(room, session); return OK; }
+      if (!room.watcherOf(session.playerId)) return fail(ERR.ALREADY, 'seated as a player');
       this.sendState(room, session);
       return OK;
     }
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
-    if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
-    if (room.spectators.length >= MAX_SPECTATORS) return fail(ERR.ROOM_FULL, 'no free spectator seat');
+    if (!wantHidden && room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
+    if (!wantHidden && room.spectators.length >= MAX_SPECTATORS) return fail(ERR.ROOM_FULL, 'no free spectator seat');
     if (cur) this.removeMember(cur, session.playerId);
+    if (wantHidden) {
+      const old = room.hiddenSpectatorOf(session.playerId);
+      if (!old) room.hiddenSpectators.push({ playerId: session.playerId, name: session.name, connected: session.connected });
+      session.roomCode = room.code;
+      session.notice = null;
+      session.pendingResult = null;
+      this.sendState(room, session);
+      if (room.match) this.callMatch(room, 'addSpectator', session.playerId, true);
+      return OK;
+    }
     room.spectators.push({ playerId: session.playerId, name: session.name, connected: session.connected });
     session.roomCode = room.code;
     session.notice = null;
@@ -909,10 +991,39 @@ export class Lobby {
     return OK;
   }
 
+  /** account.resume: move this account's seat to this device; the old device loses the seat, not the account. */
+  resumeAccount(session) {
+    if (!session.accountId) return fail(ERR.BAD_TARGET, 'account login required');
+    if (session.guest) return fail(ERR.BAD_TARGET, 'guest cannot resume');
+    const candidates = this.registry.byAccount(session.accountId)
+      .filter((s) => s !== session && s.roomCode && this.rooms.get(s.roomCode)?.seatOf(s.playerId));
+    if (!candidates.length) return fail(ERR.BAD_TARGET, 'no active match for this account');
+    const old = candidates.find((s) => s.connected) || candidates[0];
+    const token = this.registry.rotateToken(old);
+    if (!token) return fail(ERR.INTERNAL, 'cannot rotate seat token');
+    if (old.connected) sendSession(old, { t: 'account.detached', roomCode: old.roomCode, playerId: old.playerId });
+    if (old.ws) {
+      const oldWs = old.ws;
+      // Let the detached notice leave before the old socket is closed, otherwise the browser only sees a bare 4001.
+      setTimeout(() => { try { oldWs.close(4001, 'account moved'); } catch { /* ignore */ } }, 120);
+      old.ws = null;
+      old.connected = false;
+      old.disconnectedAt = this.now();
+    }
+    sendSession(session, {
+      t: 'account.resume',
+      token,
+      roomCode: old.roomCode,
+      playerId: old.playerId,
+      name: old.name,
+    });
+    return OK;
+  }
+
   ready(session, { ready }) {
     const room = this.roomOf(session);
     if (!room) return fail(ERR.NOT_IN_ROOM);
-    if (room.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR);
+    if (room.watcherOf(session.playerId)) return fail(ERR.SPECTATOR);
     if (room.match) return fail(ERR.ROOM_STARTED);
     this.dropReplay(room, session.playerId);
     const seat = room.seatOf(session.playerId);
@@ -922,6 +1033,30 @@ export class Lobby {
       seat.ready = ready;
       this.broadcastState(room);
     }
+    return OK;
+  }
+
+  /** Room-owned experimental rules (host-only, before a match); enlarging keeps seats, shrinking requires empty tail seats. */
+  setExperimental(session, { experimental }) {
+    const room = this.roomOf(session);
+    if (!room) return fail(ERR.NOT_IN_ROOM);
+    if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
+    if (room.mode === 'solo') return fail(ERR.BAD_MSG, 'experimental options are for co-op only');
+    if (room.match) return fail(ERR.ROOM_STARTED);
+    if (!isExperimental(experimental)) return fail(ERR.BAD_MSG, 'invalid experimental options');
+    if (experimentalRequested(experimental) && !experimentalOpen()) return fail(ERR.BAD_MSG, 'experimental rooms are disabled');
+    const next = experimentalOptions(experimental);
+    const capacity = roomCapacity(room.mode, next);
+    if (room.seats.some((s, i) => s && i >= capacity)) return fail(ERR.ROOM_FULL, 'occupied seats exceed the new capacity');
+    room.experimental = next;
+    if (room.mode !== 'solo') {
+      // Fill before resizing: setting length first creates holes (undefined), which used to make freeSeat()
+      // report a room with free seats as full.
+      while (room.seats.length < capacity) room.seats.push(null);
+      room.seats.length = capacity;
+    }
+    for (const s of room.seats) if (s && !s.isBot && s.playerId !== room.hostId) s.ready = false;
+    this.broadcastState(room);
     return OK;
   }
 
@@ -1134,7 +1269,7 @@ export class Lobby {
     this.dropReplay(room, session.playerId);
     if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo rooms cannot have AI teammates');
     // 同一个网络地址能挂的 AI 队友总数（跨房间累计），防止用一堆机器人占满 CPU
-    if (this.opts.maxBotsPerAddr > 0) {
+    if (!session.admin && this.opts.maxBotsPerAddr > 0) {
       const key = session.limitKey;
       if (key && this.countBots(key) >= this.opts.maxBotsPerAddr) {
         this.limitWarn(`AI teammate limit (${this.opts.maxBotsPerAddr}) reached for ${session.addr}`);
@@ -1196,6 +1331,7 @@ export class Lobby {
     if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
     if (room.match) return fail(ERR.ROOM_STARTED);
     const on = !!(msg && msg.on);
+    if (on && !gameGate().match) return fail(ERR.BAD_MSG, 'matchmaking maintenance');
     if (on === room.matchmaking) return OK;
     const now = this.now ? this.now() : Date.now();
     if (on) {
@@ -1221,6 +1357,7 @@ export class Lobby {
   start(session) {
     const room = this.roomOf(session);
     if (!room) return fail(ERR.NOT_IN_ROOM);
+    if (!gameGate().start) return fail(ERR.BAD_MSG, 'start maintenance');
     if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
     if (room.match) return fail(ERR.ROOM_STARTED);
     const humans = room.activeHumans();
@@ -1246,7 +1383,7 @@ export class Lobby {
   rerollSetup(session, msg, cancel = false) {
     const room = this.roomOf(session);
     if (!room) return fail(ERR.NOT_IN_ROOM);
-    if (room.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR);
+    if (room.watcherOf(session.playerId)) return fail(ERR.SPECTATOR);
     if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
     const method = cancel ? 'cancelSetupReroll' : 'requestSetupReroll';
     if (!room.match || typeof room.match[method] !== 'function') return fail(ERR.WRONG_PHASE);
@@ -1500,9 +1637,12 @@ export class Lobby {
         modeId: room.content?.modeId || modeIdFor(room.mode, room.difficulty),
         // 「AI 队友最后选择」 (GitHub #338): fixed for the match
         aiPicksLast: room.mode !== 'solo' && room.aiPicksLast === true,
+        // room-owned experimental rules: revival / independent pool / expanded capacity / duck-lord ban
+        experimental: room.experimental,
         seats,
         // the spectator seats (header): watched like eliminated players, never players
         spectators: room.spectators.map((s) => s.playerId),
+        hiddenSpectators: room.hiddenSpectators.map((s) => s.playerId),
         // the room's host: the current executor of a delegated bot layout rehearsal (DESIGN §14; setHost follows a
         // migration while the match runs)
         hostId: room.hostId,
@@ -1533,6 +1673,8 @@ export class Lobby {
       ctx.match = match;
       room.match = match;
       room.matchCtx = ctx;
+      room.liveRound = 0;
+      room.livePhase = null;
       room.matchKey = key;
       room.replay = null;
       room.matchCount++;
@@ -1602,7 +1744,11 @@ export class Lobby {
   matchBroadcast(room, ctx, msg) {
     const data = this.broadcastRoom(room, msg);
     if (data == null) return;
-    if (msg.t === 'm.public') ctx.lastPublic = data;
+    if (msg.t === 'm.public') {
+      if (Number.isFinite(Number(msg.round))) room.liveRound = Number(msg.round);
+      if (typeof msg.phase === 'string') room.livePhase = msg.phase;
+      ctx.lastPublic = data;
+    }
     else if (msg.t === 'm.result') ctx.sharedResult = data;
   }
 
@@ -1677,7 +1823,7 @@ export class Lobby {
     if (!room) return;
     session.resyncAt = this.now();
     if (room.match) {
-      this.callMatch(room, room.spectatorOf(session.playerId) ? 'addSpectator' : 'onReconnect', session.playerId);
+      this.callMatch(room, room.watcherOf(session.playerId) ? 'addSpectator' : 'onReconnect', session.playerId, !!room.hiddenSpectatorOf(session.playerId));
       return;
     }
     const frames = this.replayFor(room, session.playerId);
@@ -1691,11 +1837,12 @@ export class Lobby {
 
   /** Log a per-network limit refusal without letting a refusal loop flood the log. */
   limitWarn(text) {
+    const log = this.limitLog || (this.limitLog = { at: 0, suppressed: 0 });
     const now = this.now();
-    if (now - this.limitLog.at < 10_000) { this.limitLog.suppressed++; return; }
-    const more = this.limitLog.suppressed ? ` (+${this.limitLog.suppressed} similar refusals)` : '';
-    this.limitLog.at = now;
-    this.limitLog.suppressed = 0;
+    if (now - log.at < 10_000) { log.suppressed++; return; }
+    const more = log.suppressed ? ` (+${log.suppressed} similar refusals)` : '';
+    log.at = now;
+    log.suppressed = 0;
     this.log.warn(`[lobby] ${text}${more}`);
   }
 
@@ -1745,7 +1892,7 @@ export class Lobby {
       return OK;
     }
     // a spectator only watches (header): nothing else of it ever reaches the match
-    if (msg.t !== 'g.watch' && !(room.test && msg.t === 'g.test') && room.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR);
+    if (msg.t !== 'g.watch' && !(room.test && msg.t === 'g.test') && room.watcherOf(session.playerId)) return fail(ERR.SPECTATOR);
     let res;
     try {
       res = room.match.handle(session.playerId, msg);
@@ -1812,7 +1959,7 @@ export class Lobby {
     if (!session.roomCode) return null;
     const room = this.rooms.get(session.roomCode);
     const seat = room ? room.seatOf(session.playerId) : null;
-    if (room && !seat && room.spectatorOf(session.playerId)) return room; // a spectator seat
+    if (room && !seat && room.watcherOf(session.playerId)) return room; // a spectator or hidden admin watcher
     if (!room || !seat || seat.left || seat.isBot) { session.roomCode = null; return null; }
     return room;
   }
@@ -1820,7 +1967,7 @@ export class Lobby {
   /** @returns {Seat} */
   humanSeat(idx, session) {
     return {
-      seat: idx, playerId: session.playerId, name: session.name, tag: session.tag || null, isBot: false, ready: false, connected: session.connected, left: false,
+      seat: idx, playerId: session.playerId, name: session.name, tag: session.tag || null, accountId: session.accountId || null, isBot: false, ready: false, connected: session.connected, left: false,
       loadout: session.loadout || null,
       ops: session.ops || null,
       notOwned: session.notOwned || null,
@@ -1867,6 +2014,12 @@ export class Lobby {
    * spectator neither holds the host nor keeps a room alive. @returns {boolean} true when it was a spectator seat
    */
   freeSpectatorSeat(room, playerId) {
+    const h = room.hiddenSpectators.findIndex((s) => s.playerId === playerId);
+    if (h >= 0) {
+      room.hiddenSpectators.splice(h, 1);
+      if (!room.disposed) this.callMatch(room, 'removeSpectator', playerId);
+      return true;
+    }
     const i = room.spectators.findIndex((s) => s.playerId === playerId);
     if (i < 0) return false;
     room.spectators.splice(i, 1);
@@ -1888,6 +2041,7 @@ export class Lobby {
       // 只剩游客：房主留空，等有普通玩家加入或游客自行离开
       const prev0 = room.hostId;
       room.hostId = null;
+      room.ownerKey = null;
       if (prev0) this.log?.info?.('[lobby] ' + room.code + ' host left, remaining players are guests — host kept empty');
       if (room.match && prev0) this.callMatch(room, 'setHost', null);
       return;
@@ -1895,6 +2049,12 @@ export class Lobby {
     const pick = eligible.find((s) => s.connected) || eligible[0] || null;
     const prev = room.hostId;
     room.hostId = pick ? pick.playerId : null;
+    // The room's per-network quota follows its current host, not the player who
+    // created it and has already left.
+    try {
+      const hostSession = pick && this.registry && this.registry.byId ? this.registry.byId(pick.playerId) : null;
+      room.ownerKey = hostSession ? (hostSession.limitKey || null) : null;
+    } catch { room.ownerKey = null; }
     if (pick && prev !== pick.playerId) this.log.info(`[lobby] ${room.code} host → ${pick.name}`);
     // a running match follows the host change: its delegated bot rehearsals fall back to the server and later ones ask
     // the new host (DESIGN §14, Match.setHost)
@@ -1943,6 +2103,8 @@ export class Lobby {
     room.match = null;
     room.matchCtx = null;
     room.matchKey = null;
+    room.liveRound = 0;
+    room.livePhase = null;
     room.replay = null;
     for (const s of room.seats) {
       if (!s || s.isBot) continue;
@@ -1955,7 +2117,7 @@ export class Lobby {
       else session.notice = reason;
     }
     // spectators did not leave: they are told whatever closed the room (its last human leaving included)
-    for (const s of room.spectators) {
+    for (const s of [...room.spectators, ...room.hiddenSpectators]) {
       this.clearGrace(s.playerId);
       const session = this.registry.byId(s.playerId);
       if (!session || session.roomCode !== room.code) continue;
@@ -1984,7 +2146,7 @@ export class Lobby {
 
   /** Connected, non-departed human sessions of a room — its spectators included (room.state, match broadcasts). */
   *memberSessions(room) {
-    for (const s of [...room.seats, ...room.spectators]) {
+    for (const s of [...room.seats, ...room.spectators, ...room.hiddenSpectators]) {
       if (!s || s.isBot || s.left) continue;
       const session = this.registry.byId(s.playerId);
       if (session && session.connected && session.roomCode === room.code) yield session;
@@ -2025,7 +2187,7 @@ export class Lobby {
   /** Match unicast. @returns {boolean} */
   sendToPlayer(room, playerId, msg) {
     if (room.disposed) return false;
-    const seat = room.seatOf(playerId) || room.spectatorOf(playerId);
+    const seat = room.seatOf(playerId) || room.watcherOf(playerId);
     if (!seat || seat.isBot || seat.left) return false;
     const session = this.registry.byId(playerId);
     if (!session || session.roomCode !== room.code) return false;
@@ -2040,7 +2202,7 @@ Lobby.prototype.sweepOldRooms = function () {
     const now = this.now ? this.now() : Date.now();
     for (const room of [...this.rooms.values()]) {
       if (!room || room.match) continue;
-      // 正在匹配队友：暂停 15 分钟解散；超过 5 分钟按当前人数直接开局
+      // 正在匹配队友：暂停 15 分钟解散；超过 2 分钟按当前人数直接开局
       if (room.matchmaking) {
         const started = Number(room.matchmakingAt) || now;
         if (now - started >= MATCHMAKING_TIMEOUT_MS) {
@@ -2050,6 +2212,7 @@ Lobby.prototype.sweepOldRooms = function () {
       }
       const createdAt = Number(room.createdAt) || now;
       const base = Math.max(createdAt, Number(room.lastMatchEndAt) || 0);
+      if (room.noExpire) continue;
       if (now - base < (room.ttlMs || roomTtlMs())) continue;
       this.log?.info?.('[lobby] ' + room.code + ' expired (15 min without a match)');
       try { this.disposeRoom(room, 'expired'); } catch { /* ignore */ }
@@ -2058,9 +2221,17 @@ Lobby.prototype.sweepOldRooms = function () {
 };
 
 
-/** 匹配队友 5 分钟没凑满：按房间里当前人数直接开局，并通知匹配器移出队列。 */
+/** 匹配队友 2 分钟没凑满：按房间里当前人数直接开局，并通知匹配器移出队列。 */
 Lobby.prototype.forceStartMatchmaking = function (room) {
   if (!room || room.match) return;
+  if (!gameGate().start) {
+    room.matchmaking = false;
+    room.matchmakingAt = 0;
+    room.matchmakingStartedAt = 0;
+    notifyPartyLeave(room);
+    this.broadcastState(room);
+    return;
+  }
   const humans = room.activeHumans();
   if (!humans.length || !humans.some((s) => s.connected)) { this.disposeRoom(room, 'empty'); return; }
   // 超时开局视为全员就绪（不再等人点准备）
