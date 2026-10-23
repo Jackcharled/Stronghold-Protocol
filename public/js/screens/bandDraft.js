@@ -188,12 +188,20 @@ export function BandDraftScreen() {
   const bands = useMemo(() => allowedBands(gd.list('bands'), mode?.type || (solo ? 'SINGLE' : 'MULTI'), disableDuckLord), [gd.ready, mode?.type, solo, disableDuckLord, data.locale()]);
   const players = sortedPlayers(pub);
   const draft = normalizeDraft(pub?.draft, players);
-  const orderPlayers = solo ? players.filter((p) => p.playerId === myId) : draft.order.map((pid) => players.find((p) => p.playerId === pid)).filter(Boolean);
+  const orderPlayers = solo
+    // A solo player sees their own seat. A spectator / hidden watcher has no seat of their own,
+    // so show the human player being watched instead of an empty order column.
+    ? (players.some((p) => p.playerId === myId)
+      ? players.filter((p) => p.playerId === myId)
+      : players.filter((p) => !p.isBot))
+    : draft.order.map((pid) => players.find((p) => p.playerId === pid)).filter(Boolean);
   const myPick = draft.picks.get(myId) || priv?.bandId || null;
   const myTurn = !myPick && draftMyTurn(draft, myId, solo);
   const skipsLeft = draft.skipsLeft.has(myId) ? draft.skipsLeft.get(myId) : (skipped ? 0 : 1);
   const canSkip = !solo && !draft.concurrent && myTurn && skipsLeft > 0 && draft.order.filter((pid) => !draft.picks.has(pid)).length > 1;
-  const taken = solo || draft.concurrent ? new Map() : teammateBands(draft.picks, myId);
+  // A concurrent draft still honours the room's repeat rule: without allowRepeat the
+  // strategies teammates already submitted must stay 队友已选 and cannot be confirmed.
+  const taken = solo || (draft.concurrent && draft.allowRepeat) ? new Map() : teammateBands(draft.picks, myId);
   const pickers = new Map(); // bandId → players
   for (const [pid, bid] of draft.picks) {
     const p = players.find((x) => x.playerId === pid);
@@ -266,7 +274,7 @@ export function BandDraftScreen() {
     <${StepHeader} step=${2} of=${2} title=${t('选择策略')} micro="STRATEGY // BAND CHECK" pub=${clock ? { ...pub, deadline: clock.deadline } : { ...pub, deadline: 0 }}
       total=${clock ? clock.total : null} onExit=${() => setExit(true)} />
     <main class="draft__main">
-      <aside class="draft-order">
+      <aside class=${cx('draft-order', draft.concurrent && 'is-wide')}>
         <h3 class="brief-h"><span>${solo ? t('独立模拟') : t('决策顺序')}</span><${MicroLabel}>${solo ? 'FREE PICK' : 'RANDOM ORDER'}</${MicroLabel}>
           ${!solo && orderPlayers.length > 4 ? html`<button type="button" class="draft-order__fold" aria-expanded=${String(orderOpen)}
             onClick=${() => setOrderOpen((v) => !v)}>${orderOpen ? t('收起') : t('展开全部')} (${orderPlayers.length})<${Icon} name="chevronRight" /></button>` : null}

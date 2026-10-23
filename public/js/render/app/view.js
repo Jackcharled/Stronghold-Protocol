@@ -113,12 +113,17 @@ export function flightView(prevVk, vk) {
   };
 }
 
-/** '2d' | '3d' | 'auto' board preference: `?board=` in the page URL (dev), else the view option. */
+/** '2d' | '3d' | 'auto' board preference: `?board=` in the page URL (dev), else the saved board choice, else the view option. */
 export function boardPreference(opt) {
   let q = null;
   try { q = new URLSearchParams(globalThis.location?.search || '').get('board'); } catch { /* no location */ }
   const v = q || opt;
-  return v === '2d' || v === '3d' ? v : 'auto';
+  if (v === '2d' || v === '3d') return v;
+  try {
+    const saved = globalThis.localStorage?.getItem('sp.pref.board');
+    if (saved === '2d' || saved === '3d') return saved;
+  } catch { /* private mode */ }
+  return 'auto';
 }
 
 /**

@@ -103,7 +103,17 @@ export function backoffDelay(attempt, rand = Math.random) {
  */
 export function defaultWsUrl(loc = globalThis.location) {
   if (!loc || !loc.host) return 'ws://localhost:3000/ws';
-  return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
+  const base = `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
+  // Hidden admin watch: pin this socket to the room node without depending on cookies
+  // (an admin's normal sp_route cookie can otherwise win over the room-page cookie).
+  try {
+    const q = new URLSearchParams(loc.search || '');
+    const n = Number(q.get('adminNode'));
+    if (q.get('adminWatch') === '1' && q.get('watchGuest') === '1' && Number.isInteger(n) && n >= 1 && n <= 30) {
+      return base + '?watchNode=' + n;
+    }
+  } catch { /* ignore */ }
+  return base;
 }
 
 const WS_OPEN = 1;
@@ -369,8 +379,15 @@ export class Net {
 
   _sendHello() {
     if (!this.name) return;
+    // Hidden admin watch uses a disposable guest observer identity. It must not take over
+    // the admin's normal player account/room, which otherwise drops the watch into the lobby.
+    let watchGuest = false;
+    try {
+      const q = new URLSearchParams(location.search);
+      watchGuest = q.get('adminWatch') === '1' && q.get('watchGuest') === '1';
+    } catch { /* ignore */ }
     // 首次连接前若还没有账号代码，先取一次（不阻塞发包，取到后重发 hello 由上层触发）
-    if (!this._accountTagProbed) {
+    if (!watchGuest && !this._accountTagProbed) {
       this._accountTagProbed = true;
       try {
         const saved = localStorage.getItem('mm.tag');
@@ -389,13 +406,13 @@ export class Net {
       } catch { /* 隐私模式 */ }
     }
     const rid = this._nextRid();
-    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, guest: !window.__SP_ACCOUNT_USER };
+    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, guest: watchGuest || !window.__SP_ACCOUNT_USER };
     // 服务端验签的管理员能力令牌；没有令牌时客户端里的 admin 布尔值不会生效。
     try {
       if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) msg.adminToken = window.__SP_ADMIN_TOKEN;
-      if (typeof window.__SP_ACCOUNT_TOKEN === 'string' && window.__SP_ACCOUNT_TOKEN.length > 0) msg.accountToken = window.__SP_ACCOUNT_TOKEN;
+      if (!watchGuest && typeof window.__SP_ACCOUNT_TOKEN === 'string' && window.__SP_ACCOUNT_TOKEN.length > 0) msg.accountToken = window.__SP_ACCOUNT_TOKEN;
     } catch { /* 隐私模式 */ }
-    if (!this._accountTokenProbed) {
+    if (!watchGuest && !this._accountTokenProbed) {
       this._accountTokenProbed = true;
       fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : null))

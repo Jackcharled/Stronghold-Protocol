@@ -298,6 +298,7 @@ export function LobbyScreen() {
   useEffect(() => () => { alive.current = false; }, []);
 
   const online = conn.status === 'online';
+  const guest = !(window.__SP_ACCOUNT_USER || window.__SP_ACCOUNT_TOKEN);
   const codeOk = CODE_RE.test(code);
 
   const pickMode = (m) => { setRoomMode(m); savePref('lobby.mode', m); };
@@ -436,11 +437,12 @@ export function LobbyScreen() {
             <span>${t('测试房间')}</span>
             <em class="t-dim">${t('不计入战绩。房间会标明「测试」，只有房主能使用测试指令。')}</em>
           </label>` : null}
-          <${Tooltip} block=${true} text=${online ? null : t('正在连接服务器…')}>
-            <${Button} variant="primary" size="xl" block=${true} iconRight="chevrons" loading=${busy === 'create'} disabled=${!online} onClick=${create}>
-              ${roomMode === 'solo' ? t('开始独立模拟') : t('创建同盟')}
+          <${Tooltip} block=${true} text=${guest ? (roomMode === 'solo' ? t('游客不能开始独立模拟，请先登录') : t('游客不能创建同盟模拟房间，请先登录')) : online ? null : t('正在连接服务器…')}>
+            <${Button} variant="primary" size="xl" block=${true} iconRight="chevrons" loading=${busy === 'create'} disabled=${!online || guest} onClick=${create}>
+              ${guest ? t('登录后创建') : roomMode === 'solo' ? t('开始独立模拟') : t('创建同盟')}
             <//>
           <//>
+          ${guest ? html`<div class="create-box__hint t-dim">${roomMode === 'solo' ? t('游客不能开始独立模拟，请先登录后创建。') : t('游客不能创建同盟模拟房间，请先登录后创建。')}</div>` : null}
           <div class="create-box__hint">
             ${online
               ? html`<span>${roomMode === 'solo' ? t('创建后即可开始模拟') : t('创建后可邀请好友或添加 AI 队友')}</span>`

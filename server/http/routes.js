@@ -52,6 +52,14 @@ export function healthReport({ startedAt, network, registry, lobby, content = nu
   const stats = lobby.stats();
   const hiddenWatchers = stats.hiddenWatchers || 0;
   const { hiddenWatchers: _hidden, ...publicStats } = stats;
+  const hiddenIds = new Set();
+  for (const room of lobby.rooms.values()) {
+    for (const s of room.hiddenSpectators || []) hiddenIds.add(s.playerId);
+  }
+  let guests = 0;
+  for (const session of registry.byPlayerId.values()) {
+    if (session.connected && session.guest === true && !hiddenIds.has(session.playerId)) guests++;
+  }
   const report = {
     ok: true, version: PROTOCOL_VERSION, app: APP_VERSION, uptimeSec: Math.round((Date.now() - startedAt) / 1000),
     // the runtime the server is serving right now (public/js/ui/buildGuard.js): a page whose own build is
@@ -61,7 +69,8 @@ export function healthReport({ startedAt, network, registry, lobby, content = nu
     // hold now (P1c, §32.6 — a room's cosmetic plugins leave its cs the vanilla one, §32.3); how many unofficial plugins
     // it has, when it has some (a page's title screen says so; P1a)
     ...(content ? { content: { vanilla: content.cs, sets: contentSets(lobby), ...pluginCount(lobby) } } : {}),
-    sockets: Math.max(0, network.connectionCount - hiddenWatchers), sessions: Math.max(0, registry.size - hiddenWatchers), ...publicStats,
+    sockets: Math.max(0, network.connectionCount - hiddenWatchers), sessions: Math.max(0, registry.size - hiddenWatchers),
+    guests: Math.max(0, guests), ...publicStats,
   };
   if (trusted && Object.keys(trusted).length) report.plugins = trusted;
   if (withTraffic && traffic) report.traffic = traffic.snapshot();

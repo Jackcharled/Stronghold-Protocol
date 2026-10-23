@@ -48,12 +48,14 @@ export function toast(text, kind = 'info', opts = {}) {
   const k = TOAST_KINDS.includes(kind) ? kind : 'info';
   const msg = String(text ?? '').slice(0, 200).trim();
   if (!msg) return -1;
-  // Hidden admin watch enters an already-running room; the normal "simulation
-  // already started" warning is noise for a spectator.
+  // Hidden admin watch enters an already-running room. Player join/recovery notices are
+  // noise for the spectator and for other tabs while that watch is active.
   try {
-    const adminWatch = new URLSearchParams(location.search).get('adminWatch') === '1'
-      || !!sessionStorage.getItem('sp_admin_watch_code');
-    if (adminWatch && (msg === '模拟已开始' || msg === 'Simulation already started')) return -1;
+    const qs = new URLSearchParams(location.search);
+    const adminWatch = qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
+      || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code')
+      || !!localStorage.getItem('sp_watch_token');
+    if (adminWatch && /^(模拟已开始|Simulation already started|加入失败：|观战失败：|当前节点没有可恢复的账号对局|恢复对局失败：|恢复账号对局)/.test(msg)) return -1;
   } catch { /* ignore */ }
   const now = Date.now();
   const ttl = Number.isFinite(opts.ttl) && opts.ttl > 0 ? opts.ttl : DEFAULT_MS[k];
@@ -113,6 +115,11 @@ export function describeError(err) {
       const name = id => { const p = catalog.get().plugins.find(p => p.id === id); return p ? pluginName(p) : id; };
       return t('「{a}」和「{b}」的规则开关「{rule}」选项冲突', { a: name(match[2]), b: name(match[3]), rule: t(labels[match[1]]) });
     }
+  }
+  if (err.code === 'BAD_MSG' && typeof err.detail === 'string') {
+    if (/创建房间|独立模拟/.test(err.detail)) return t(err.detail);
+    if (/matchmaking maintenance/i.test(err.detail)) return t('服务器暂时关闭了匹配队友，请稍后再试');
+    if (/start maintenance/i.test(err.detail)) return t('服务器暂时关闭了开始游戏，请稍后再试');
   }
   if (err.code && Object.hasOwn(ERR_TEXT, err.code)) return t(ERR_TEXT[err.code]);
   if (typeof err.message === 'string' && err.message) return t(err.message);

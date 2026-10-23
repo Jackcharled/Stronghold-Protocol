@@ -34,6 +34,9 @@ export function ResumeMatchButton() {
   const [accountRoom, setAccountRoom] = useState(false);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [restartPending, setRestartPending] = useState(() => {
+    try { return !!localStorage.getItem('sp.matchInterrupted') || !!window.__SP_RESTART_PENDING; } catch { return false; }
+  });
   useEffect(() => {
     let alive = true;
     const checkAccountRoom = async () => {
@@ -47,11 +50,13 @@ export function ResumeMatchButton() {
     const refresh = () => {
       setItems(identity.recoverable());
       setAccount(!!window.__SP_ACCOUNT_USER);
+      try { setRestartPending(!!localStorage.getItem('sp.matchInterrupted') || !!window.__SP_RESTART_PENDING); } catch { setRestartPending(false); }
       checkAccountRoom();
     };
     window.addEventListener('storage', refresh);
     window.addEventListener('focus', refresh);
     window.addEventListener('sp-account-token', refresh);
+    window.addEventListener('sp-room-left', refresh);
     const timer = setInterval(refresh, 5000);
     refresh();
     return () => {
@@ -60,8 +65,12 @@ export function ResumeMatchButton() {
       window.removeEventListener('storage', refresh);
       window.removeEventListener('focus', refresh);
       window.removeEventListener('sp-account-token', refresh);
+      window.removeEventListener('sp-room-left', refresh);
     };
   }, []);
+  // After a node restart the interrupted-alliance panel owns recovery; do not offer the
+  // account-resume button (it could start a fresh match instead).
+  if (restartPending) return null;
   if (!items.length && !(account && accountRoom)) return null;
   const accountResume = account && accountRoom;
   const resumeLabel = accountResume ? t('恢复账号对局') : t('恢复本机对局');

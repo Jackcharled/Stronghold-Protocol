@@ -123,6 +123,7 @@ import {
 } from '../ui/gameLogic.js';
 import { toast } from '../ui/toasts.js';
 import { LoadoutButton } from './loadout.js';
+import { touchDevice } from '../render/vfx/tier.js';
 import { BriefingScreen } from './briefing.js';
 import { BandDraftScreen } from './bandDraft.js';
 import { ResultScreen } from './settle.js';
@@ -196,11 +197,12 @@ function MatchScreen() {
   const conn = useStore((s) => s.connection, shallowEqual);
   const emotes = useStore((s) => s.emotes);
   const roomSolo = useStore((s) => s.room?.mode === 'solo');
-  const spectator = useStore((s) => isSpectating(s.room, s.me.playerId)) || (() => {
+  const adminWatchUrl = (() => {
     try {
       return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
     } catch { return false; }
   })();
+  const spectator = useStore((s) => isSpectating(s.room, s.me.playerId)) || adminWatchUrl;
   const playerSettings = useSettings();
   const metricsSetting = playerSettings.combatMetrics === true;
   // gameplay plugins (DESIGN §32.6): the HUD corner's MOD mark — re-rendered only when the room's content changes
@@ -249,6 +251,7 @@ function MatchScreen() {
   const pieceActionBusy = useRef(false);
   const buyPending = useRef(new Set());
   const [holdSeq, setHoldSeq] = useState(0);             // bumped when a held piece is released (re-apply the prep state)
+  const boardPrompted = useRef(false);
   const [hud, setHud] = useState(null);
   const [banner, setBanner] = useState(null);            // a phase's banner (PhaseBanner) or plate (ui/matchPopups.js PhasePopup: `plate`)
   const [roundPop, setRoundPop] = useState(null);        // the round-start plate (RoundPopup)
@@ -503,6 +506,37 @@ function MatchScreen() {
   live.current.terrainTile = showPrep && (deployField === 'bossL' || deployField === 'bossR')
     ? (row, col) => fieldTile(deployField, row, col)
     : (row, col) => [row, col];
+
+  // A phone that is still very slow on the 3D board gets one offer to switch to the 2D board.
+  // Low quality is capped at 30 fps, so its floor is 24; medium/high target 60 and prompt below 40.
+  useEffect(() => {
+    if (!view || !touchDevice()) return undefined;
+    let samples = 0;
+    let low = 0;
+    const timer = setInterval(() => {
+      if (boardPrompted.current) return;
+      let stats = null;
+      try { stats = view.stats?.() || null; } catch { /* ignore */ }
+      if (!stats || !stats.board3d || stats.board3d.on !== true) { low = 0; return; }
+      samples += 1;
+      if (samples < 4) return;
+      const quality = settingsStore.get().quality;
+      const floor = quality === 'low' ? 24 : 40;
+      if (Number(stats.fps) > 0 && Number(stats.fps) < floor) low += 1; else low = 0;
+      if (low < 3) return;
+      boardPrompted.current = true;
+      confirmDialog({
+        title: t('画面较卡'),
+        text: t('当前设备运行 3D 棋盘帧率较低，是否切换到更省电的 2D 棋盘？画面会从立体变成平面。'),
+        okText: t('切换到 2D'), cancelText: t('继续 3D'),
+      }).then((ok) => {
+        if (!ok) return;
+        try { localStorage.setItem('sp.pref.board', '2d'); } catch { /* ignore */ }
+        try { view.setBoardMode?.('2d'); } catch { /* ignore */ }
+      });
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [view, t]);
   // a battle on screen (not the prep board, not a scouted prep board): its crates and turrets are device UNITS, found by
   // unit; everything else answers by the stage's own device entries (gameLogic.deviceTipAt / deviceInfo, #228)
   live.current.deviceBattle = !!shownField && !shownField.prep;
@@ -1086,6 +1120,32 @@ function MatchScreen() {
   // Until 0.2.0 every round's reset dropped an eliminated player onto its own empty board (a spectator seat asked for
   // the first player itself).
   const followRef = useRef(null);
+  // Hidden admin watch should open on P1 immediately. The server normally defaults to the first
+  // player still in, but on a mid-prep join it has no field/scout to push until the next phase;
+  // ask for P1 here instead of leaving the admin on the "select a player" screen.
+  const autoP1Ref = useRef(false);
+  useEffect(() => {
+    if (!adminWatchUrl || !spectator || autoP1Ref.current || watching || !pub) return;
+    const first = (Array.isArray(pub.players) ? pub.players : [])
+      .find((p) => p && p.playerId && p.playerId !== myId && p.alive !== false && p.left !== true);
+    if (!first) return;
+    const f = (Array.isArray(pub.fields) ? pub.fields : [])
+      .find((x) => x && Array.isArray(x.players) && x.players.includes(first.playerId));
+    if (f && typeof f.fieldId === 'string') {
+      autoP1Ref.current = true;
+      setWatching(f.fieldId);
+      setWatchWho({ fieldId: f.fieldId, playerId: first.playerId });
+      actions.watch(f.fieldId, first.playerId).catch(() => { autoP1Ref.current = false; });
+      return;
+    }
+    if (phase === PHASE.PREP && !field) {
+      autoP1Ref.current = true;
+      const fid = 'n:' + first.playerId;
+      setWatching(fid);
+      setWatchWho({ fieldId: fid, playerId: first.playerId });
+      actions.watch(fid).catch(() => { autoP1Ref.current = false; });
+    }
+  }, [adminWatchUrl, spectator, watching, pub, field, phase, myId]);
   useEffect(() => {
     const fid = followedScout({ field, watching, alive, spectator, myId });
     if (!fid || !pub) return;

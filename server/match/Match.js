@@ -326,6 +326,7 @@ export class Match {
     this.capacityExperiment = !this.isSolo && this.playerCapacity > 4;
     this.twentyPlayerMode = this.capacityExperiment && this.playerCapacity === 20;
     this.disableDuckLord = this.capacityExperiment && this.experimental.disableDuckLord === true;
+    this.allowRepeat = this.capacityExperiment && this.experimental.allowRepeat === true;
     this.gd.disableDuckLord = this.disableDuckLord;
     if (opts.seats.length > this.playerCapacity) throw new RangeError('Match: seats exceed room capacity');
     /** SETTLE-only rescue state: { round, eligible: Set<playerId>, windowOpen, deadline }. */

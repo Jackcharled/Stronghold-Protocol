@@ -290,8 +290,15 @@ export class LobbyPersister {
     this.counts.restoredRooms += result.rooms;
     let matches = 0;
     for (const { room, ref, departed } of result.matches) {
+      if (!this.cluster) {
+        // A process restart must not silently resume a match: keep the alliance room, but
+        // return it to its waiting state so clients show 返回同盟 instead of continuing.
+        this.abortRestoredMatch(room);
+        this.counts.droppedMatches++;
+        continue;
+      }
       let ok = false;
-      try { ok = this.cluster ? this.lobby.restoreRemoteMatch(room, ref, departed) : await this.restoreLocal(room, ref, departed); }
+      try { ok = this.lobby.restoreRemoteMatch(room, ref, departed); }
       catch (e) { this.log.warn?.(`[persist] ${room.code}: match not restored (${e.message})`); }
       if (ok) matches++;
       else {
@@ -302,6 +309,20 @@ export class LobbyPersister {
     if (!this.cluster) this.counts.restoredMatches += matches;
     this.log.info?.(`[persist] restored ${result.sessions} session(s) (${result.expired} expired), ${result.rooms} room(s), ${matches} match(es)${this.cluster ? ' being placed' : ''}`);
     return { ...result, matches };
+  }
+
+  /** Keep a restored alliance room but drop its interrupted match (restart → 返回同盟). */
+  abortRestoredMatch(room) {
+    room.match = null;
+    room.matchKey = null;
+    room.matchKeys = null;
+    room.liveRound = 0;
+    room.livePhase = null;
+    for (const seat of room.seats || []) {
+      if (seat && !seat.isBot) seat.ready = false;
+    }
+    try { this.lobby.persistFlush?.('restart-abort'); } catch { /* ignore */ }
+    this.log.info?.(`[persist] ${room.code}: match aborted on restart; room kept for 返回同盟`);
   }
 
   /** A local match back from its checkpoint into its restored room. @returns {Promise<boolean>} */

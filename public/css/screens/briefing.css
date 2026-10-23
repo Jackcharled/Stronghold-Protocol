@@ -28,6 +28,25 @@
 .stephead__of { font-size: calc(.26 * var(--t)); color: var(--text-dim); margin-right: .18rem; }
 .stephead__right { justify-self: end; display: flex; align-items: center; gap: .24rem; }
 .stephead__right .countdown { --cd-h: .64rem; }
+.stephead__info { display: inline-flex; align-items: center; gap: .05rem; height: .4rem; padding: 0 .12rem; border-radius: .2rem;
+  font-size: calc(.2 * var(--t)); font-weight: 700; color: var(--text-hi); transition: background var(--t-fast); }
+.stephead__info:hover { background: rgba(255, 255, 255, .1); }
+.stephead__info .icon { width: .26rem; height: .26rem; }
+
+/* phone header: keep the step title and countdown readable instead of letting the left meta collide with them */
+@media (max-width: 760px), ((max-width: 900px) and (max-height: 520px)) {
+  .stephead { grid-template-columns: auto minmax(0, 1fr) auto; gap: .1rem; height: auto; min-height: .96rem; padding: 0 .18rem; }
+  .stephead__left { gap: .08rem; }
+  .stephead__meta { display: none; }
+  .stephead__center { min-width: 0; align-items: center; }
+  .stephead__center .micro { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: max(.09rem, 7px); }
+  .stephead__title { font-size: max(calc(.24 * var(--t)), 15px); letter-spacing: .06em; white-space: nowrap; }
+  .stephead__title b { font-size: max(calc(.4 * var(--t)), 22px); }
+  .stephead__of { margin-right: .06rem; font-size: max(calc(.18 * var(--t)), 12px); }
+  .stephead__right { gap: .08rem; }
+  .stephead__guide { display: none; }
+  .stephead__right .countdown { --cd-h: max(.42rem, 34px); }
+}
 
 .brief-h { display: flex; align-items: baseline; gap: .12rem; font-size: calc(.21 * var(--t)); font-weight: 700; letter-spacing: .1em; margin-bottom: .12rem; }
 .brief-h::before { content: ''; width: .06rem; height: .2rem; background: var(--mint-500); align-self: center; }

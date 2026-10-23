@@ -27,7 +27,7 @@
 import { createStore, loadPref, savePref, store } from '../store.js';
 import { data } from '../data.js';
 import { contentSet as appContentSet } from '../content.js';
-import { LOADOUT_PREF, parseStored, parseStoredOps, toStored, sanitizeEntries, sanitizeOps } from './loadoutModel.js';
+import { LOADOUT_PREF, LOADOUT_VERSION, parseStored, parseStoredOps, toStored, sanitizeEntries, sanitizeOps } from './loadoutModel.js';
 import { cultivationCharIds, charPotentialChanges, loadoutOptions } from '../../../shared/protocol.js';
 import { PHASE } from '../../../shared/constants.js';
 import { POTENTIAL_DEFAULT, CULTIVATE_DEFAULT } from '../../../shared/potential.js';
@@ -387,4 +387,109 @@ export function installDiySync({ net, timers, target = loadoutStore, notify, con
     prepare: async () => cleanPicks(target.get().diy),
   });
   return { flush: sync.flush, dispose() { offKit?.(); offKitContent?.(); sync.dispose(); } };
+}
+
+/**
+ * Cross-device loadout backup (account prefs, domain `loadout`).
+ *
+ * The room sync above only follows one session/seat. A second browser starts with its own
+ * localStorage, so mobile and desktop used to diverge. This keeps { entries, ops } in the
+ * account cloud (`/api/prefs/loadout`, behind Nginx at /mm/api/prefs/loadout): pull on boot
+ * and periodically, push debounced edits, and let a 409 mean the other device won.
+ *
+ * Guest sessions have no account and are left untouched.
+ */
+export function installLoadoutCloudSync({ net, timers = globalThis, target = loadoutStore, fetchFn = (...args) => globalThis.fetch(...args), endpoint = '/mm/api/prefs/loadout' } = {}) {
+  let version = 0;
+  let loaded = false;
+  let applying = false;
+  let dirty = false;
+  let stopped = false;
+  let pushTimer = null;
+  let pollTimer = null;
+  let pullInFlight = false;
+  let pushInFlight = false;
+  const payload = () => ({ v: LOADOUT_VERSION, entries: target.get().entries || {}, ops: target.get().ops || {} });
+  const key = () => JSON.stringify(payload());
+  let last = key();
+  const authed = () => { try { return !!window.__SP_ACCOUNT_USER || !!window.__SP_ACCOUNT_TOKEN; } catch { return false; } };
+
+  const applyCloud = (p, v) => {
+    if (!p || typeof p !== 'object') return;
+    applying = true;
+    try {
+      setEntries(parseStored(p));
+      setOpsMap(parseStoredOps(p));
+      version = Number(v) || version;
+      last = key();
+      dirty = false;
+    } finally { applying = false; }
+  };
+
+  const pull = async () => {
+    if (stopped || pullInFlight || !authed()) return;
+    pullInFlight = true;
+    try {
+      const r = await fetchFn(endpoint, { credentials: 'same-origin', cache: 'no-store' });
+      if (!r.ok) {
+        if (r.status === 404) {
+          loaded = true;
+          if (Object.keys(payload().entries).length || Object.keys(payload().ops).length) dirty = true;
+        }
+        return;
+      }
+      const j = await r.json().catch(() => null);
+      loaded = true;
+      if (j && j.payload && !dirty && Number(j.version) > version) applyCloud(j.payload, j.version);
+    } catch { /* offline: keep local */ } finally { pullInFlight = false; }
+  };
+
+  const push = async () => {
+    if (stopped || pushInFlight || !loaded || !dirty || !authed()) return;
+    pushInFlight = true;
+    try {
+      const body = { payload: payload(), baseVersion: version, schemaVer: LOADOUT_VERSION };
+      const r = await fetchFn(endpoint, {
+        method: 'PUT', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (r.status === 409) {
+        const j = await r.json().catch(() => null);
+        if (j && j.server && j.server.payload) applyCloud(j.server.payload, j.server.version);
+        return;
+      }
+      if (r.ok) {
+        const j = await r.json().catch(() => null);
+        version = Number(j && j.version) || version + 1;
+        last = key();
+        dirty = false;
+      }
+    } catch { /* keep dirty; retry on the next edit/poll */ } finally { pushInFlight = false; }
+  };
+
+  const schedulePush = () => {
+    if (pushTimer) timers.clearTimeout(pushTimer);
+    pushTimer = timers.setTimeout(() => { pushTimer = null; push(); }, 800);
+  };
+
+  const kick = () => { if (!loaded) pull().then(() => { if (dirty) push(); }); else if (dirty) push(); };
+  const offStore = target.subscribe(() => {
+    if (applying) return;
+    if (key() === last) return;
+    dirty = true;
+    schedulePush();
+  });
+  const offWelcome = net && net.on ? net.on('welcome', kick) : null;
+  const offStatus = net && net.on ? net.on('status', (s) => { if (s === 'online') kick(); }) : null;
+  pull().then(() => { if (dirty) push(); });
+  pollTimer = timers.setInterval(() => { if (stopped) return; if (dirty) push(); else pull(); }, 12000);
+  return {
+    pull, push,
+    dispose() {
+      stopped = true;
+      if (pushTimer) timers.clearTimeout(pushTimer);
+      if (pollTimer) timers.clearInterval(pollTimer);
+      offStore?.(); offWelcome?.(); offStatus?.();
+    },
+  };
 }

@@ -10,6 +10,8 @@ let pendingRoom = null;
 let switching = false;
 let resumePromise = null;
 let autoRedirected = false;
+let silentResume = false;
+const RESUME_HOP_KEY = 'sp.accountResumeHopAt';
 
 async function accountRoomCode() {
   try {
@@ -60,7 +62,9 @@ function autoResumeFromQuery() {
   let wanted = false;
   try {
     wanted = params?.get('accountResume') === '1' || sessionStorage.getItem('sp.accountResume') === '1';
+    silentResume = sessionStorage.getItem('sp.accountResumeSilent') === '1';
     sessionStorage.removeItem('sp.accountResume');
+    sessionStorage.removeItem('sp.accountResumeSilent');
   } catch { /* ignore */ }
   if (!wanted) return false;
   if (params) {
@@ -75,6 +79,16 @@ function autoResumeFromQuery() {
 
 export function installAccountObserver() {
   if (installed) return;
+  // The hidden admin watch is a guest observer: do not auto-resume a player account or
+  // show account-recovery toasts in that page.
+  try {
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
+      || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code')) {
+      installed = true;
+      return;
+    }
+  } catch { /* ignore */ }
   installed = true;
   const log = (event, extra = {}) => {
     try { (window.__SP_AUTO_LOG ||= []).push({ event, at: Date.now(), ...extra }); } catch { /* ignore */ }
@@ -108,13 +122,24 @@ export function installAccountObserver() {
     }
     autoAttempts++;
     log('request', { attempt: autoAttempts, status: net.status });
-    requestAccountResume().then(() => { autoWanted = false; log('success'); }).catch(async (e) => {
+    requestAccountResume().then(() => { autoWanted = false; silentResume = false; log('success'); try { sessionStorage.removeItem(RESUME_HOP_KEY); } catch { /* ignore */ } }).catch(async (e) => {
       log('failed', { attempt: autoAttempts, code: e?.code || String(e?.message || e) });
       // If this page started on a random node, follow the account's room to the node that owns it.
-      if (!autoRedirected) {
+      // One hop only: a room that keeps refusing the takeover must not reload between /r/CODE and
+      // /?room=CODE forever (the old tab/device can still be reclaiming the seat).
+      if (!autoRedirected && !silentResume) {
         const code = await accountRoomCode();
         if (code && !location.pathname.endsWith('/r/' + code)) {
+          let lastHop = 0;
+          try { lastHop = Number(sessionStorage.getItem(RESUME_HOP_KEY) || 0); } catch { /* ignore */ }
+          if (Date.now() - lastHop < 15000) {
+            autoWanted = false;
+            try { window.__SP_ACCOUNT_RESUME_PENDING = false; } catch { /* ignore */ }
+            toast(t('恢复对局失败：请关闭其他设备/标签页中的同一账号后重试'), 'warn', { ttl: 6000 });
+            return;
+          }
           autoRedirected = true;
+          try { sessionStorage.setItem(RESUME_HOP_KEY, String(Date.now())); } catch { /* ignore */ }
           try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
           location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');
           return;
@@ -126,17 +151,53 @@ export function installAccountObserver() {
       else {
         autoWanted = false;
         try { window.__SP_ACCOUNT_RESUME_PENDING = false; } catch { /* ignore */ }
-        toast(t('当前节点没有可恢复的账号对局'), 'warn');
+        // A local refresh is silent: never tell the player to close their other device for their own reload.
+        if (!silentResume) toast(t('当前节点没有可恢复的账号对局'), 'warn');
       }
     });
   };
   net.on('status', (snap) => {
-    if (snap && snap.status === 'online') { log('status-online'); setTimeout(tryAuto, 500); }
+    if (snap && snap.status === 'online') { log('status-online'); setTimeout(tryAuto, 500); maybeAutoResumeOnReload(); }
   });
-  window.addEventListener('sp-account-token', () => { log('token-event'); setTimeout(tryAuto, 800); });
+  window.addEventListener('sp-account-token', () => { log('token-event'); setTimeout(tryAuto, 800); maybeAutoResumeOnReload(); });
   // The status/welcome events can fire before this listener when the page is restored from bfcache;
   // a couple of delayed attempts make the target page deterministic.
   if (autoResume) { setTimeout(tryAuto, 1200); setTimeout(tryAuto, 3500); }
+  // A normal refresh of a page that was inside a room used to land on the title: the URL often has
+  // no accountResume flag. On reload only, probe the signed account's active seat and follow it
+  // back through /r/CODE (the short link pins the room node).
+  const reloadNav = (() => {
+    try {
+      const nav = performance.getEntriesByType?.('navigation')?.[0];
+      if (nav) return nav.type === 'reload';
+      return performance.navigation?.type === 1;
+    } catch { return false; }
+  })();
+  let bootProbe = false;
+  async function maybeAutoResumeOnReload() {
+    if (autoResume || bootProbe || !reloadNav || !window.__SP_ACCOUNT_TOKEN) return;
+    try { if (new URLSearchParams(location.search).get('adminWatch') === '1') return; } catch { /* ignore */ }
+    bootProbe = true;
+    const code = await accountRoomCode();
+    if (!code) return;
+    let current = '';
+    try { current = String(new URLSearchParams(location.search).get('room') || '').toUpperCase(); } catch { /* ignore */ }
+    if (current && current !== code) return;
+    if (location.pathname.endsWith('/r/' + code)) {
+      autoWanted = true;
+      try {
+        identity.setEntered(true);
+        store.patch('session', { entered: true });
+        if (!net.name && window.__SP_ACCOUNT_USER) net.setName(window.__SP_ACCOUNT_USER);
+      } catch { /* ignore */ }
+      tryAuto();
+      return;
+    }
+    try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
+    try { sessionStorage.setItem('sp.accountResumeSilent', '1'); } catch { /* ignore */ }
+    location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');
+  }
+  if (reloadNav && !autoResume) { setTimeout(maybeAutoResumeOnReload, 1200); setTimeout(maybeAutoResumeOnReload, 3500); }
   net.on('account.detached', (msg) => {
     pendingRoom = typeof msg?.roomCode === 'string' ? msg.roomCode : pendingRoom;
     if (!pendingRoom) return;

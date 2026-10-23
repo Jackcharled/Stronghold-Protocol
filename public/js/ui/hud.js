@@ -475,7 +475,7 @@ export function UniteBudgetNote({ pub }) {
   const realLeft = secondsLeft(pub?.deadline);
   return html`<div class="gtop__budget" data-testid="unite-budget" data-total=${budget.total} data-remaining=${budget.remaining}>
     <span>${relay ? t('联防第 {round}/2 段：{n} 秒', { round, n: segmentSeconds }) : t('联防时间：{n} 秒', { n: segmentSeconds })}</span>
-    <span>${realLeft == null ? t('现实倒计时：--') : t('现实倒计时：{n} 秒', { n: realLeft })}</span>
+    <span>${realLeft == null ? t('倒计时：--') : t('倒计时：{n} 秒', { n: realLeft })}</span>
   </div>`;
 }
 

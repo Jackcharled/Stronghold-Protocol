@@ -842,15 +842,33 @@ const transientFetch = (err) => {
  *           wait?: (ms: number) => Promise<void>, timers?: { set, clear },
  *           cosmetics?: ReturnType<typeof createCosmeticLayers> | null }} [opts]
  */
+const LOCAL_ASSET_PREFIX = '/assets-cdn/';
+const REMOTE_ASSET_RE = /^https?:\/\/assets\.luobomiao\.love\/assets\//;
+
+/** Route manifest art through this server's cached /assets-cdn/ proxy instead of the slow external host. */
+function localizeAssetUrls(value, seen = new Set()) {
+  if (typeof value === 'string') return REMOTE_ASSET_RE.test(value) ? LOCAL_ASSET_PREFIX + value.replace(REMOTE_ASSET_RE, '') : value;
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const out = new Array(value.length);
+    for (let i = 0; i < value.length; i++) out[i] = localizeAssetUrls(value[i], seen);
+    return out;
+  }
+  const out = {};
+  for (const k of Object.keys(value)) out[k] = localizeAssetUrls(value[k], seen);
+  return out;
+}
+
 export function createAssets(options) {
   const opts = options && typeof options === 'object' ? options : {};
   const layers = opts.cosmetics && typeof opts.cosmetics.apply === 'function' ? opts.cosmetics : null;
   const url = opts.url || '/data/assets.json';
   const localUrl = opts.localUrl || '/data/local-assets.json';
-  let localPromise = isObj(opts.localManifest) ? Promise.resolve(opts.localManifest) : null;
-  let localManifest = isObj(opts.localManifest) ? opts.localManifest : null;
+  let localPromise = isObj(opts.localManifest) ? Promise.resolve(localizeAssetUrls(opts.localManifest)) : null;
+  let localManifest = isObj(opts.localManifest) ? localizeAssetUrls(opts.localManifest) : null;
   const doFetch = opts.fetch || ((...a) => globalThis.fetch(...a));
-  let manifest = isObj(opts.manifest) ? opts.manifest : null;
+  let manifest = isObj(opts.manifest) ? localizeAssetUrls(opts.manifest) : null;
   let readyPromise = manifest ? Promise.resolve(manifest) : null;
   const loadImage = opts.loadImage || loadImageElement;
   const images = new Map(); // url → { promise, value }
@@ -873,7 +891,7 @@ export function createAssets(options) {
   /** Adopt a manifest (fetched or seeded): resolves `ready()`, stops the background tries, tells the listeners. */
   function adopt(m) {
     if (manifest || !isObj(m)) return false;
-    manifest = m;
+    manifest = localizeAssetUrls(m);
     readyPromise = Promise.resolve(m);
     backoffN = 0;
     if (backoffTimer != null) { timers.clear(backoffTimer); backoffTimer = null; }
@@ -888,7 +906,7 @@ export function createAssets(options) {
     let json;
     try { json = await res.json(); } catch (err) { throw Object.assign(err instanceof Error ? err : new Error(String(err)), { badJson: true }); }
     if (!isObj(json)) throw Object.assign(new Error('not a manifest'), { badJson: true });
-    return json;
+    return localizeAssetUrls(json);
   }
 
   function scheduleBackoff() {
@@ -945,7 +963,7 @@ export function createAssets(options) {
       return (opts.unloadSpine || unloadSpineData)(e, value, keep);
     },
     max: opts.spineMax ?? 60,
-    timeout: opts.spineTimeout ?? 20000,
+    timeout: opts.spineTimeout ?? 15000,
     concurrency: opts.spineConcurrency ?? defaultSpineConcurrency(),
     // memory budget (a parsed skeleton holds ~0.1–12 MB): idle skeletons beyond SPINE_IDLE_BYTES go, and all of
     // them once no scene has referenced or held any for SPINE_QUIET_DELAY_MS (lobby / room / result; a field view in
@@ -992,7 +1010,7 @@ export function createAssets(options) {
           const res = await doFetch(localUrl, { cache: 'no-cache' });
           if (!res || !res.ok) return localManifest;
           const json = await res.json();
-          if (!localManifest && isObj(json) && isObj(json.groups)) { localManifest = json; notify('local'); }
+          if (!localManifest && isObj(json) && isObj(json.groups)) { localManifest = localizeAssetUrls(json); notify('local'); }
         } catch { /* optional art: absent */ }
         return localManifest;
       })();
@@ -1014,8 +1032,8 @@ export function createAssets(options) {
     /** The same for the optional local-client manifest (data.js 'local'; `{ groups }`), unless one is known. */
     seedLocal(lm) {
       if (localManifest || !isObj(lm) || !isObj(lm.groups)) return false;
-      localManifest = lm;
-      localPromise = Promise.resolve(lm);
+      localManifest = localizeAssetUrls(lm);
+      localPromise = Promise.resolve(localManifest);
       notify('local');
       return true;
     },

@@ -57,7 +57,18 @@ import { cosmetics } from '../cosmetics.js';
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
 /** Settings store: { bgm, sfx, voice, voiceLang, voiceNative, voiceOverrides, muted, damageNumbers, officialDamageNumbers, ammoEnergyCount, combatMetrics, prepDeployFold, quality, textSize, keys }. */
-export const settingsStore = createStore(sanitizeSettings(loadPref('settings', null)));
+const storedSettings = loadPref('settings', null);
+const initialSettings = sanitizeSettings(storedSettings);
+try {
+  const mm = globalThis.matchMedia;
+  const touchOnly = typeof mm === 'function' && mm('(pointer: coarse)').matches && !mm('(any-pointer: fine)').matches;
+  // New touch devices start at 低画质 once. A later explicit choice in 设置 is persisted and wins.
+  if (touchOnly && localStorage.getItem('sp.mobileQualityDefaulted') !== '1') {
+    initialSettings.quality = 'low';
+    localStorage.setItem('sp.mobileQualityDefaulted', '1');
+  }
+} catch { /* private mode: keep sanitised defaults */ }
+export const settingsStore = createStore(initialSettings);
 
 /**
  * 设置 →「文字大小」: put the step on <html data-text> — css/theme.css turns it into the text root `--t`

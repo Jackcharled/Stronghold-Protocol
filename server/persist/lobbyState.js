@@ -71,8 +71,9 @@ export function roomDoc(room, matchRef, sessionOf) {
     code: room.code, mode: room.mode, difficulty: room.difficulty, aiPicksLast: !!room.aiPicksLast, hostId: room.hostId,
     experimental: room.experimental, source: room.source, ownerKey: room.ownerKey, ownerKeys: room.ownerKeys ? [...room.ownerKeys] : null,
     matchKey: room.matchKey, matchKeys: room.matchKeys ? [...room.matchKeys] : null, matchCount: room.matchCount | 0, createdAt: room.createdAt,
-    ttlMs: room.ttlMs, noExpire: room.noExpire === true,
+    ttlMs: room.ttlMs, noExpire: room.noExpire === true, adminCreated: room.adminCreated === true,
     matchLive: !!room.match, liveRound: room.liveRound | 0, livePhase: room.livePhase || null,
+    maxSpectators: typeof room.spectatorLimit === 'function' ? room.spectatorLimit() : 0,
     seats: room.seats.map(seat),
     spectators: room.spectators.map((s) => ({ playerId: s.playerId, name: s.name, ...(s.owner ? { owner: true } : {}) })),
     match,
@@ -126,7 +127,10 @@ export function restoreLobby({ doc, registry, lobby, now = Date.now(), log = nul
         || registry.byId(s.playerId) || registry.byTokenMap.has(s.token)) { out.dropped++; continue; }
       // a session that was online when the document was written was cut off by the restart: its window starts now
       const since = s.connected || !Number.isFinite(s.disconnectedAt) ? now : Number(s.disconnectedAt);
-      const own = Number.isFinite(s.resumeWindowMs) && s.resumeWindowMs > 0 ? Number(s.resumeWindowMs) : null;
+      const ownRaw = Number.isFinite(s.resumeWindowMs) && s.resumeWindowMs > 0 ? Number(s.resumeWindowMs) : null;
+      // Keep a restored disconnect recoverable for at most 30 minutes, even when an older
+      // record (before this cap) stored the old 24-hour solo window.
+      const own = ownRaw != null ? Math.min(ownRaw, 30 * 60 * 1000) : null;
       const window = own != null && own > registry.reconnectWindowMs ? own : registry.reconnectWindowMs;
       if (now - since > window) { out.expired++; continue; }
       const session = new Session({ playerId: s.playerId, token: s.token, name: s.name, now });
@@ -151,6 +155,7 @@ export function restoreLobby({ doc, registry, lobby, now = Date.now(), log = nul
       const room = roomFrom(r, restored, lobby, now) || fallbackRoom(r, lobby, now);
       if (!room) { out.dropped++; continue; }
       lobby.rooms.set(room.code, room);
+      room.restoredAt = now;
       out.rooms++;
       // every departed seat (left before the restart, or its player did not come back): the restored match hears onLeave
       if (r.match) out.matches.push({ room, ref: r.match, departed: room.seats.filter((s) => s && !s.isBot && s.left).map((s) => s.playerId) });
@@ -171,7 +176,8 @@ function roomFrom(r, sessions, lobby, now) {
     || !DIFFICULTIES.includes(r.difficulty) || !isExperimental(r.experimental) || !Array.isArray(r.seats)) return null;
   const room = new Room(r.code, r.mode, r.difficulty, Number.isFinite(r.createdAt) ? r.createdAt : now, experimentalOptions(r.experimental));
     room.ttlMs = Number.isFinite(r.ttlMs) ? r.ttlMs : null;
-    room.noExpire = r.noExpire === true;
+    room.adminCreated = r.adminCreated === true;
+    room.noExpire = room.adminCreated;
   if (r.seats.length !== room.seats.length) return null;
   const inMatch = !!r.match;
   room.content = lobby.vanilla;
@@ -218,7 +224,8 @@ function fallbackRoom(r, lobby, now) {
   try {
     const room = new Room(r.code, r.mode, r.difficulty, Number.isFinite(r.createdAt) ? r.createdAt : now);
     room.content = lobby.vanilla;
-    room.noExpire = r.noExpire === true;
+    room.adminCreated = r.adminCreated === true;
+    room.noExpire = room.adminCreated;
     room.matchCount = Number.isSafeInteger(r.matchCount) ? r.matchCount : 0;
     room.aiPicksLast = r.mode === 'coop' && r.aiPicksLast === true;
     (Array.isArray(r.seats) ? r.seats : []).forEach((s, i) => {

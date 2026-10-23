@@ -46,6 +46,11 @@ store.subscribe((s, prev) => { if (awayStore.get().away && awayEnds(s, prev)) aw
  */
 export async function quitMatch() {
   const before = store.get();
+  const adminWatch = (() => {
+    try {
+      return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
+    } catch { return false; }
+  })();
   let left = false;
   try {
     try { await net.request('g.leave', {}); } catch (err) {
@@ -53,6 +58,43 @@ export async function quitMatch() {
     }
     try { await net.request('room.leave', {}); } catch (err) { if (err?.code !== 'NOT_IN_ROOM' && err?.code !== 'OFFLINE') throw err; }
     left = true;
+    if (adminWatch) {
+      // A hidden watcher is not a room member: after leaving, do not let auto-rejoin/deep-link
+      // try to room.join the started match on the way back to the lobby.
+      try { localStorage.removeItem('sp.lastRoom'); } catch { /* ignore */ }
+      try {
+        localStorage.removeItem('sp_watch_token');
+        localStorage.removeItem('sp_admin_watch_code');
+        localStorage.removeItem('sp_admin_watch_node');
+        localStorage.removeItem('sp_admin_watch_name');
+      } catch { /* ignore */ }
+      try {
+        sessionStorage.removeItem('sp_admin_watch_code');
+        sessionStorage.removeItem('sp_admin_watch_token');
+      } catch { /* ignore */ }
+      try {
+        for (const name of ['sp_admin_watch_code', 'sp_admin_watch_node', 'sp_admin_watch_name', 'sp_watch_token']) {
+          document.cookie = name + '=; Path=/; Max-Age=0; SameSite=Lax';
+        }
+      } catch { /* ignore */ }
+      try {
+        const u = new URL(location.href);
+        u.searchParams.delete('room');
+        u.searchParams.delete('adminWatch');
+        u.searchParams.delete('watchToken');
+        u.searchParams.delete('accountResume');
+        history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+      } catch { /* ignore */ }
+      store.patch('ui', { pendingJoin: null, pendingSpectate: false });
+      // The game runs inside /mm/watch.html: closing the hidden-watch action closes that tab
+      // instead of leaving its admin-watch title/favicon behind or returning to the admin console.
+      try {
+        if (window.top && window.top !== window) { window.top.close(); return; }
+        window.close();
+        return;
+      } catch { /* ignore */ }
+    }
+    try { window.dispatchEvent(new Event('sp-room-left')); } catch { /* ignore */ }
   } catch (err) {
     toastError(err);
   } finally {
@@ -128,9 +170,9 @@ export function AwayOverlay({ onBack = () => {} }) {
 
 /**
  * Pre-game step header.
- * @param {{ step: number, of: number, title: string, micro: string, pub: any, total?: number|null, onExit: Function }} props
+ * @param {{ step: number, of: number, title: string, micro: string, pub: any, total?: number|null, onExit: Function, extra?: any }} props
  */
-export function StepHeader({ step, of, title, micro, pub, total, onExit }) {
+export function StepHeader({ step, of, title, micro, pub, total, onExit, extra = null }) {
   const conn = useStore((s) => s.connection, shallowEqual);
   return html`<header class="stephead">
     <div class="stephead__left">
@@ -146,6 +188,7 @@ export function StepHeader({ step, of, title, micro, pub, total, onExit }) {
       <h1 class="stephead__title"><b class="num">${step}</b><span class="num stephead__of">/${of}</span>${title}</h1>
     </div>
     <div class="stephead__right">
+      ${extra}
       <${GuideButton} class="stephead__guide" variant="secondary" />
       <${Countdown} deadline=${pub?.deadline} total=${total ?? undefined} size="md" />
     </div>

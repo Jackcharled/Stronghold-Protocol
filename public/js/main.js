@@ -56,7 +56,7 @@ import { LoadoutHost } from './screens/loadout.js';
 import { StatsHost } from './screens/stats.js';
 import { installRehearsal } from './battle/rehearsal.js';
 import { recordResult, installStatsRecorder } from './ui/stats.js';
-import { installLoadoutSync, installOwnershipSync, installDiySync, installSkinsSync } from './ui/loadoutSync.js';
+import { installLoadoutSync, installOwnershipSync, installDiySync, installSkinsSync, installLoadoutCloudSync } from './ui/loadoutSync.js';
 import { startBuildGuard } from './ui/buildGuard.js';
 import { installAccountObserver } from './ui/accountObserver.js';
 import { initLang, useLang, tickerText } from './ui/lang.js';
@@ -106,6 +106,12 @@ function clearPendingJoin() {
 
 /** Auto-join the deep-linked room once entered + online (idempotent). */
 function schedulePendingJoin() {
+  // Hidden admin watch is a spectator session, not a player deep-link.
+  try {
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || qs.get('watchToken')
+      || sessionStorage.getItem('sp_admin_watch_code') || localStorage.getItem('sp_admin_watch_code')) return;
+  } catch { /* ignore */ }
   clearTimeout(joinTimer);
   joinTimer = setTimeout(async () => {
     if (window.__SP_ACCOUNT_RESUME_PENDING) return;
@@ -228,6 +234,7 @@ const CLOSE_REASON = {
   // 'timeout' = this player was removed after staying disconnected past the lobby grace (server/lobby.js)
   host_left: N_('创建者已离开，同盟已解散'), timeout: N_('由于长时间断开连接，你已离开同盟'), empty: N_('同盟已解散'),
   kicked: N_('你已被移出同盟'), ended: N_('模拟已结束'), expired: N_('同盟已过期'), shutdown: N_('服务器维护中，同盟已关闭'),
+  'stuck-preparing': N_('同盟长时间未开始，已自动解散'),
 };
 
 function wireNet() {
@@ -422,6 +429,7 @@ async function boot() {
   wireNet();
   installStatsRecorder(store); // follows the match on screen, so a 放弃模拟 can be recorded (ui/stats.js)
   installLoadoutSync({ net });
+  installLoadoutCloudSync({ net });
   installOwnershipSync({ net });
   installDiySync({ net });
   // 干员皮肤 (docs/SKINS.md): keeps the server's copy of this browser's chosen appearances current (room.skins), from
@@ -469,8 +477,16 @@ async function boot() {
   // (ui/buildGuard.js): watch `/healthz.build`. Outside a match the page reloads itself; during a match the guard says
   // so instead (the connection banner offers 刷新页面) and reloads once the match — settlement screen included — is over,
   // so a running game is never thrown away.
+  // A hidden admin watch page is not a player page: never reload it or advertise a build-refresh state.
+  const adminWatchPage = (() => {
+    try {
+      const qs = new URLSearchParams(location.search);
+      return qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
+        || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code');
+    } catch { return false; }
+  })();
   try {
-    startBuildGuard({
+    if (!adminWatchPage) startBuildGuard({
       inMatch: () => selectRoute(store.get()) === 'game',
       onStale: ({ waiting }) => { if (waiting) store.patch('ui', { buildStale: true }); },
       // the same /healthz names how many plugins the server has: the title screen shows it before any hello

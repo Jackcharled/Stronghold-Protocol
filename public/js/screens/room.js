@@ -260,18 +260,19 @@ function AiLastToggle({ option, busy, onToggle }) {
   </div>`;
 }
 
-/** Experimental room button (owner/admin host): a settings-like popover next to 「AI 队友最后选择」. */
+/** Experimental room button (the host owns the options; every other seat sees them read-only). */
 function ExperimentalControl({ room, isHost, busy, onApply }) {
-  const role = typeof window !== 'undefined' ? window.__SP_ACCOUNT_ROLE : null;
   const [open, setOpen] = useState(false);
   const [capacity, setCapacity] = useState(4);
   const [capOpen, setCapOpen] = useState(false);
   const [revival, setRevival] = useState(false);
   const [independent, setIndependent] = useState(false);
   const [noDuck, setNoDuck] = useState(false);
+  const [repeat, setRepeat] = useState(false);
   if (room?.mode === 'solo') return null;
-  // The host alone may change the options; every other seat can open the same panel read-only.
-  const canEdit = isHost && !!role && role !== 'player';
+  // The host alone may change the options regardless of account role; server-side
+  // experimentalOpen() is the separate gate for whether the node allows these rooms.
+  const canEdit = isHost;
   const exp = room?.experimental || {};
   const currentCap = Number(room?.capacity) || Number(exp.playerCapacity) || 4;
   const toggle = () => {
@@ -283,6 +284,7 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
       setRevival(exp.revivalEnabled === true);
       setIndependent(exp.disableSharedPool === true);
       setNoDuck(exp.disableDuckLord === true);
+      setRepeat(exp.allowRepeat === true);
     }
   };
   const apply = () => {
@@ -292,6 +294,7 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
       disableSharedPool: independent,
       ...(capacity > 4 ? { playerCapacity: capacity } : {}),
       ...(capacity > 4 && noDuck ? { disableDuckLord: true } : {}),
+      ...(capacity > 4 && repeat ? { allowRepeat: true } : {}),
     };
     setOpen(false);
     setCapOpen(false);
@@ -303,7 +306,7 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
       <${Icon} name="gear" />${t('实验性功能')}
     </button>
     ${open ? html`<div class="exp-backdrop" onClick=${() => setOpen(false)}></div>
-      <div class=${`exp-pop set-list${canEdit ? '' : ' exp-pop--readonly'}`} role="dialog" aria-label=${t('实验性选项')}>
+      <div class="exp-pop set-list" role="dialog" aria-label=${t('实验性选项')}>
       <div class="exp-pop__stripe" aria-hidden="true"></div>
       <div class="exp-pop__head"><${MicroLabel}>EXPERIMENTAL<//><strong>${t('实验性选项')}</strong>
         <button type="button" class="exp-pop__x" aria-label=${t('关闭')} onClick=${() => setOpen(false)}>×</button>
@@ -341,11 +344,16 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
           aria-checked=${noDuck ? 'true' : 'false'} disabled=${!!busy || !canEdit || capacity <= 4}
           onClick=${() => canEdit && setNoDuck(!noDuck)}><i></i><span>${noDuck ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
       </div>
-      <div class="exp-pop__foot">
-        <span class="t-dim">${canEdit ? t('开局后不可更改') : t('由创建者设置，只有创建者可以修改')}</span>
-        ${canEdit ? html`<button type="button" class="btn btn--primary btn--sm" disabled=${!!busy} onClick=${apply}>${t('应用')}</button>`
-          : html`<span class="exp-pop__ro">${t('只读')}</span>`}
+      <div class="set-row" hidden=${capacity <= 4}>
+        <span class="set-row__label">${t('允许重复选择策略')}<${MicroLabel}>REPEAT STRATEGIES<//></span>
+        <button type="button" class=${`set-toggle${repeat ? ' is-on' : ''}`} role="switch"
+          aria-checked=${repeat ? 'true' : 'false'} disabled=${!!busy || !canEdit || capacity <= 4}
+          onClick=${() => canEdit && setRepeat(!repeat)}><i></i><span>${repeat ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
       </div>
+      ${canEdit ? html`<div class="exp-pop__foot">
+        <span class="t-dim">${t('开局后不可更改')}</span>
+        <button type="button" class="btn btn--primary btn--sm" disabled=${!!busy} onClick=${apply}>${t('应用')}</button>
+      </div>` : null}
     </div>` : null}
   </div>`;
 }

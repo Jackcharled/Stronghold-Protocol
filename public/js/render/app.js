@@ -147,7 +147,7 @@ import { FxSystem, ensureDamageFonts, projSpeed } from './fx.js';
 import { OfficialFx } from './vfx/system.js';
 import { FxWiring } from './vfx/wiring.js';
 import { PluginFxPlayer } from './vfx/pluginPlayer.js';
-import { resolveOfficialFx } from './vfx/tier.js';
+import { resolveOfficialFx, touchDevice } from './vfx/tier.js';
 import { createDragController, pieceTile, dragStandTile } from './drag.js';
 import { backdropTextures, shadowTexture, refreshTierChips, refreshDownLabels, silhouetteTexture } from './textures.js';
 import { TILE_H, TIER_COLORS, COLORS } from './style.js';
@@ -198,12 +198,28 @@ export async function createFieldView(host, options = {}) {
   const assets = resolveAssets(opts.assets);
   const data = makeData(opts.data);
   const settings = { damageNumbers: true, officialDamageNumbers: false, ammoEnergyCount: false, quality: 'high', officialFx: 'auto', ...(opts.settings || {}) };
+  // Phones/tablets have little thermal headroom: cap the framebuffer regardless of the saved quality. A DPR 3 phone
+  // was rasterising 9 screen pixels per CSS pixel; 1.25 cuts the fill cost by ~5.8x without changing layout.
+  const lean = touchDevice();
+  // Phones start at 低画质 (ui/settings.js), but an explicit 设置 choice must still change
+  // resolution/particle load; do not overwrite it here.
+  const lowPower = (() => {
+    if (!lean) return false;
+    try {
+      const mem = Number(globalThis.navigator?.deviceMemory) || 0;
+      const cores = Number(globalThis.navigator?.hardwareConcurrency) || 0;
+      return (mem > 0 && mem <= 4) || (cores > 0 && cores <= 4);
+    } catch { return false; }
+  })();
+  // The official effects are the largest optional GPU cost; low-memory phones keep the
+  // battle readable but skip them unless the player explicitly chose a tier.
+  if (lowPower && settings.officialFx === 'auto') settings.officialFx = 'off';
   // 设置「显示其他玩家的皮肤」 (docs/SKINS.md), on unless the caller said off: kept out of the literal above so the shape
   // the other settings the units read every frame are pinned by stays one line (test/ui/ammo-count.test.js)
   settings.otherSkins = settings.otherSkins !== false;
   // the 3D board (three.js + the official art) loads in parallel with everything else
   const boardPref = boardPreference(opts.board);
-  const want3d = boardPref !== '2d' && webgl2Available(boardPref === '3d');
+  const want3d = boardPref !== '2d' && !(lowPower && boardPref === 'auto') && webgl2Available(boardPref === '3d');
   // three.js (~2 MB) is fetched only when the local-art manifest lists the board atlas (in parallel with the art)
   const artListed = want3d ? boardArtListed(assets).catch(() => false) : Promise.resolve(false);
   const threePromise = artListed.then((ok) => (ok ? loadThree() : null)).catch(() => null);
@@ -218,8 +234,8 @@ export async function createFieldView(host, options = {}) {
   signal?.throwIfAborted();
 
   const size = () => ({ width: Math.max(1, host.clientWidth || 1), height: Math.max(1, host.clientHeight || 1) });
-  const dpr = () => Math.min(globalThis.devicePixelRatio || 1, QUALITY_RES[settings.quality] || 2);
-  const boardDpr = () => Math.min(globalThis.devicePixelRatio || 1, BOARD_RES[settings.quality] || 2);
+  const dpr = () => Math.min(globalThis.devicePixelRatio || 1, QUALITY_RES[settings.quality] || 2, lean ? 1 : 2);
+  const boardDpr = () => Math.min(globalThis.devicePixelRatio || 1, BOARD_RES[settings.quality] || 2, lean ? 0.85 : 2);
   const s0 = size();
   // Construction is synchronous until the complete view can own cancellation. If setup throws,
   // dispose only the resources acquired by this attempt, never another view's host contents.
@@ -237,10 +253,17 @@ export async function createFieldView(host, options = {}) {
   const app = new P.Application({
     // MSAA only where it pays: dense (DPR ≥ 1.5) screens are sharp enough without it and it would cost 4× the fill
     // transparent: the 3D board canvas shows through (the 2D board paints an opaque backdrop itself)
-    width: s0.width, height: s0.height, antialias: opts.antialias ?? (settings.quality === 'high' && (globalThis.devicePixelRatio || 1) < 1.5), backgroundColor: 0x0a0e0d, backgroundAlpha: 0,
+    width: s0.width, height: s0.height, antialias: !lean && (opts.antialias ?? (settings.quality === 'high' && (globalThis.devicePixelRatio || 1) < 1.5)), backgroundColor: 0x0a0e0d, backgroundAlpha: 0,
     resolution: dpr(), autoDensity: true, powerPreference: 'high-performance',
   });
   const canvas = app.view;
+  // Low quality on a phone runs at 30 fps to halve heat; medium/high let the player ask for
+  // smoother motion, so a quality change has a visible effect.
+  const applyTickerCap = () => {
+    if (!lean || !app.ticker) return;
+    try { app.ticker.maxFPS = settings.quality === 'low' ? 30 : 60; } catch { /* older PIXI */ }
+  };
+  applyTickerCap();
   setupCleanup.push(() => {
     releaseGl(app.renderer);
     try { app.destroy(true, { children: true, texture: false, baseTexture: false }); }
@@ -474,7 +497,7 @@ export async function createFieldView(host, options = {}) {
       host.insertBefore(c3, canvas);
       board3dCanvas = c3;
       const b = new BoardScene(THREE, pack, {
-        canvas: c3, antialias: settings.quality !== 'low' && (globalThis.devicePixelRatio || 1) < 2, shadows: settings.quality !== 'low',
+        canvas: c3, antialias: !lean && settings.quality !== 'low' && (globalThis.devicePixelRatio || 1) < 2, shadows: !lean && settings.quality !== 'low',
       });
       const sz = size();
       b.resize(sz.width, sz.height, boardDpr());
@@ -1498,8 +1521,36 @@ export async function createFieldView(host, options = {}) {
     if (release) { try { release(); } catch { /* ignore */ } }
   }
 
+  /**
+   * Warm the Spine cache for a field's units before their views are built. A 20-seat 联防 field can
+   * introduce dozens of models at once; starting them here shares the loader's concurrency budget
+   * instead of waiting for each view to be created in turn. The acquire is released immediately:
+   * the model stays in the idle cache, and a view that needs it joins the same in-flight load.
+   */
+  function prefetchSpineModels(units) {
+    if (!assets?.spine || !assets.spineEntry) return;
+    const seen = new Set();
+    let n = 0;
+    for (const u of Array.isArray(units) ? units : []) {
+      if (!u || n >= 80) continue;
+      const id = u.spine || u.defId;
+      if (!id) continue;
+      const key = `${id}|${u.skin || ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      n++;
+      let entry = null;
+      try { entry = assets.spineEntry(id, u.skin ? { skin: u.skin } : undefined); } catch { entry = null; }
+      if (!entry) continue;
+      assets.spine.acquire(entry).then(() => {
+        try { assets.spine.release(entry); } catch { /* ignore */ }
+      }).catch(() => { /* the view retries and shows its fallback */ });
+    }
+  }
+
   function enterBattle(meta) {
     if (destroyed || !meta || typeof meta !== 'object') return false;
+    prefetchSpineModels(meta.units);
     holdScene(true); // before the prep views go: the cache is never "quiet" across the switch
     drag.reset();
     endDragVisual(false);
@@ -2262,7 +2313,7 @@ export async function createFieldView(host, options = {}) {
       }
       if (s.quality === 'high' || s.quality === 'medium' || s.quality === 'low') settings.quality = s.quality;
       if (typeof s.officialFx === 'string' && s.officialFx !== settings.officialFx) { settings.officialFx = s.officialFx; syncOfficialFx(); }
-      if (q !== settings.quality) { board3d?.setQuality?.(settings.quality); resize(); }
+      if (q !== settings.quality) { board3d?.setQuality?.(settings.quality); applyTickerCap(); resize(); }
     },
     resize,
     /** Dev / settings: switch the board layer ('3d' loads three.js + the art when available; '2d' = atlas board). */
