@@ -537,6 +537,9 @@ export const C2S = {
   // the host removes another human before the match (server/lobby.js kick; community report #17); playerId = the one the
   // host confirmed — a seat that changed hands meanwhile is refused
   'room.kick': { seat: (v) => isInt(v, 0, MAX_PLAYER_CAPACITY - 1), playerId: isId },
+  // 本服：匹配队友（server/lobby.js matchmaking）。0.3.3 上游拆掉了这条协议，但本服的
+  // 「匹配队友」按钮与匹配服务器仍在用，必须放行，否则玩家点了只会拿到 unknown type。
+  'room.matchmaking': { on: isBool },
   'room.start': {},
   'room.rerollSetup': { setupRevision: (v) => isInt(v, 0, 2 ** 31) },
   'room.cancelReroll': { voteId: (v) => isInt(v, 1, 2 ** 31) },

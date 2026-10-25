@@ -617,6 +617,30 @@ export function RoomScreen() {
   // every pick, welcome and content change and retries a RATE / TIMEOUT / OFFLINE refusal (review of PR #813)
   const pickCard = (charId) => { setCard(charId); setPicking(false); };
 
+  // 后台维护开关：'开始游戏' 关闭时，房主的开始按钮也要置灰，并用上游同款 Tooltip 说明原因
+  // （上游 GoButton 的禁用原因走 .tooltip，不用浏览器原生 title）。
+  // 管理员/服主无视维护开关，维护期间可自测。
+  const [startGateOpen, setStartGateOpen] = useState(true);
+  useEffect(() => {
+    let stop = false;
+    const load = () => {
+      fetch('/maintenance.json', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => { if (!stop && j) setStartGateOpen(j.start !== false); })
+        .catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, 15000);
+    return () => { stop = true; clearInterval(timer); };
+  }, []);
+  const isAdminUser = (() => {
+    try {
+      const role = window.__SP_ACCOUNT_ROLE;
+      return !!role && role !== 'player';
+    } catch { return false; }
+  })();
+  const startLocked = !isAdminUser && !startGateOpen;
+
   if (!room) return null;
   const online = conn.status === 'online';
   const coop = room.mode !== 'solo';
@@ -841,8 +865,8 @@ export function RoomScreen() {
       </div>
       <div class="room-bar__right rs-foot__right">
         ${facts.isHost
-          ? html`<${Tooltip} text=${facts.canStart ? null : vote ? t('切换版本投票进行中，请等投票结束') : !facts.contentReady ? (facts.versionRoom ? t('仍有博士未载入「{version}」的数据', { version: versionLabel(curVersion) }) : t('仍有博士未载入房间的插件内容')) : t('仍有博士未准备就绪')}>
-              <${GoButton} label=${t('开始模拟')} loading=${busy === 'start'} disabled=${!facts.canStart || !online || busy === 'start' || !!vote} onClick=${start} />
+          ? html`<${Tooltip} text=${startLocked ? t('服务器暂时关闭了开始游戏，请稍后再试') : facts.canStart ? null : vote ? t('切换版本投票进行中，请等投票结束') : !facts.contentReady ? (facts.versionRoom ? t('仍有博士未载入「{version}」的数据', { version: versionLabel(curVersion) }) : t('仍有博士未载入房间的插件内容')) : t('仍有博士未准备就绪')}>
+              <${GoButton} label=${t('开始模拟')} loading=${busy === 'start'} disabled=${!facts.canStart || !online || busy === 'start' || !!vote || startLocked} onClick=${start} />
             <//>`
           : facts.spectating
             ? html`<${GoButton} label=${t('观战中')} icon="eye" disabled=${true} />`

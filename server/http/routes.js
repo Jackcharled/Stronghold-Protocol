@@ -22,6 +22,27 @@ import { PROTOCOL_VERSION, APP_VERSION } from '../../shared/constants.js';
 import { buildTag } from './buildTag.js';
 import { setSecurityHeaders, sendError, sendJson, splitUrl } from './common.js';
 import { clientAddress, isLocalIp } from '../net.js';
+import { readFileSync } from 'node:fs';
+
+/** 后台维护开关（与 server/lobby.js 的 maintenanceGate 读同一批文件）；任何读取失败都按“开放”处理。 */
+let __gateStatus = { at: 0, value: { create: true, start: true, match: true } };
+function maintenanceStatus() {
+  if (Date.now() - __gateStatus.at > 5000) {
+    let create = true, start = true, match = true;
+    try {
+      // 本文件在 node-N/server/http/ 下：上两级是节点根，上三级是项目根（content/ 在项目根）。
+      const j = JSON.parse(readFileSync(new URL('../../data/create-room.json', import.meta.url), 'utf8'));
+      if (j && j.enabled === false) create = false;
+    } catch { /* 缺失 = 开放 */ }
+    try {
+      const j = JSON.parse(readFileSync(new URL('../../../content/game-gate.json', import.meta.url), 'utf8'));
+      if (j && j.start === false) start = false;
+      if (j && j.match === false) match = false;
+    } catch { /* 缺失 = 开放 */ }
+    __gateStatus = { at: Date.now(), value: { create, start, match } };
+  }
+  return __gateStatus.value;
+}
 
 const MAX_URL_LENGTH = 4096;
 
@@ -106,6 +127,13 @@ export function createRequestHandler({ serveStatic, health, log, trustProxy = 'a
     if (parts.rawPath === '/healthz') {
       const withTraffic = wantsTraffic(parts.query) && isLocalIp(clientAddress(req, trustProxy).ip);
       sendJson(req, res, 200, healthReport(health, withTraffic));
+      return;
+    }
+    // 本服：后台维护开关的只读状态，大厅据此把「创建房间」等入口置灰并说明原因。
+    // 只暴露开关本身，不含任何内部路径或账号信息；真正的拦截仍在服务端 lobby。
+    if (parts.rawPath === '/maintenance.json') {
+      res.setHeader('Cache-Control', 'no-store');
+      sendJson(req, res, 200, maintenanceStatus());
       return;
     }
     await serveStatic(req, res, parts.rawPath, parts.query);

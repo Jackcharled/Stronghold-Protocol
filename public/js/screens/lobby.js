@@ -519,7 +519,7 @@ function BackPlate({ onClick, class: cls = '' }) {
  * button (the other doctors: the host chooses).
  */
 export function ProtocolSelect({ roomMode, difficulty, onDifficulty, onClose, onCreate, busy, online, testMode, asTest, onTest, action = null, hint = null, readOnly = false,
-  difficulties = DIFFICULTIES, loading = false, failed = false, soloTime = null }) {
+  difficulties = DIFFICULTIES, loading = false, failed = false, soloTime = null, createLocked = false }) {
   const card = MODE_CARDS.find((c) => c.id === roomMode) || MODE_CARDS[0];
   const info = difficultyInfo(roomMode, difficulty);
   const label = action || (roomMode === 'solo' ? t('开始独立模拟') : t('创建同盟'));
@@ -569,10 +569,10 @@ export function ProtocolSelect({ roomMode, difficulty, onDifficulty, onClose, on
             </label>` : null}
             <p class="proto-hint">
               ${online
-                ? hint ?? (roomMode === 'solo' ? t('创建后即可开始模拟') : t('创建后可邀请好友或添加 AI 队友'))
+                ? (createLocked ? t('服务器暂时关闭了创建房间，请稍后再试') : hint ?? (roomMode === 'solo' ? t('创建后即可开始模拟') : t('创建后可邀请好友或添加 AI 队友')))
                 : html`<${Spinner} size="sm" label="CONNECTING" /> ${t('正在连接服务器…')}`}
             </p>
-            <button type="button" class="proto-start" disabled=${!online || busy === 'create' || loading} aria-busy=${busy === 'create' ? 'true' : 'false'} onClick=${onCreate}>
+            <button type="button" class="proto-start" disabled=${!online || busy === 'create' || loading || createLocked} aria-busy=${busy === 'create' ? 'true' : 'false'} onClick=${onCreate}>
               <span class="proto-start__mark" aria-hidden="true"><span class="proto-start__rook"><i>[</i><${Icon} name="rook" /><i>]</i></span><small>STRONGHOLD<br />PROTOCOL</small></span>
               <span class="proto-start__label">${busy === 'create' ? html`<${Spinner} size="sm" />` : null}${label}</span>
               <span class="proto-start__deco" aria-hidden="true"></span>
@@ -598,7 +598,7 @@ export function ProtocolSelect({ roomMode, difficulty, onDifficulty, onClose, on
  * in a 1024 px window — it ended in an ellipsis there).
  */
 export function AllianceSelect({ onClose, onCreate, difficulty = 'FUNNY', code, onCode, codeOk, online, busy, onJoin, onSpectate, recent, marks, focusKey,
-  testMode = false, asTest = false, onTest = () => {}, short = false }) {
+  testMode = false, asTest = false, onTest = () => {}, short = false, createLocked = false }) {
   const diffName = DIFFICULTY_NAMES[difficulty] ? t(DIFFICULTY_NAMES[difficulty]) : '';
   return html`<${Modal} open=${true} onClose=${onClose} class="ally" veilClass="proto-veil">
     <div class="ally__body">
@@ -617,10 +617,10 @@ export function AllianceSelect({ onClose, onCreate, difficulty = 'FUNNY', code, 
         </section>
         <section class="ally-side">
           <button type="button" class="ally-card ally-card--create ally-create" data-testid="alliance-create" data-difficulty=${difficulty}
-              disabled=${!online || busy === 'create'} aria-busy=${busy === 'create' ? 'true' : 'false'} onClick=${() => onCreate()}>
+              disabled=${!online || busy === 'create' || createLocked} aria-busy=${busy === 'create' ? 'true' : 'false'} onClick=${() => onCreate()}>
             <span class="ally-card__art"><${CreateArt} /></span>
             <span class="ally-card__bar"><span class="ally-card__icon">${busy === 'create' ? html`<${Spinner} size="sm" />` : html`<${Icon} name="plus" />`}</span><span class="ally-card__name">${t('创建同盟')}</span>
-              <small>${online ? t('难度：{name}（可在同盟内更改）', { name: diffName }) : t('正在连接服务器…')}</small></span>
+              <small>${!online ? t('正在连接服务器…') : createLocked ? t('服务器暂时关闭了创建房间，请稍后再试') : t('难度：{name}（可在同盟内更改）', { name: diffName })}</small></span>
           </button>
           ${testMode ? html`<label class="create-box__test ally-test" data-testid="create-test">
             <input type="checkbox" checked=${asTest} onChange=${(e) => onTest(e.target.checked)} />
@@ -698,6 +698,29 @@ export function LobbyScreen() {
   const shownSolo = fallbackDifficulty(solo, difficulty);
   const shownCoop = fallbackDifficulty(coop, difficulty);
 
+  // 后台维护开关（admin「维护开关」）：创建房间关闭时，大厅两个入口按钮置灰并给出原因。
+  // 服务端同样会拒绝（CREATE_DISABLED），这里只负责让玩家在点之前就知道。
+  // 管理员/服主无视维护开关（服务端 session.admin 同样放行），维护期间可自测。
+  const isAdminUser = (() => {
+    try {
+      const role = window.__SP_ACCOUNT_ROLE;
+      return !!role && role !== 'player';
+    } catch { return false; }
+  })();
+  const [createGateOpen, setCreateGateOpen] = useState(true);
+  useEffect(() => {
+    let stop = false;
+    const load = () => {
+      fetch('/maintenance.json', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => { if (!stop && j) setCreateGateOpen(j.create !== false); })
+        .catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, 15000);
+    return () => { stop = true; clearInterval(timer); };
+  }, []);
+  const createOpen = isAdminUser || createGateOpen;
   const openMode = (m) => { if (m === 'solo') setSoloOpen(true); else setAllyOpen(true); };
   const pickDifficulty = (d) => { setDifficulty(d); savePref('lobby.difficulty', d); };
   const setSoloFreePref = (on) => { const next = on === true; setSoloFree(next); savePref('lobby.soloUnlimited', next); };
@@ -732,6 +755,8 @@ export function LobbyScreen() {
   // 独立模拟: at the difficulty picked on 选择模拟协议; 创建同盟: at the remembered one, changed in the room by the host
   // (`version`: the lobby's, only when welcome.versions is present — protocol §4; omitted when the server offers 第二期下半 alone)
   const create = (mode) => {
+    // 后台维护开关关闭创建房间：与新版其它提示一致，用页面顶部的 toast，而不是标题/弹窗。
+    if (!createOpen) { toast(t('服务器暂时关闭了创建房间，请稍后再试'), 'warn'); return; }
     // 本服账号功能：游客不能建房，先提示，服务端还会再校验一次。
     if (guest) {
       toast(mode === 'solo' ? t('游客不能开始独立模拟，请先登录') : t('游客不能创建同盟模拟房间，请先登录'), 'warn');
@@ -820,11 +845,10 @@ export function LobbyScreen() {
     ${allyOpen ? html`<${AllianceSelect} onClose=${() => setAllyOpen(false)} onCreate=${() => create('coop')} difficulty=${shownCoop}
       code=${code} onCode=${(v) => setCode(normalizeCode(v))} codeOk=${codeOk} online=${online} busy=${busy}
       onJoin=${join} onSpectate=${spectate} recent=${recent} marks=${marks} focusKey=${!coarse}
-      testMode=${testMode} asTest=${asTest} onTest=${setAsTest} short=${shortScreen} />` : null}
-    ${soloOpen ? html`<${ProtocolSelect} roomMode="solo" difficulty=${shownSolo} onDifficulty=${pickDifficulty}
+      testMode=${testMode} asTest=${asTest} onTest=${setAsTest} short=${shortScreen} createLocked=${!createOpen} />` : null}    ${soloOpen ? html`<${ProtocolSelect} roomMode="solo" difficulty=${shownSolo} onDifficulty=${pickDifficulty}
       onClose=${() => setSoloOpen(false)} onCreate=${() => create('solo')} busy=${busy} online=${online}
       testMode=${testMode} asTest=${asTest} onTest=${setAsTest} difficulties=${solo} loading=${versionLoading} failed=${versionFailed}
-      soloTime=${soloTimed === true ? { on: soloFree, onToggle: setSoloFreePref } : null} />` : null}
+      soloTime=${soloTimed === true ? { on: soloFree, onToggle: setSoloFreePref } : null} createLocked=${!createOpen} />` : null}
     ${sweepOpen ? html`<${SweepReport} onClose=${() => setSweepOpen(false)} />` : null}
     ${achOpen ? html`<${AchievementDialog} onClose=${() => setAchOpen(false)} />` : null}
   </div>`;

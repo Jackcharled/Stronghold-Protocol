@@ -404,6 +404,31 @@ function roomTtlMs() {
   return __roomTtlCache.ms;
 }
 
+/**
+ * 后台维护开关（管理后台「维护开关」页）：
+ *   data/create-room.json 的 enabled：是否允许创建新房间（同盟 + 独立）
+ *   content/game-gate.json 的 start / match：是否允许开始游戏 / 匹配队友（匹配另见匹配服务器自己的校验）
+ * 与 roomTtlMs 一样 5 秒缓存，后台一开关到点内生效。文件缺失或损坏时视为开放。
+ */
+let __gateCache = { at: 0, create: true, start: true, match: true };
+function maintenanceGate() {
+  if (Date.now() - __gateCache.at > 5000) {
+    let create = true, start = true, match = true;
+    try {
+      // 每个节点自己的开关文件：node-N/data/create-room.json（本文件在 node-N/server/ 下，故为 ../data）。
+      const j = JSON.parse(readFileSync(new URL('../data/create-room.json', import.meta.url), 'utf8'));
+      if (j && j.enabled === false) create = false;
+    } catch { /* 配置缺失 = 开放 */ }
+    try {
+      const j = JSON.parse(readFileSync(new URL('../../content/game-gate.json', import.meta.url), 'utf8'));
+      if (j && j.start === false) start = false;
+      if (j && j.match === false) match = false;
+    } catch { /* 配置缺失 = 开放 */ }
+    __gateCache = { at: Date.now(), create, start, match };
+  }
+  return __gateCache;
+}
+
 const __watchSecretFile = new URL('../../.secrets/watch-secret', import.meta.url);
 function watchSecret() {
   try { return readFileSync(__watchSecretFile, 'utf8').trim(); } catch { return ''; }
@@ -1100,6 +1125,9 @@ export class Lobby {
     // 5–20 人实验房：只接受合法选项；独立模拟始终只有 1 个座位。
     if (experimental != null && !isExperimental(experimental)) return fail(ERR.BAD_MSG, 'invalid experimental options');
     if (mode === 'solo') experimental = null;
+    // 后台维护开关：关闭「创建房间」时，同盟房与独立模拟一律拒绝（页面侧按钮同时置灰并给出提示）。
+    // 管理员/服主（session.admin）无视维护开关，便于维护期间自测；服务端仍是最终判据。
+    if (!session.admin && !maintenanceGate().create) return fail(ERR.CREATE_DISABLED);
     // 本服：游客不能建房，先给出明确原因，避免只拿到 BAD_MSG。
     if (session.guest || !session.accountId) {
       return fail(ERR.BAD_MSG, mode === 'solo'
@@ -1901,6 +1929,9 @@ export class Lobby {
     if (room.match) return fail(ERR.ROOM_STARTED);
     const on = !!(msg && msg.on);
     if (on === room.matchmaking) return OK;
+    // 后台维护开关：关闭「匹配队友」时不能进入匹配队列（取消匹配不受影响，免得房间卡在队列里）。
+    // 管理员/服主无视该开关。
+    if (on && !session.admin && !maintenanceGate().match) return fail(ERR.MATCH_DISABLED);
     if (on) {
       const humans = room.activeHumans();
       if (humans.some((s) => s.playerId !== room.hostId && (!s.connected || !s.ready))) {
@@ -1932,6 +1963,9 @@ export class Lobby {
     if (!room) return fail(ERR.NOT_IN_ROOM);
     if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
     if (room.match) return fail(ERR.ROOM_STARTED);
+    // 后台维护开关：关闭「开始游戏」时，已建好的房间也不能开局（房主先看到提示，页面侧同时会把按钮置灰）。
+    // 管理员/服主无视该开关。
+    if (!session.admin && !maintenanceGate().start) return fail(ERR.START_DISABLED);
     if (room.versionVote) return fail(ERR.VERSION_VOTE);
     const humans = room.activeHumans();
     if (room.content?.trusted && humans.some(s => s.consentCs !== room.content.cs)) return fail(ERR.PLUGIN_CONSENT);
