@@ -48,6 +48,14 @@ export function toast(text, kind = 'info', opts = {}) {
   const k = TOAST_KINDS.includes(kind) ? kind : 'info';
   const msg = String(text ?? '').slice(0, 200).trim();
   if (!msg) return -1;
+  // 隐藏观战不是玩家页面：不提示开局/加入失败等玩家向消息。
+  let hiddenWatch = false;
+  try {
+    const qs = new URLSearchParams(location.search);
+    hiddenWatch = qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
+      || !!sessionStorage.getItem('sp_admin_watch_code');
+  } catch { /* ignore */ }
+  if (hiddenWatch && /^(模拟已开始|Simulation already started|加入失败：|观战失败：|当前节点没有可恢复的账号对局|恢复对局失败：)/.test(msg)) return -1;
   const now = Date.now();
   const ttl = Number.isFinite(opts.ttl) && opts.ttl > 0 ? opts.ttl : DEFAULT_MS[k];
   const same = toasts.find((t) => !t.leaving && t.text === msg && t.kind === k && now - t.at < MERGE_WINDOW_MS + t.ttl);
@@ -122,6 +130,11 @@ export function describeError(err) {
  */
 export function toastError(err) {
   recordError('request', err);
+  try {
+    const qs = new URLSearchParams(location.search);
+    const hiddenWatch = qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken');
+    if (hiddenWatch && err && err.code === 'ROOM_STARTED') return -1;
+  } catch { /* ignore */ }
   return toast(describeError(err), 'error');
 }
 
