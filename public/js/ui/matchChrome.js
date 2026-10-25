@@ -58,10 +58,25 @@ export async function quitMatch() {
     }
     try { await net.request('room.leave', {}); } catch (err) { if (err?.code !== 'NOT_IN_ROOM' && err?.code !== 'OFFLINE') throw err; }
     left = true;
+    // 记录「刚刚主动离开对局」：账号观察者据此在一段时间内不把玩家自动送回对局，
+    // 否则服务端房间尚未清理时，一退出就会被 /api/account/room 重新导航回去，页面反复刷新。
+    try { sessionStorage.setItem('sp.matchExitAt', String(Date.now())); } catch { /* ignore */ }
+    // sessionStorage 是每个标签页各自一份：换设备/新标签页打开时看不到上面这条，
+    // 于是「退出对局后在新标签页里又被送回对局」。这里再写一份到 localStorage，
+    // 账号观察者的自动恢复据此同样在 2 分钟内退让。
+    try { localStorage.setItem('sp.matchExitAtShared', String(Date.now())); } catch { /* ignore */ }
+    // 主动退出对局 = 不是要回这个房间。必须清掉 sp.lastRoom：
+    // matchmaker/public/client.js 的 installAutoRejoin 每 1.5 秒检查一次，
+    // 只要 store 里没有 room 就会用它自动 room.join 回旧房间 ——
+    // 表现为「退出对局回到大厅后又自己刷新/跳回去一次」。
+    // （以前这句只写在下面的 adminWatch 分支里，普通玩家从来不会被清。）
+    try { localStorage.removeItem('sp.lastRoom'); } catch { /* ignore */ }
+    try { sessionStorage.removeItem('sp.accountResume'); } catch { /* ignore */ }
+    try { sessionStorage.removeItem('sp.accountResumeSilent'); } catch { /* ignore */ }
     if (adminWatch) {
       // A hidden watcher is not a room member: after leaving, do not let auto-rejoin/deep-link
       // try to room.join the started match on the way back to the lobby.
-      try { localStorage.removeItem('sp.lastRoom'); } catch { /* ignore */ }
+      // （sp.lastRoom 已在上面为所有玩家清除，这里不用再清一次。）
       try {
         localStorage.removeItem('sp_watch_token');
         localStorage.removeItem('sp_admin_watch_code');

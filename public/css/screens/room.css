@@ -792,9 +792,26 @@
   .rs-foot__left { display: none; }
   .rs-foot__center { justify-self: start; max-width: 100%; }
 }
+/* A portrait phone: the seat cards scroll sideways, so they may be wide (the rules above keep them at the 4-player width).
+   本服：卡片高度必须随屏幕收住 —— 之前 --w 在竖屏变成 max(1.8rem, 42vw)，915 px 宽的竖屏上 42vw = 384 px，
+   四张卡一屏放不下只能滚动，而卡片高度仍被拉满整屏（约 650 px），于是每张卡都成了又宽又长的竖条。
+   立绘本该是 3:4 的名片比例，所以这里把卡片高度交给立绘的比例来决定，屏幕再高也不会把卡片拉长。 */
 @media (max-aspect-ratio: 1/1) {
   .rs-seats { justify-content: flex-start; }
   .rseat { --w: max(1.8rem, 42vw); }
+  /* 立绘按名片比例。桌面/横屏下立绘原本就被撑满高度（这是上游的设计，保持不变）；竖屏下这是唯一把卡片
+     收进屏幕的办法：卡片高度 = 立绘(宽 × 4/3) + 顶条 + 名牌。.has-art 由 room.js 给出（有立绘的卡片）。 */
+  .rseat.has-art .rseat__art {
+    flex: none;
+    aspect-ratio: 3 / 4;
+  }
+  /* 没有立绘（空位 / 只显示头像框）的卡片同样不能竖着拉满：收回到立绘卡片的高度内。 */
+  .seat--empty.rseat .rseat__art,
+  .rseat:not(.has-art) .rseat__art {
+    flex: 0 1 auto;
+    aspect-ratio: 3 / 4;
+    max-height: clamp(1.8rem, 46vh, 2.7rem);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .rseat, .rs__bg, .rs-top, .rs-brief, .rs-foot { animation: none; }
@@ -837,17 +854,75 @@
 
 /* ---- 实验性功能（本服）：外观与 同盟设置 的 .rs-opts 面板一致 ------------------------------- */
 .exp-wrap { position: relative; display: inline-flex; }
+/* 实验性弹窗挂在 .rs-opts 里面，而 .rs-opts 有 transform: translateX(-50%)（它自己居中用的）。
+   带 transform 的元素会成为内部 position: fixed 后代的包含块 —— 于是 .exp-modal 的 inset:0 是相对
+   那个 149×137 的小面板、而不是相对屏幕，弹窗被推到屏幕下半截，「应用」按钮整个掉到视口外面点不到
+   （1005×536 的窗口里弹窗底边在 701，视口只有 536）。1005×536 只是复现之一，任何高度都中招。
+   弹窗打开时把 .rs-opts 的 transform 去掉（room.js 打开时加 .has-exp-modal，关闭时移除）：
+   它不再居中，但弹窗自身是 position: fixed inset: 0 的整屏遮罩，不受影响；
+   关闭后恢复原样，同盟设置面板的位置与之前一致。 */
+.rs-opts.has-exp-modal { transform: none; }
 .exp-wrap .exp-btn { --d-color: var(--mint-400); }
 .exp-wrap .exp-btn.is-active { border-color: var(--mint-500); background: rgba(78, 216, 175, .1); color: var(--mint-300); }
 .exp-wrap .exp-btn .icon { width: 1.1em; height: 1.1em; }
-.exp-backdrop { position: fixed; inset: 0; z-index: 39; background: transparent; }
-/* 复用 .rs-opts 的面板外观，只调位置与宽度 */
-.exp-pop.rs-opts {
-  left: 0; transform: none; z-index: 40;
-  width: 6.4rem; max-width: min(92vw, 6.4rem);
-  bottom: calc(100% + .12rem);
+/* 尺寸：宽度照旧；高度改为「按内容自适应」，不再写死。
+   之前写死 min(62vh, 460px)，矮屏幕上内容塞不下就被裁掉（玩家点不到「允许重复选择策略」），
+   高屏幕上又留一大片空白。现在：
+     · height: auto —— 内容多高弹窗多高，没有空白也没有裁剪；
+     · max-height: calc(100dvh - 24px) —— 永不超出屏幕，小窗口下必定完整可见；
+     · 万一内容真的超高（极小的窗口），内容区自己滚动，而不是把「应用」顶出去。 */
+.exp-modal__box {
+  width: min(6.4rem, 94vw);
+  height: auto;
+  max-height: calc(100dvh - 24px);
+  gap: 0;
+  padding: .2rem .22rem .16rem;
+  overflow: hidden;
 }
-.exp-pop .rs-opts__row { gap: .1rem; }
+.exp-modal__box h4 {
+  margin: 0 0 .16rem;
+  padding-bottom: .12rem;
+  border-bottom: 1px solid rgba(255, 255, 255, .08);
+  font-size: calc(.2 * var(--t));
+  line-height: 1.2;
+}
+.exp-modal__box .rs-opts__row { gap: .12rem; }
+/* 内容区：按内容自然撑开（弹窗高度 auto）。
+   下拉菜单是绝对定位、不参与布局，所以展开它不会改变这里的尺寸。
+   只有在极小的窗口里（弹窗撞到 max-height）内容区才会滚动，
+   这样「应用」始终留在视口内，不会像以前那样被顶出去。 */
+.exp-modal__body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: .12rem;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: .06rem 0 .12rem;
+  scrollbar-width: thin;
+}
+.exp-modal__body .rs-opts__row { margin-bottom: .04rem; }
+/* 开关按钮保持自身尺寸（.ailast__opt 是贴合文字的方块），不要拉满整行，
+   否则选中态的底色会变成一条横贯弹窗的绿色色带。 */
+/* 4 个开关：两列排布。
+   右边本来就有一大片空白（说明文字「每队人数上限」下的整块区域），
+   竖着排 4 个按钮既挤又把弹窗撑得过高（矮屏幕上「允许重复选择策略」被裁掉）。
+   两列后只占 2 行，弹窗矮了一半，右边空白也被利用起来了。
+   人数 = 4 时只有 2 个开关（禁用鸭爵 / 允许重复 只在 >4 人时出现），
+   此时自然只占一行两列。 */
+.exp-modal__switches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .1rem .16rem;
+  width: 100%;
+  align-items: start;
+}
+.exp-modal__switches > * { min-width: 0; }
+/* 开关保持贴合自身文字，不拉满整行（拉满会在选中时变成一条横贯的绿色色带） */
+.exp-modal__switches .ailast__opt { justify-self: start; max-width: 100%; }
 .exp-cap { position: relative; display: inline-flex; }
 .exp-cap__btn { min-width: 1.5rem; justify-content: space-between; }
 .exp-cap__arrow { width: .14rem; height: .14rem; transform: rotate(90deg); transition: transform var(--t-fast); }
@@ -859,11 +934,62 @@
   background: rgba(10, 13, 12, .98); border: 1px solid var(--line-2);
   box-shadow: 0 .1rem .3rem rgba(0, 0, 0, .6);
 }
+/* 弹窗里的人数下拉：颜色跟「同盟人数」这个标签一致（普通灰字），
+   不要继承 .rs-opts__diff 的难度色（险境/绝境时是红色，容易误读成警告）。 */
+.exp-modal .exp-cap__btn {
+  color: var(--text-md);
+  width: 2.4rem;
+}
+.exp-modal .exp-cap__btn .num { color: var(--text-hi); font-weight: 700; }
+.exp-modal .exp-cap__btn .exp-cap__arrow { color: var(--text-lo); }
+.exp-modal .exp-cap__btn:hover:not(:disabled),
+.exp-modal .exp-cap__btn:focus-visible { border-color: var(--line-2); color: var(--text-hi); }
+
+/* 弹窗里的人数下拉。
+   两个要求同时满足：
+     1. 打开下拉时，弹窗尺寸、标题、右侧说明文字、下方开关按钮、底部「应用」
+        的位置一律不变（不能有元素上移/下移/左右串位）；
+     2. 不出现滚动条，下拉也不能挡住下面的选项。
+   做法：
+     · 菜单绝对定位，不参与布局 —— 所以它不会撑高弹窗、不会推挤任何元素；
+     · 「同盟人数」这一行锁定为展开时的实际高度，菜单展开后就地覆盖在这块
+       预留空间里，因此既不遮挡选项，也不会让弹窗变高；
+     · 下拉容器与说明文字都固定宽度，菜单比容器宽也不会把文字推走。 */
+.exp-modal .exp-cap { position: relative; display: inline-flex; width: 2.4rem; flex: none; }
+.exp-modal .exp-cap__menu {
+  position: absolute; left: 0; top: calc(100% + .02rem); bottom: auto;
+  width: calc(.3rem * 9 + .04rem * 8 + .16rem + 2px);
+  max-height: none; overflow: visible;
+  grid-template-columns: repeat(9, .3rem);
+  justify-content: start;
+  box-shadow: 0 .1rem .3rem rgba(0, 0, 0, .6);
+}
+.exp-modal .exp-cap__menu button { width: .3rem; }
+/* 「同盟人数」行。
+   早先这里把整行高度锁死成「下拉展开时」的高度，好让下拉弹出时不推动下面的元素。
+   代价是收起状态下「同盟人数」和 4 个开关之间留了 2 行下拉框那么大的空白，
+   在矮屏幕上把「允许重复选择策略」挤出弹窗（玩家反馈点不到）。
+   现在改为：收起时按内容高度（没有空白），展开时由 .exp-cap__menu 绝对定位覆盖，
+   菜单不参与布局，所以两种状态下弹窗高度、下面 4 个开关的位置都不变。 */
+.exp-modal .rs-opts__row {
+  align-items: center;
+  height: auto;
+  min-height: calc(.36rem + .02rem);
+  flex: none;
+}
+/* 右侧说明文字：与下拉按钮垂直居中对齐（收起时整行就是一行高）。 */
+.exp-modal .rs-opts__row > .t-dim {
+  align-self: center;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
 .exp-cap__menu button {
   height: .3rem; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .35);
   color: var(--text-md); font: inherit; font-size: calc(.14 * var(--t)); cursor: pointer;
 }
 .exp-cap__menu button:hover { background: rgba(78, 216, 175, .1); color: var(--text-hi); }
 .exp-cap__menu button.is-selected { background: rgba(78, 216, 175, .18); color: var(--mint-200); }
-.exp-pop__foot { display: flex; align-items: center; justify-content: space-between; gap: .12rem; padding-top: .1rem; border-top: 1px solid rgba(255, 255, 255, .08); }
+.exp-pop__foot { display: flex; align-items: center; justify-content: space-between; gap: .12rem; flex: none; padding-top: .12rem; border-top: 1px solid rgba(255, 255, 255, .08); }
 .exp-pop__foot .btn { min-width: 1.2rem; }

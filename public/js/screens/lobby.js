@@ -123,10 +123,21 @@ const MODE_CARDS = [
     id: 'coop', name: N_('同盟模拟'), en: 'ALLIANCE SIMULATION', icon: 'users',
     desc: N_('与至多 {n} 名博士组成同盟，共享干员池，联防协作抵御敌潮。'), params: { n: MAX_SEATS - 1 },
     points: [N_('1–{n} 名博士 · 可由 AI 队友补位'), N_('联防阶段 · 最终攻势合并生命值')], pointParams: { n: MAX_SEATS },
+    // 卡片上方的说明行（按重要性排：人数 → 人数可调 → 匹配队友）。
+    // 以前「支持匹配队友」压在卡片内部的薄荷底上，和卡片标题挤在一起、还把卡片撑得很宽。
+    // 现在统一移到卡片上方，按「先讲人数、再讲人数可调、最后讲怎么凑人」的语序。
+    pointExtra: [N_('房间内可调整 5–20 人'), N_('支持「匹配队友」与等待中的博士组队')],
     // the hub's line above the entry on a short screen, where the whole line is wider than the entry (§35.51)
     pointShort: N_('1–{n} 名博士'),
   },
 ];
+
+/**
+ * 大厅两张卡片上方「说明区」统一占的最大行数（主说明 1 行 + 补充说明）。
+ * 同盟卡比独立卡多了「可调整人数」「支持匹配队友」两句，
+ * 让所有卡片都补空行到同一个行数，两张卡才会完全同高同宽。
+ */
+const MAX_HUB_LINES = 3;
 
 /**
  * Text for a difficulty card, preferring data/config.json.
@@ -356,8 +367,17 @@ export function HubEntry({ card, onOpen, timePoint = null, timeShort = null }) {
     : card.pointShort
       ? html`<span class="hub-entry__long">${t(card.points[0], card.pointParams)}</span><span class="hub-entry__short">${t(card.pointShort, card.pointParams)}</span>`
       : t(card.points[0], card.pointParams);
+  // 卡片上方的补充说明：可以是一句，也可以是多句（各占一行）
+  const extraLines = Array.isArray(card.pointExtra) ? card.pointExtra : (card.pointExtra ? [card.pointExtra] : []);
+  // 说明区固定占 MAX_HUB_LINES 行：同盟卡比独立卡多几句说明，
+  // 不补空行的话多出来的行会把卡片顶高（两张卡尺寸就不一样了）。
+  const pad = Math.max(0, MAX_HUB_LINES - 1 - extraLines.length);
   return html`<div class="hub-entry-wrap">
-    <span class="hub-entry__group"><${Icon} name=${card.icon} />${line}</span>
+    <div class="hub-entry__lines">
+      <span class="hub-entry__group"><${Icon} name=${card.icon} />${line}</span>
+      ${extraLines.map((txt, i) => html`<span key=${i} class="hub-entry__group hub-entry__group2"><${Icon} name=${card.icon} />${t(txt, card.pointParams)}</span>`)}
+      ${Array.from({ length: pad }, (_, i) => html`<span key=${'pad' + i} class="hub-entry__group hub-entry__group2 hub-entry__group--pad" aria-hidden="true"><${Icon} name=${card.icon} /><span>占位</span></span>`)}
+    </div>
     <button type="button" class=${`mode-card hub-entry hub-entry--${card.id}`} data-mode=${card.id} onClick=${() => onOpen(card.id)}
         title=${t(card.desc, card.params)}>
       <span class="hub-entry__icon" aria-hidden="true"><${Icon} name=${card.icon} /></span>
@@ -701,12 +721,21 @@ export function LobbyScreen() {
   // 后台维护开关（admin「维护开关」）：创建房间关闭时，大厅两个入口按钮置灰并给出原因。
   // 服务端同样会拒绝（CREATE_DISABLED），这里只负责让玩家在点之前就知道。
   // 管理员/服主无视维护开关（服务端 session.admin 同样放行），维护期间可自测。
-  const isAdminUser = (() => {
-    try {
-      const role = window.__SP_ACCOUNT_ROLE;
-      return !!role && role !== 'player';
-    } catch { return false; }
-  })();
+  // window.__SP_ACCOUNT_ROLE 是账号接口异步写入的，可能晚于本组件首帧。
+  // 一次性读取会把「令牌还没到」误判成普通玩家、之后永远置灰，所以这里跟着
+  // 账号观察者一起刷新（accountObserver 会派发 sp:account-changed）。
+  const [accountRole, setAccountRole] = useState(() => {
+    try { return window.__SP_ACCOUNT_ROLE || null; } catch { return null; }
+  });
+  useEffect(() => {
+    const sync = () => { try { setAccountRole(window.__SP_ACCOUNT_ROLE || null); } catch { /* ignore */ } };
+    sync();
+    window.addEventListener('sp:account-changed', sync);
+    // 兜底轮询：个别入口（冷启动恢复）不发事件，只写变量
+    const t = setInterval(sync, 2000);
+    return () => { window.removeEventListener('sp:account-changed', sync); clearInterval(t); };
+  }, []);
+  const isAdminUser = !!accountRole && accountRole !== 'player';
   const [createGateOpen, setCreateGateOpen] = useState(true);
   useEffect(() => {
     let stop = false;

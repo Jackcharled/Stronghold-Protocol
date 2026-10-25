@@ -422,6 +422,25 @@
 .hub-entry__group .icon { flex: none; width: .16rem; height: .16rem; color: var(--mint-400); }
 .hub-entry__long { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .hub-entry__short { display: none; }
+/* 卡片上方的补充说明行（同盟模拟：人数可调 / 支持匹配队友）。
+   以前这两句压在卡片内部的薄荷底上，和标题挤在一起、还把卡片撑得很宽；
+   现在统一移到卡片上方，比主说明行略淡一点，不抢标题。 */
+.hub-entry__group2 { color: rgba(223, 230, 226, .55); }
+.hub-entry__group2 .icon { opacity: .7; }
+/* 两张卡必须完全同高同宽：同盟卡多几行说明会把卡片顶高。
+   说明行统一装进 .hub-entry__lines，行数由 lobby.js 补齐（MAX_HUB_LINES），
+   两张卡的说明区行数相同 → 下面的卡片本体位置与尺寸完全一致。 */
+.hub-entry__lines {
+  display: flex;
+  flex-direction: column;
+  gap: .05rem;
+  min-width: 0;
+  overflow: hidden;
+}
+.hub-entry__lines > .hub-entry__group { flex: none; }
+/* 补位用的空行：尺寸完全交给 .hub-entry__group 自己的规则（包括下面的窄屏 3em），
+   只把内容藏起来 —— 这样它和真实说明行永远同高。 */
+.hub-entry__group--pad { visibility: hidden; }
 /* Narrow desktop windows keep the full descriptions (phones have their own short labels below).
    [ASSUMED] A shared two-line minimum keeps both cards level when only one description wraps. */
 @media (max-width: 900px) and (min-height: 521px) {
