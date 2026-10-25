@@ -17,11 +17,27 @@
   const TICKET = q.get('t');
   const SECRET = q.get('tk');
   const DIFF = q.get('d');
+  const CAPACITY = Math.min(20, Math.max(4, Number(q.get('c')) || 4));
   const PMID = q.get('pmid');
   const PCID = q.get('pcid');
   const PDIFF = q.get('pd');
   const PIN_NODE = Number(q.get('n')) || null;
   const AUTO_START = q.get('mm') === '1';
+  const ADMIN_WATCH = q.get('adminWatch') === '1';
+  const WATCH_GUEST = q.get('watchGuest') === '1';
+  const WATCH_TOKEN = q.get('watchToken') || '';
+  const WATCH_CODE = (() => {
+    try { return sessionStorage.getItem('sp_admin_watch_code') || null; } catch { return null; }
+  })();
+  // Watch markers are shared through localStorage by the admin console; other open game tabs
+  // must not surface their own auto-join errors while an admin watch is active.
+  function adminWatchActive() {
+    if (ADMIN_WATCH || WATCH_GUEST || WATCH_TOKEN || WATCH_CODE) return true;
+    try {
+      return !!localStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_watch_token');
+    } catch { return false; }
+  }
+  let GATE = { start: true, match: true };
   // 只有带 &n=<节点> 的完整邀请链接才自动加入；只贴房号的链接不生效
   const ROOM_PINNED = !!(q.get('room') && Number(q.get('n')) > 0);
 const SPECTATE = q.get('spectate') === '1';
@@ -93,7 +109,7 @@ const JOIN_COOKIE = (() => {
     try {
       const u = new URL(location.href);
       const keepName = !(window.__SP__ && window.__SP__.store && window.__SP__.store.get().session.entered);
-      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'pmid', 'pcid', 'pd', 'mm', 'spectate'].forEach((k) => {
+      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'c', 'pmid', 'pcid', 'pd', 'mm', 'spectate'].forEach((k) => {
         if (k === 'name' && keepName) return;   // 还没进入大厅前保留名字，进房后再清
         u.searchParams.delete(k);
       });
@@ -135,7 +151,36 @@ const JOIN_COOKIE = (() => {
     setInterval(clear, 1500);
   }
 
+  function refreshGate() {
+    fetch('/mm/api/gate', { cache: 'no-store' })
+      .then((r) => r.ok ? r.json() : null)
+      .then((j) => {
+        if (!j) return;
+        GATE = { start: j.start !== false, match: j.match !== false };
+        const b = [...document.querySelectorAll('button')].find((x) => /开始模拟/.test(x.textContent || ''));
+        if (!b) return;
+        if (GATE.start === false) {
+          b.disabled = true;
+          b.dataset.mmGate = '1';
+          b.title = '维护中，暂时无法开始游戏';
+        } else if (b.dataset.mmGate) {
+          b.disabled = false;
+          delete b.dataset.mmGate;
+          b.title = '';
+        }
+      })
+      .catch(() => {});
+  }
+
   function boot(sp) {
+    try { refreshGate(); setInterval(refreshGate, 5000); } catch { /* ignore */ }
+    document.addEventListener('click', (e) => {
+      if (GATE.start !== false) return;
+      const b = e.target && e.target.closest ? e.target.closest('button') : null;
+      if (!b || !/开始模拟/.test(b.textContent || '')) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, true);
     try {
       if (!document.getElementById('mm-responsive-css')) {
         const s = document.createElement('style');
@@ -154,15 +199,17 @@ const JOIN_COOKIE = (() => {
       return;
     }
     // 参数已经读进常量了：客人立刻把 ?room=&n=&name= 从地址栏抹掉，房主等建房回报后再清
-    if (ROOM) cleanUrl();
-    else if (PIN_NODE && !IS_HOST) cleanUrl();
+    // 隐身观战保留完整 URL：手机刷新后仍能重新进入 hidden spectator。
+    if (ROOM && !ADMIN_WATCH) cleanUrl();
+    else if (PIN_NODE && !IS_HOST && !ADMIN_WATCH) cleanUrl();
 
     if (NAME && !store.get().session.entered) {
       try { store.set((s) => ({ ...s, me: { ...s.me, name: NAME }, session: { ...s.session, entered: true } })); } catch (e) { /* ignore */ }
       try { net.setName(NAME); } catch (e) { /* ignore */ }
     }
 
-    if (IS_HOST && PMID && PCID) { partyHostFlow(sp); roomUi(sp); }
+    if ((ADMIN_WATCH || WATCH_GUEST) && (ROOM || WATCH_CODE)) { adminWatchFlow(sp); roomUi(sp); }
+    else if (IS_HOST && PMID && PCID) { partyHostFlow(sp); roomUi(sp); }
     else {
       if (IS_HOST && MID && TICKET && SECRET && DIFF) hostFlow(sp);
       else if (JOIN_COOKIE) resolveRoomNode(JOIN_COOKIE, () => joinFlow(sp, JOIN_COOKIE, false));
@@ -192,6 +239,58 @@ const JOIN_COOKIE = (() => {
   hideLatencyLabel();
   fixCenterButtons();
     if (AUTO_START) { installAutoStart(sp); showTransition(); }
+  }
+
+  // 管理后台“隐身观战”：不占观战席、不出现在房间/对局名单里，只收状态与对局帧。
+  function adminWatchFlow(sp) {
+    const code = ROOM || WATCH_CODE;
+    if (!code) return;    let token = '';
+    try {
+      const cookieToken = (() => {
+        try { const m = document.cookie.match(/(?:^|;\s*)sp_watch_token=([^;]*)/); return m ? decodeURIComponent(m[1]) : ''; } catch { return ''; }
+      })();
+      token = WATCH_TOKEN || localStorage.getItem('sp_watch_token') || sessionStorage.getItem('sp_admin_watch_token') || cookieToken || '';
+      if (token) sessionStorage.setItem('sp_admin_watch_token', token);
+      // The token is only needed for this hidden-watch handoff; keep it out of the visible iframe URL after use.
+      if (WATCH_TOKEN) {
+        try {
+          const u = new URL(location.href);
+          u.searchParams.delete('watchToken');
+          history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+        } catch { /* ignore */ }
+      }
+      sessionStorage.setItem('sp_admin_watch_code', code);
+    } catch { /* ignore */ }
+    if (!token) return;
+    // Keep the lobby/title flash out of the admin watch: cover the page while the
+    // hidden spectator joins, then reveal the room as soon as its state arrives.
+    let curtain = null;
+    const closeCurtain = () => { if (curtain) { curtain.remove(); curtain = null; } };
+    try {
+      curtain = document.createElement('div');
+      curtain.id = 'mm-admin-watch-curtain';
+      curtain.style.cssText = 'position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:#071012;color:#d9f7ef;font:600 16px/1.5 "Noto Sans SC",system-ui,sans-serif;letter-spacing:.08em';
+      curtain.innerHTML = '<div style="text-align:center"><div style="font:11px/1.6 ui-monospace,monospace;color:#4ed8af;letter-spacing:.3em">[♜] STRONGHOLD PROTOCOL</div><div style="margin-top:12px">正在进入房间观战…</div></div>';
+      document.body.appendChild(curtain);
+      let stop = null;
+      stop = sp.store.subscribe(() => {
+        if (sp.store.get().room || sp.store.get().match?.public) { closeCurtain(); if (stop) stop(); }
+      });
+      setTimeout(closeCurtain, 10000);
+    } catch { /* ignore */ }
+    let tries = 0;
+    const send = () => {
+      // The watch page is opened before the game socket has necessarily finished
+      // its hello; sending room.spectate too early is silently lost on refresh.
+      if (sp.net.status !== 'online') {
+        if (tries++ < 60) setTimeout(send, 500);
+        return;
+      }
+      tries += 1;
+      sp.net.request('room.spectate', { code, hidden: true, adminToken: token })
+        .catch(() => { if (tries < 8) setTimeout(send, 1200); });
+    };
+    send();
   }
 
   // 进入对局时的全屏过渡，盖住中间的「同盟等待室」，开局后自动消失
@@ -230,6 +329,7 @@ const JOIN_COOKIE = (() => {
     const tick = () => {
       const s = store.get();
       const room = s.room;
+      if (window.__SP_RESTART_PENDING) return; // 返回同盟提示还在：不要自动开下一局
       if (s.match && s.match.public) { autoDone = true; hideTransition(); return; }   // 已经开始
       if (autoDone) return;   // 已经开过一局：返回房间后不要自动重开
       if (!room) { enteredAt = Date.now(); readySent = false; startSent = false; return; }
@@ -296,6 +396,9 @@ const JOIN_COOKIE = (() => {
   // 优先复用游戏自带的 toast（与「房间已满」等提示同一套样式）；模块加载失败才退回 mmToast
   let gameToastFn = null;
   function showStyledToast(text, kind = 'error') {
+    // Hidden admin watch must never surface player join/spectate failures (room full, disconnected, etc.):
+    // it has no player seat and reports its own watch errors in the watch page.
+    if (adminWatchActive() && /^(加入失败|观战失败)/.test(String(text || ''))) return;
     const call = (fn) => { try { fn(text, kind); } catch { mmToast(text); } };
     if (gameToastFn) return call(gameToastFn);
     import('/js/ui/toasts.js')
@@ -450,6 +553,9 @@ const JOIN_COOKIE = (() => {
       const inMatch = !!(room && room.inMatch);
       const full = seatsOf(room) >= (Number(room && room.capacity) || 4); // exp8-exp
       const isHost = !!room && room.hostId === s.me.playerId;
+      const humans = (room && room.seats || []).filter((x) => x && !x.isBot);
+      const others = humans.filter((x) => x.playerId !== (room && room.hostId));
+      const allReady = others.every((x) => x.ready && x.connected !== false);
       // 每个同盟房间都显示「匹配队友」，但只有房主可以点（其余人置灰）
       const show = !!room && !inMatch && !full && !autoArmed;
       let el = document.getElementById('mm-room-btn');
@@ -463,7 +569,7 @@ const JOIN_COOKIE = (() => {
         if (!bar) return;
         // 直接克隆「开始模拟」按钮，尺寸与样式完全一致
         const startBtn = [...bar.querySelectorAll('button')]
-          .find((b) => /开始模拟/.test(b.textContent || '') && b.offsetParent);
+          .find((b) => /开始模拟|准备就绪|已就绪/.test(b.textContent || '') && b.offsetParent);
         if (startBtn) {
           const clone = startBtn.cloneNode(true);
           clone.id = 'mm-room-btn';
@@ -488,7 +594,7 @@ const JOIN_COOKIE = (() => {
       }
       // 同步开始模拟按钮的样式（主按钮、同尺寸）
       try {
-        const startBtn = [...document.querySelectorAll('button')].find((b) => /开始模拟/.test(b.textContent || '') && b.offsetParent);
+        const startBtn = [...document.querySelectorAll('button')].find((b) => /开始模拟|准备就绪|已就绪/.test(b.textContent || '') && b.offsetParent);
         if (startBtn && startBtn.className) {
           el.className = startBtn.className;
           el.id = 'mm-room-btn';
@@ -496,15 +602,19 @@ const JOIN_COOKIE = (() => {
       } catch { /* ignore */ }
       el.querySelector('.btn__label').textContent = matched ? '正在分配…' : queued ? '取消匹配' : '匹配队友';
       const hasBot = (room && (room.seats || []).some((x) => x && x.isBot)) === true;
-      el.disabled = matched || !isHost || hasBot;
-      if (hasBot) el.title = '房间内有 AI 队友，无法匹配（请先移除 AI 队友）';
-      el.title = isHost ? '把整个房间投入匹配池' : '仅房主可以发起匹配';
+      el.disabled = matched || !isHost || hasBot || !allReady || GATE.match === false;
+      if (GATE.match === false) el.title = '维护中，暂时无法匹配队友';
+      else if (hasBot) el.title = '房间内有 AI 队友，无法匹配（请先移除 AI 队友）';
+      else if (!allReady) el.title = '等待所有队友准备后才能匹配';
+      else el.title = isHost ? '把整个房间投入匹配池' : '仅房主可以发起匹配';
     };
 
     const onClick = async () => {
       const s = store.get();
       const room = s.room;
       if (!room || room.hostId !== s.me.playerId) return;
+      const others = (room.seats || []).filter((x) => x && !x.isBot && x.playerId !== room.hostId);
+      if (others.some((x) => !x.ready || x.connected === false)) return;
       try {
         if (!queued) {
           const r = await api('/mm/api/party/join', {
@@ -544,7 +654,9 @@ const JOIN_COOKIE = (() => {
       const s = store.get();
       const room = s.room;
       // 地址栏只保留域名：房间码 / 节点 / 代号这些参数处理完就清掉
-      if (room && (location.search.includes('room=') || location.search.includes('n=') || location.search.includes('name='))) cleanUrl();
+      if (room && (location.search.includes('room=') || location.search.includes('n=') || location.search.includes('name='))) {
+        if (!ADMIN_WATCH) cleanUrl();
+      }
       // 房号留一份：成局后 room 可能被替换 / 清空，仍要按原房号继续拿 matched 状态
       if (room && room.code) lastCode = room.code;
       const code = (room && room.code) || lastCode;
@@ -711,36 +823,100 @@ const JOIN_COOKIE = (() => {
   function installBackToAlliance() {
     const sp = window.__SP__;
     if (!sp || !sp.store || !sp.store.subscribe) return;
+    const KEY = 'sp.matchInterrupted';
+    const read = () => {
+      try {
+        const r = JSON.parse(localStorage.getItem(KEY) || 'null');
+        return r && typeof r.code === 'string' && Date.now() - Number(r.at || 0) < 30 * 60 * 1000 ? r : null;
+      } catch { return null; }
+    };
+    const clear = () => { try { localStorage.removeItem(KEY); } catch { /* ignore */ } window.__SP_RESTART_PENDING = false; };
+    const matchEndedVisible = () => !!document.querySelector('.awayov:not(#mm-back)');
+    const dismissBackIfMatchEnded = () => {
+      if (!matchEndedVisible()) return;
+      const panel = document.getElementById('mm-back');
+      if (panel) panel.remove();
+      clear();
+    };
+    setInterval(dismissBackIfMatchEnded, 300);
     let hadMatch = false;
     let offline = false;
+    const mark = (s) => {
+      if (!s.room || s.room.inMatch !== true || s.match?.result) return;
+      try { localStorage.setItem(KEY, JSON.stringify({ code: s.room.code, at: Date.now() })); } catch { /* ignore */ }
+      window.__SP_RESTART_PENDING = true;
+    };
+    // A reload after a node restart has no in-memory `hadMatch`; the persisted marker is what
+    // lets the client still offer 返回同盟 instead of silently starting a fresh match.
+    if (read()) window.__SP_RESTART_PENDING = true;
     sp.store.subscribe(() => {
       const s = sp.store.get();
+      mark(s);
+      if (matchEndedVisible()) { clear(); return; }
+      const serverInMatch = s.room && s.room.inMatch === true;
+      if (serverInMatch) window.__SP_RESTART_PENDING = false;
+      if (s.match && s.match.result) clear();
       const status = s.connection && s.connection.status;
-      if (s.match && s.match.public) hadMatch = true;
       if (status !== 'online') { offline = true; return; }
       if (!offline) return;
       offline = false;
-      if (!hadMatch || !s.room || (s.match && s.match.public)) return;
+      if (!hadMatch || !s.room || serverInMatch) return;
       hadMatch = false;
+      if (s.match && s.match.result) return;
+      window.__SP_RESTART_PENDING = true;
       showBackPanel();
     });
+    // Fresh page (reload): wait for room + account rejoin, then offer the interrupted-alliance entry.
+    const resumeTick = () => {
+      const s = sp.store.get();
+      if (!s || !s.session || !s.session.entered) return;
+      mark(s);
+      if (matchEndedVisible()) { clear(); return; }
+      // The client can still hold a stale m.public from before the node stopped; the server's
+      // room state is authoritative: inMatch=false means that match is gone.
+      if (s.room && s.room.inMatch === true) { window.__SP_RESTART_PENDING = false; return; }
+      if (s.match && s.match.result) { clear(); return; }
+      const rec = read();
+      if (!rec) return;
+      // The interrupted room may not have been auto-rejoined yet (there is no sp.lastRoom on a
+      // fresh tab). Follow the marker through the account-resume route once.
+      if (!s.room) {
+        if (s.connection?.status !== 'online') return;
+        let tried = '';
+        try { tried = sessionStorage.getItem('sp.restartJoin') || ''; } catch { /* ignore */ }
+        if (tried !== rec.code) {
+          try { sessionStorage.setItem('sp.restartJoin', rec.code); } catch { /* ignore */ }
+          location.assign('/r/' + encodeURIComponent(rec.code) + '?accountResume=1');
+        }
+        return;
+      }
+      if (s.room.code !== rec.code) return;
+      window.__SP_RESTART_PENDING = true;
+      showBackPanel();
+    };
+    setInterval(resumeTick, 1200);
+    setTimeout(resumeTick, 1400);
   }
 
   function showBackPanel() {
     if (document.getElementById('mm-back')) return;
+    // The match ended plate already explains that the room returned to its lobby; do not stack
+    // the restart panel on top of it.
+    if (document.querySelector('.awayov:not(#mm-back)')) return;
     const style = document.createElement('style');
-    style.textContent = `
-      #mm-back{position:fixed;inset:0;z-index:93;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6)}
-      #mm-back .card{min-width:340px;max-width:520px;background:#0c1215;border:1px solid #2c4a4e;border-radius:14px;padding:22px 24px;color:#dff5ee;font:14px/1.8 "Noto Sans SC",system-ui,sans-serif;text-align:center}
-      #mm-back h3{margin:0 0 6px;color:#7ff0cf;font-size:19px}
-      #mm-back p{margin:6px 0 16px;color:#b9d6cc}
-      #mm-back button{background:#1b4d43;border:1px solid #2f7f6c;color:#c9ffef;border-radius:8px;padding:8px 22px;cursor:pointer;font-size:14px}
-    `;
+    style.textContent = `#mm-back{z-index:93}`;
     document.head.appendChild(style);
     const box = document.createElement('div');
     box.id = 'mm-back';
-    box.innerHTML = '<div class="card"><h3>上一局模拟已中断</h3><p>服务器重启后对局无法继续，你已回到同盟房间。</p><button>返回同盟</button></div>';
-    box.querySelector('button').onclick = () => box.remove();
+    box.className = 'awayov';
+    box.innerHTML = '<div class="awayov__box brackets"><span class="micro micro--mint">SIMULATION CLOSED</span><h2>本局模拟已结束</h2><p class="t-lo">服务器重启导致对局中断，同盟已返回等待室</p><button type="button" class="btn btn--primary btn--lg"><span class="btn__icon" aria-hidden="true">‹</span><span class="btn__label">返回同盟</span></button></div>';
+    box.querySelector('button').onclick = () => {
+      try { localStorage.removeItem('sp.matchInterrupted'); } catch { /* ignore */ }
+      window.__SP_RESTART_PENDING = false;
+      box.remove();
+      // Drop the stale match render as well; the restored room page is the correct view.
+      location.reload();
+    };
 
 
     document.body.appendChild(box);
@@ -755,6 +931,11 @@ const JOIN_COOKIE = (() => {
     // 客人要加入匹配到的房间（否则会先回旧房，joinFlow 看到已有房间就不再加入目标房）。
     if (IS_HOST && PMID && PCID) return;
     if (ROOM) return;
+    try {
+      const qs = new URLSearchParams(location.search);
+      if (qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || qs.get('watchToken')
+        || sessionStorage.getItem('sp_admin_watch_code') || localStorage.getItem('sp_admin_watch_code')) return;
+    } catch { /* ignore */ }
     const sp = window.__SP__;
     if (!sp || !sp.store || !sp.store.subscribe || !sp.net) return;
     const KEY = 'sp.lastRoom';
@@ -814,6 +995,7 @@ const JOIN_COOKIE = (() => {
     const fallbackCreated = new Map();
     let srvSkew = 0;
     let srvSeen = null;
+    let fontProbe = null;
 
     const tick = () => {
       const s = sp.store.get();
@@ -833,11 +1015,12 @@ const JOIN_COOKIE = (() => {
         createdAt = fallbackCreated.get(code);
       }
       if (createdAt > Date.now()) createdAt = Date.now();
+      const adminRoom = room.noExpire === true;
       const lim = Number(room.ttlMs) > 0 ? Number(room.ttlMs) : LIMIT;
       const left = Math.max(0, Math.min(lim, createdAt + lim - (Date.now() + srvSkew)));
       const mm = Math.floor(left / 60000);
       const ss = Math.floor((left % 60000) / 1000);
-      const timeText = String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+      const timeText = adminRoom ? '∞' : String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
 
       // 每次都按 id 取，避免引用被移除的旧节点
       let box = document.getElementById('mm-room-timer');
@@ -847,8 +1030,9 @@ const JOIN_COOKIE = (() => {
         box.className = 'invite brackets';
         document.body.appendChild(box);
       }
+      const solo = !!document.querySelector('.solo-note');
       box.innerHTML = '<span class="mm-timer-time">' + timeText + '</span>'
-        + '<span class="mm-timer-label">后同盟将自动销毁</span>';
+        + '<span class="mm-timer-label">' + (adminRoom ? '管理员房 · 不自动销毁' : solo ? '后独立模拟将自动销毁' : '后同盟将自动销毁') + '</span>';
 
       // 干员调配 / 干员持有 / 自选编队 等全屏面板打开时隐藏倒计时
       try {
@@ -858,52 +1042,77 @@ const JOIN_COOKIE = (() => {
         box.style.display = 'flex';
       } catch { /* ignore */ }
 
-      // 找到同盟密钥面板（用「复制密钥」按钮定位），尺寸/位置完全跟随它
-      try {
-        const copyEl = [...document.querySelectorAll('button,span,div')]
-          .find((n) => (n.textContent || '').trim() === '复制密钥');
-        // 向上找到真正的「同盟密钥」面板（同时包含标题与复制按钮的容器）
-        let panel = copyEl;
-        for (let k = 0; k < 10 && panel; k++) {
-          const txt = panel.textContent || '';
-          if (txt.includes('同盟密钥') && txt.includes('复制密钥')) break;
-          panel = panel.parentElement;
+      // 两种模式共用同一个位置：房间顶栏右侧面板左边。
+      // 不再分别给同盟密钥和独立提示做不同的定位。
+      const narrow = window.innerWidth < 720;
+      const timerW = narrow ? 210 : 260;
+      const timerH = narrow ? 88 : 104;
+      const anchor = document.querySelector('.room-screen .topbar__right');
+
+      // 密钥绿色代码 + 灰色标签的字体由 room.css 的 .invite__code/.invite__label
+      // 决定；独立模拟没有密钥面板，用隐藏探针读取同一套字号。
+      const keyFontSizes = () => {
+        if (!fontProbe) {
+          fontProbe = document.createElement('div');
+          fontProbe.className = 'invite';
+          fontProbe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;visibility:hidden;pointer-events:none';
+          fontProbe.innerHTML = '<div class="invite__label">同盟密钥</div><div class="invite__code"><span>00</span></div>';
+          document.body.appendChild(fontProbe);
         }
-        const rect = panel ? panel.getBoundingClientRect() : null;
-        if (rect && rect.width >= 140) {
-          const w = Math.max(120, Math.round(rect.width * 0.45));
-          const h = Math.max(48, Math.round(rect.height * 0.7));
-          let left = Math.round(rect.left - w - 16);
-          left = Math.max(8, Math.min(left, Math.round(rect.left - w - 8)));
+        const code = getComputedStyle(fontProbe.querySelector('.invite__code span'));
+        const label = getComputedStyle(fontProbe.querySelector('.invite__label'));
+        return {
+          codeSize: code.fontSize,
+          codeFamily: code.fontFamily,
+          codeWeight: code.fontWeight,
+          labelSize: label.fontSize,
+        };
+      };
+
+      try {
+        const rect = anchor ? anchor.getBoundingClientRect() : null;
+        if (rect && rect.width >= 80) {
+          let left = Math.round(rect.left - timerW - 16);
+          left = Math.max(8, Math.min(left, Math.round(rect.left - timerW - 8)));
           box.style.position = 'fixed';
-          box.style.width = w + 'px';
-          box.style.height = h + 'px';
+          box.style.width = timerW + 'px';
+          box.style.height = timerH + 'px';
           box.style.left = left + 'px';
-          box.style.top = Math.round(rect.top + rect.height / 2 - h / 2) + 'px';
-          box.style.transform = 'none';
+          box.style.top = Math.round(rect.top + rect.height / 2 - timerH / 2) + 'px';
           box.style.right = 'auto';
-          box.style.display = 'flex';
-          box.style.flexDirection = 'column';
-          box.style.alignItems = 'center';
-          box.style.justifyContent = 'center';
-          box.style.padding = '0';
-          box.style.fontSize = Math.round(h * 0.18) + 'px';
-          const tEl = box.querySelector('.mm-timer-time');
-          const lEl = box.querySelector('.mm-timer-label');
-          if (tEl) tEl.style.fontSize = Math.round(h * 0.36) + 'px';
-          if (lEl) lEl.style.fontSize = Math.round(h * 0.15) + 'px';
+          box.style.transform = 'none';
         } else {
-          // 找不到面板时放到右上角，避免跑到左上角挡按钮
           box.style.position = 'fixed';
-          box.style.width = '200px';
-          box.style.height = '68px';
-          box.style.right = '360px';
-          box.style.top = '28px';
+          box.style.width = timerW + 'px';
+          box.style.height = timerH + 'px';
+          box.style.right = narrow ? '12px' : '28px';
+          box.style.top = '72px';
           box.style.left = 'auto';
-          box.style.display = 'flex';
-          box.style.flexDirection = 'column';
-          box.style.alignItems = 'center';
-          box.style.justifyContent = 'center';
+          box.style.transform = 'none';
+        }
+        box.style.display = 'flex';
+        box.style.flexDirection = 'column';
+        box.style.alignItems = 'center';
+        box.style.justifyContent = 'center';
+        box.style.gap = narrow ? '3px' : '5px';
+        box.style.padding = narrow ? '8px 10px' : '12px 16px';
+        box.style.boxSizing = 'border-box';
+        box.style.overflow = 'hidden';
+        box.style.zIndex = '2147482000';
+        box.style.background = 'rgba(5,16,13,.97)';
+        box.style.fontSize = '12px';
+        const fs = keyFontSizes();
+        const tEl = box.querySelector('.mm-timer-time');
+        const lEl = box.querySelector('.mm-timer-label');
+        if (tEl) {
+          tEl.style.fontSize = fs.codeSize;
+          tEl.style.fontFamily = fs.codeFamily;
+          tEl.style.fontWeight = fs.codeWeight;
+          tEl.style.whiteSpace = 'nowrap';
+        }
+        if (lEl) {
+          lEl.style.fontSize = fs.labelSize;
+          lEl.style.whiteSpace = 'nowrap';
         }
       } catch { /* ignore */ }
     };
@@ -918,6 +1127,98 @@ const JOIN_COOKIE = (() => {
   }
 
 
+
+  // ---------------------------------------------------------------- 实验性：复活的简易操作条
+
+  function installRevivalControl() {
+    if (window.__mmRevivalInstalled) return;
+    window.__mmRevivalInstalled = true;
+    const ensure = () => {
+      const sp = window.__SP__;
+      const s = sp?.store?.get?.();
+      const pub = s?.match?.public;
+      const me = pub?.players?.find((p) => p.playerId === s?.me?.playerId);
+      const target = pub?.players?.find((p) => p.pendingDeath && !p.alive && p.playerId !== me?.playerId);
+      let box = document.getElementById('mm-revival');
+      const can = !!(pub?.revival?.enabled && pub.revival.windowOpen && me && me.alive && me.lp >= 11
+        && pub.revival.eligible?.includes(me.playerId) && target);
+      if (!can) { if (box) box.remove(); return; }
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'mm-revival';
+        box.style.cssText = 'position:fixed;right:24px;bottom:118px;z-index:2147482100;display:flex;flex-direction:column;' +
+          'gap:5px;padding:10px 12px;border:1px solid #d5a24a;background:rgba(24,18,8,.96);color:#f4dfb0;' +
+          'font:600 12px "Noto Sans SC",system-ui,sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.35)';
+        document.body.appendChild(box);
+      }
+      box.innerHTML = '<span style="color:#f0c674">联防救援窗口</span>' +
+        '<button type="button" style="height:26px;padding:0 12px;border:1px solid #d5a24a;border-radius:2px;' +
+        'background:#3b2a12;color:#ffe1a2;font:700 11px inherit;cursor:pointer">复活 ' +
+        String(target.name || '队友').replace(/[<>&]/g, '') + ' · −10</button>';
+      box.querySelector('button').onclick = async () => {
+        const btn = box.querySelector('button');
+        if (btn.disabled) return;
+        btn.disabled = true;
+        try {
+          await sp.net.request('g.revive', { playerId: target.playerId, round: pub.round, matchId: pub.revival.matchId });
+        } catch { /* the next state refresh explains */ }
+        btn.disabled = false;
+      };
+    };
+    ensure();
+    setInterval(ensure, 500);
+  }
+
+  // ---------------------------------------------------------------- 实验性：房间规则面板
+
+  function installExperimentalPanel() {
+    if (window.__mmExperimentalInstalled) return;
+    window.__mmExperimentalInstalled = true;
+    const role = window.__SP_ACCOUNT_ROLE;
+    if (!role || role === 'player') return;
+    const ensure = () => {
+      const sp = window.__SP__;
+      const s = sp?.store?.get?.();
+      const room = s?.room;
+      const host = room && room.hostId === s?.me?.playerId && !room.inMatch;
+      const existing = document.getElementById('mm-exp');
+      if (!host) { if (existing) existing.remove(); return; }
+      if (existing) return;
+      const box = document.createElement('div');
+      box.id = 'mm-exp';
+      box.style.cssText = 'position:fixed;left:18px;bottom:150px;z-index:2147482000;font:600 11px "Noto Sans SC",system-ui,sans-serif;' +
+        'background:rgba(5,16,13,.97);border:1px solid #2f7d66;color:#cfe9e0;padding:8px 10px;min-width:190px';
+      box.innerHTML = '<div style="color:#7ff0cf;margin-bottom:6px">实验性房间</div>' +
+        '<label style="display:flex;justify-content:space-between;gap:8px;margin:3px 0">人数' +
+        '<select data-k="capacity" style="background:#07110e;color:#cfe9e0;border:1px solid #2f4a4f">' +
+        '<option value="4">4</option><option value="8">8</option><option value="12">12</option><option value="16">16</option><option value="20">20</option></select></label>' +
+        '<label style="display:flex;justify-content:space-between;gap:8px;margin:3px 0">复活<input data-k="revivalEnabled" type="checkbox"></label>' +
+        '<label style="display:flex;justify-content:space-between;gap:8px;margin:3px 0">独立卡池<input data-k="disableSharedPool" type="checkbox"></label>' +
+        '<label style="display:flex;justify-content:space-between;gap:8px;margin:3px 0">禁用鸭爵<input data-k="disableDuckLord" type="checkbox"></label>' +
+        '<button type="button" style="margin-top:6px;width:100%;height:24px;border:1px solid #7ff0cf;background:#35c79b;color:#061611;font:700 11px inherit;cursor:pointer">应用</button>';
+      document.body.appendChild(box);
+      const sync = () => {
+        const e = room.experimental || {};
+        box.querySelector('[data-k="capacity"]').value = String(room.capacity || (e.playerCapacity || 4));
+        box.querySelector('[data-k="revivalEnabled"]').checked = e.revivalEnabled === true;
+        box.querySelector('[data-k="disableSharedPool"]').checked = e.disableSharedPool === true;
+        box.querySelector('[data-k="disableDuckLord"]').checked = e.disableDuckLord === true;
+      };
+      sync();
+      box.querySelector('button').onclick = async () => {
+        const cap = Number(box.querySelector('[data-k="capacity"]').value);
+        const experimental = {
+          revivalEnabled: box.querySelector('[data-k="revivalEnabled"]').checked,
+          disableSharedPool: box.querySelector('[data-k="disableSharedPool"]').checked,
+          ...(cap > 4 ? { playerCapacity: cap } : {}),
+          ...(cap > 4 && box.querySelector('[data-k="disableDuckLord"]').checked ? { disableDuckLord: true } : {}),
+        };
+        try { await sp.net.request('room.setExperimental', { experimental }); } catch { /* next state explains */ }
+      };
+    };
+    ensure();
+    setInterval(ensure, 1000);
+  }
 
   // ---------------------------------------------------------------- 统一风格（与游戏内 UI 一致）
 
@@ -1155,8 +1456,115 @@ const JOIN_COOKIE = (() => {
   function installQQGroup() {
     const QQ = '312990596';
     const LINK = 'https://qun.qq.com/universal-share/share?ac=1&authKey=f50LwALLkBM4sEW9%2Fzx%2BnaN1aT0QvIEpxEpgZ62mrdnpilQA7WCK5SgPMNtCWLfH&busi_data=eyJncm91cENvZGUiOiIzMTI5OTA1OTYiLCJ0b2tlbiI6Ik5zR2lzaTczUEp6UGNhOWNuSDF0VUp5eW9CemVvZGlib3dxbFNGeGVLSVJwZWFWb3Z4dCtHb01maDExVnZBVS8iLCJ1aW4iOiIyODExMTA0NzEifQ%3D%3D&data=MRFk_l0v2xsFWvIy0Baa-d5WJYNGXZA1tTitHhWUrEjtqcUwegXE9v7kk_-1zb_PP8c4L07-oo1AKcWjaMqjbQ&svctype=4&tempid=h5_group_info';
-    const ICON = 'M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 5V6a2 2 0 0 1 2-2z';
-    const ensure = () => ensureTopButton('mm-qq', '官方Q群：' + QQ, ICON, () => window.open(LINK, '_blank', 'noopener'), null, false);
+    // Official QQ penguin mark (Simple Icons' QQ brand path), inlined so the
+    // button never depends on a third-party request.
+    const PENGUIN = '<svg viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="QQ"><path d="M21.395 15.035a40 40 0 0 0-.803-2.264l-1.079-2.695c.001-.032.014-.562.014-.836C19.526 4.632 17.351 0 12 0S4.474 4.632 4.474 9.241c0 .274.013.804.014.836l-1.08 2.695a39 39 0 0 0-.802 2.264c-1.021 3.283-.69 4.643-.438 4.673.54.065 2.103-2.472 2.103-2.472 0 1.469.756 3.387 2.394 4.771-.612.188-1.363.479-1.845.835-.434.32-.379.646-.301.778.343.578 5.883.369 7.482.189 1.6.18 7.14.389 7.483-.189.078-.132.132-.458-.301-.778-.483-.356-1.233-.646-1.846-.836 1.637-1.384 2.393-3.302 2.393-4.771 0 0 1.563 2.537 2.103 2.472.251-.03.581-1.39-.438-4.673"/></svg>';
+    const open = () => window.open(LINK, '_blank', 'noopener');
+    const ensure = () => {
+      const onTitle = !!document.querySelector('.title-screen') || !!document.querySelector('button.title-stats');
+      const lobby = document.querySelector('.lobby-screen');
+      const tools = lobby && lobby.querySelector('.topbar__tools');
+      const room = document.querySelector('.room-screen');
+      const roomTools = room && room.querySelector('.topbar__left');
+      if (!document.getElementById('mm-qq-css')) {
+        const st = document.createElement('style');
+        st.id = 'mm-qq-css';
+        st.textContent = `
+          #mm-qq{position:fixed;left:max(18px,env(safe-area-inset-left,0px));bottom:calc(82px + env(safe-area-inset-bottom,0px));z-index:2147482000;display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px solid #7ff0cf;border-radius:0;background:#35c79b;color:#061611;box-shadow:0 0 0 1px rgba(78,216,175,.18),0 4px 16px rgba(0,0,0,.28);letter-spacing:0;cursor:pointer;white-space:nowrap}
+          #mm-qq:hover{background:#5ee0b9;border-color:#b6ffe9;color:#03110c}
+          #mm-qq .mm-qq-penguin{display:inline-flex;align-items:center;justify-content:center;width:2em;height:2em;line-height:1;font-size:1em;flex:none}
+          #mm-qq .mm-qq-penguin svg,#mm-qq .mm-qq-penguin svg path{display:block;width:100%;height:100%;fill:currentColor!important;stroke:none!important}
+          #mm-qq-lobby .mm-qq-penguin{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;line-height:1;font-size:1em}
+          #mm-qq-lobby .mm-qq-penguin svg,#mm-qq-lobby .mm-qq-penguin svg path{display:block;width:100%;height:100%;fill:currentColor!important;stroke:none!important}
+          #mm-qq-room .mm-qq-penguin{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;line-height:1;font-size:1em;color:#8ff5d5}
+          #mm-qq-room .mm-qq-penguin svg,#mm-qq-room .mm-qq-penguin svg path{display:block;width:100%;height:100%;fill:currentColor!important;stroke:none!important}
+          #mm-qq-lobby{color:#8ff5d5!important;border-color:rgba(78,216,175,.55)!important;background:rgba(78,216,175,.08)!important}
+          #mm-qq-lobby:hover{background:rgba(78,216,175,.18)!important;border-color:#7ff0cf!important}
+          #mm-qq-lobby svg{width:1.1em;height:1.1em;fill:none;stroke:currentColor;stroke-width:1.8}
+        `;
+        (document.head || document.documentElement).appendChild(st);
+      }
+
+      // Lobby (选择模拟协议): a normal square button in the top-left tool group.
+      const lobbyBtn = document.getElementById('mm-qq-lobby');
+      if (!tools) {
+        if (lobbyBtn) lobbyBtn.remove();
+      } else {
+        let b = lobbyBtn;
+        if (!b) {
+          b = document.createElement('button');
+          b.type = 'button';
+          b.id = 'mm-qq-lobby';
+          b.className = 'btn btn--secondary btn--sm btn--square';
+          b.title = '加入官方Q群';
+          b.setAttribute('aria-label', '加入官方Q群：' + QQ);
+          b.innerHTML = '<span class="mm-qq-penguin" aria-hidden="true">' + PENGUIN + '</span>';
+          b.onclick = open;
+        }
+        if (b.parentElement !== tools || b !== tools.firstElementChild) tools.insertBefore(b, tools.firstElementChild);
+      }
+
+      // Alliance room (同盟模拟): a labelled button next to 统计 / 设置 / 玩法说明.
+      const roomBtn = document.getElementById('mm-qq-room');
+      if (!roomTools) {
+        if (roomBtn) roomBtn.remove();
+      } else {
+        let b = roomBtn;
+        if (!b) {
+          b = document.createElement('button');
+          b.type = 'button';
+          b.id = 'mm-qq-room';
+          b.className = 'btn btn--secondary btn--sm';
+          b.title = '加入官方Q群';
+          b.setAttribute('aria-label', '加入官方Q群：' + QQ);
+          b.innerHTML = '<span class="mm-qq-penguin" aria-hidden="true">' + PENGUIN + '</span><span>官方Q群</span>';
+          b.onclick = open;
+        }
+        const guide = roomTools.querySelector('.room-guide');
+        if (b.parentElement !== roomTools || b.previousElementSibling !== guide) {
+          roomTools.insertBefore(b, guide ? guide.nextSibling : null);
+        }
+      }
+
+      // Title screen: put the QQ button in the footer flow instead of a fixed overlay, so it
+      // cannot cover the download/import hints, 添加到桌面 or the footer itself.
+      const titleBtn = document.getElementById('mm-qq');
+      if (!onTitle) {
+        if (titleBtn) titleBtn.remove();
+        return;
+      }
+      // On phones the title footer is cramped; the lobby/room top bars still carry the QQ
+      // entry, so remove this one instead of letting it cover 游客访问.
+      const phoneTitle = window.matchMedia?.('(pointer: coarse), (max-width: 900px)').matches
+        || (Number(globalThis.navigator?.maxTouchPoints) || 0) > 0;
+      if (phoneTitle) {
+        if (titleBtn) titleBtn.remove();
+        return;
+      }
+      let btn = titleBtn;
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = 'mm-qq';
+        btn.className = 'btn btn--secondary btn--sm';
+        btn.title = '加入官方Q群';
+        btn.setAttribute('aria-label', '加入官方Q群：' + QQ);
+        btn.innerHTML = '<span class="mm-qq-penguin" aria-hidden="true">' + PENGUIN + '</span><span>官方Q群：' + QQ + '</span>';
+        btn.onclick = open;
+      }
+      const foot = document.querySelector('.title-foot');
+      if (foot) {
+        if (btn.parentElement !== foot) foot.insertBefore(btn, foot.firstElementChild);
+        btn.style.position = 'static';
+        btn.style.left = '';
+        btn.style.bottom = '';
+        return;
+      }
+      if (btn.parentElement !== document.body) document.body.appendChild(btn);
+      btn.style.position = '';
+      btn.style.left = '';
+      btn.style.bottom = '';
+    };
     ensure();
     setInterval(ensure, 1200);
     window.addEventListener('resize', ensure);
@@ -1174,9 +1582,10 @@ const JOIN_COOKIE = (() => {
       st.id = 'mm-ticker-css';
       st.textContent = `
 #mm-ticker{position:fixed;top:9%;left:50%;transform:translateX(-50%);width:min(760px,92vw);height:30px;
-  overflow:hidden;pointer-events:none;z-index:60;
+  overflow:hidden;pointer-events:none;z-index:2147483647;
   background:linear-gradient(90deg,rgba(10,14,12,.92),rgba(10,14,12,.97) 8%,rgba(10,14,12,.97) 92%,rgba(10,14,12,.92));
   border-top:1px solid rgba(255,198,0,.35);border-bottom:1px solid rgba(255,198,0,.35)}
+#mm-ticker .line.is-static{position:absolute;left:0;top:0;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;padding:0 16px;box-sizing:border-box;transform:none!important;white-space:nowrap}
 #mm-ticker:empty{display:none}
 #mm-ticker .line{position:absolute;top:0;left:0;height:100%;display:flex;align-items:center;white-space:nowrap;
   width:max-content;max-width:none;padding:0 24px;font:15px/1.3 "Noto Sans SC",system-ui,sans-serif;color:#e8f4ef;
@@ -1192,6 +1601,51 @@ const JOIN_COOKIE = (() => {
     let current = null;
     let stopFlag = false;
     let lastKey = '';
+    let overlayOpen = false;
+    let pauseStarted = 0;
+    let guardStarted = false;
+
+    // Any real dialog/overlay (settings, bulletin, guide, loadout, match popups) hides the ticker.
+    const OVERLAY_SELECTOR = '.modal, [role="dialog"][aria-modal="true"], .mm-ov, .announcement-board, .guide, .lo, .spov, .awayov, .pauseov, .exp-pop';
+    const isShown = (node) => {
+      try {
+        const r = node.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const cs = getComputedStyle(node);
+        return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) !== 0;
+      } catch { return false; }
+    };
+    const hasOverlay = () => {
+      const nodes = document.querySelectorAll(OVERLAY_SELECTOR);
+      for (const node of nodes) if (isShown(node)) return true;
+      return false;
+    };
+    const syncOverlay = () => {
+      const el = document.getElementById('mm-ticker');
+      if (!el) return;
+      const open = hasOverlay();
+      if (open === overlayOpen) return;
+      overlayOpen = open;
+      if (open) {
+        pauseStarted = performance.now();
+        el.style.display = 'none';
+      } else {
+        el.style.display = '';
+      }
+    };
+    const startOverlayGuard = () => {
+      if (guardStarted) return;
+      guardStarted = true;
+      let raf = 0;
+      const kick = () => {
+        if (raf) return;
+        raf = requestAnimationFrame(() => { raf = 0; syncOverlay(); });
+      };
+      try {
+        new MutationObserver(kick).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'hidden', 'aria-hidden'] });
+      } catch { /* ignore */ }
+      syncOverlay();
+    };
 
     const strip = () => {
       let el = document.getElementById('mm-ticker');
@@ -1200,6 +1654,7 @@ const JOIN_COOKIE = (() => {
         el.id = 'mm-ticker';
         document.body.appendChild(el);
       }
+      syncOverlay();
       return el;
     };
 
@@ -1226,18 +1681,35 @@ const JOIN_COOKIE = (() => {
         setTimeout(showNext, 300);
       };
 
+      // Phones avoid the 60 fps marquee: a static one-line bulletin is much cheaper than
+      // transforming a long line every frame on a low-end mobile GPU.
+      let mobileTicker = false;
+      try { mobileTicker = window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 720; } catch { /* ignore */ }
+      if (mobileTicker) {
+        line.classList.add('is-static');
+        line.style.transform = 'none';
+        setTimeout(finish, 7000);
+        return;
+      }
+
       const runPass = () => {
         if (!line.isConnected || stopFlag) { finish(); return; }
         line.style.transform = `translateX(${width}px)`;
-        const started = performance.now();
+        let started = performance.now();
         const step = (now) => {
           if (!line.isConnected || stopFlag) { finish(); return; }
+          if (overlayOpen) {
+            if (!pauseStarted) pauseStarted = now;
+            requestAnimationFrame(step);
+            return;
+          }
+          if (pauseStarted) { started += now - pauseStarted; pauseStarted = 0; }
           const p = Math.min(1, (now - started) / passMs);
           line.style.transform = `translateX(${width - (width + textWidth) * p}px)`;
           if (p < 1) requestAnimationFrame(step);
           else {
             pass += 1;
-            if (pass < 5) setTimeout(runPass, 900);
+            if (pass < 3) setTimeout(runPass, 900);
             else finish();
           }
         };
@@ -1276,6 +1748,7 @@ const JOIN_COOKIE = (() => {
       // 已有一条在播时，新公告进队列，等前面的 5 遍播完再出场
       enqueue(lines, key);
     }).catch(() => {});
+    startOverlayGuard();
     poll();
     setInterval(poll, 5000);
   }
@@ -1377,7 +1850,7 @@ const JOIN_COOKIE = (() => {
     };
 
     const ensure = () => {
-      const btn = ensureTopButton('mm-notice-btn', '公告', ICON, open, 'mm-qq', true);
+      const btn = ensureTopButton('mm-notice-btn', '公告', ICON, open, null, true);
       if (!btn) return;
       let dot = btn.querySelector('.mm-dot');
       if (dotPending && !dot) {
@@ -1513,31 +1986,6 @@ const JOIN_COOKIE = (() => {
 .server-status__dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--mint-400);margin-right:10px;vertical-align:middle}
 .server-status__table tr.off td{color:#c98b8b}
 `;
-  // 兜底修正：无论游戏模块版本，确保「DOCTOR #」显示账号代码
-  function replaceDoctorIn(root, tag) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    let txt;
-    while ((txt = walker.nextNode())) {
-      if (/DOCTOR\s*#\s*\d{4}/.test(txt.nodeValue || '')) {
-        const next = txt.nodeValue.replace(/DOCTOR\s*#\s*\d{4}/, 'DOCTOR #' + tag);
-        if (next !== txt.nodeValue) txt.nodeValue = next;
-      }
-    }
-  }
-  function fixDoctorTag() {
-    const tag = (typeof window !== 'undefined' && window.__SP_ACCOUNT_TAG) || '';
-    if (!/^[0-9]{4}$/.test(tag)) return;
-    const nodes = document.querySelectorAll('.me-chip__text, .me-chip');
-    nodes.forEach((n) => replaceDoctorIn(n, tag));
-    // 同盟模拟：只改「自己」那张席位卡（含「你」标记或 self 类名）
-    document.querySelectorAll('[class*="seat"], [class*="card"], [class*="pcard"]').forEach((el) => {
-      if (el.children.length > 30) return;
-      if (!/self|is-me|you/i.test(el.className || '') && !/你/.test(el.textContent || '')) return;
-      replaceDoctorIn(el, tag);
-    });
-  }
-  setInterval(() => { try { fixDoctorTag(); } catch { /* 忽略 */ } }, 800);
-
   // 管理员账号：仅在大厅（选择模拟协议）的「公告」旁加「管理后台」按钮
   function installAdminEntry() {
     const role = (typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE) || '';
@@ -1562,7 +2010,7 @@ const JOIN_COOKIE = (() => {
     const label = btn.querySelector('.btn__label') || btn.querySelector('span');
     if (label) label.textContent = '管理后台';
     else btn.textContent = '管理后台';
-    btn.onclick = () => window.open('/mm/admin.html', '_blank');
+    btn.onclick = () => window.open('/mm/admin.html?v=20261021', '_blank');
     notice.parentElement.insertBefore(btn, notice);
   }
   let __mmTagProbeDone = false;
@@ -1646,7 +2094,7 @@ const JOIN_COOKIE = (() => {
       if (!data) return { state: 'normal', humans: 0, ready: 0, total: 0 };
       const ready = data.online;
       const humans = data.nodes.reduce((a, x) => a + (x.humans || 0), 0);
-      const state = ready < data.total ? 'down' : humans >= 40 ? 'busy' : 'normal';
+      const state = ready < data.total ? 'down' : humans >= 5000 ? 'busy' : 'normal';
       return { state, humans, ready, total: data.total };
     };
 
@@ -1887,6 +2335,16 @@ const JOIN_COOKIE = (() => {
   // 成功返回 true（已排好跳转）；pin 失败或缺少跳转参数返回 false，让调用方下一轮重试
   async function enterParty(st) {
     const sp0 = window.__SP__;
+    // 主房间成员（人数最多的一队）留在原房间，不跳转、不重新建房；
+    // 显式 room.join 一次，幂等刷新房主的 room.state，避免停留在旧的 1/4 状态。
+    if (st.home && st.code) {
+      try { hideOverlay(); } catch { /* ignore */ }
+      try { showTransition(); } catch { /* ignore */ }
+      try { await sp0.net.request('room.join', { code: st.code }); } catch { /* ignore */ }
+      try { installAutoStart(sp0); } catch { /* ignore */ }
+      try { await sp0.net.request('room.matchmaking', { on: false }); } catch { /* ignore */ }
+      return true;
+    }
     // 先主动离开旧房间：服务端按 sp_sid 保存了 session.roomCode，不离开的话新页面会先被恢复回旧房间
     // （房主于是把旧房号当成新房间回报，客人也会因为「已有房间」而不再加入匹配到的房间）
     try {
@@ -1986,7 +2444,8 @@ const JOIN_COOKIE = (() => {
       if (guestHostBlocked()) return;
       if (creating || createdOk || attempts >= 3 || Date.now() - lastAt < 2000) return;
       attempts += 1; lastAt = Date.now(); creating = true;
-      net.request('room.create', { mode: 'coop', difficulty: DIFF })
+      net.request('room.create', { mode: 'coop', difficulty: DIFF,
+    ...(CAPACITY > 4 ? { experimental: { revivalEnabled: true, disableSharedPool: true, playerCapacity: CAPACITY, disableDuckLord: true } } : {}) })
         .then(() => { createdOk = true; console.info('[mm-debug] room.create ok'); })
         .catch((e) => console.warn('[mm] 自动建房失败', e && e.message))
         .finally(() => { creating = false; });
@@ -2008,10 +2467,14 @@ const JOIN_COOKIE = (() => {
   }
 
   function joinFlow(sp, code, spectate) {
+    // Hidden admin watch is not a player deep-link: joining as a player would fail
+    // with ROOM_FULL on a full room. adminWatchFlow() performs the hidden spectate.
+    if (adminWatchActive()) return;
     const { store, net } = sp;
     let inFlight = false, joined = false;
     try { store.patch('ui', { pendingJoin: null }); } catch (e) { /* ignore */ }
     const tick = () => {
+      if (adminWatchActive()) { joined = true; return; }
       const s = store.get();
       if (joined || inFlight || !s.session.entered || net.status !== 'online') return;
       if (s.room) { joined = true; return; }
