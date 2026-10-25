@@ -197,6 +197,38 @@ node patcher\snapshot-features.mjs
 
 3. 检查 `patcher/features/<id>/files` 是否更新
 
+### 移植上游后必须逐个手点的入口
+
+上游改版会顺手改掉我们插入的按钮（选择器变了、容器变了、判定变了）。
+移植后必须逐个确认，不要只看“页面能开”：
+
+```text
+标题屏左下角「官方Q群」   id=mm-qq，在 .title-foot 内 .mm-qq-row 独占一行，
+                          排在「添加到桌面」上面（不能挤掉它的位置）
+标题屏右上角「统计/语言」旁边的 公告、管理后台、账号对局按钮
+大厅顶栏「官方Q群」       id=mm-qq-lobby
+同盟房间顶栏「官方Q群」   id=mm-qq-room
+```
+
+踩过的坑（2026-10 升级 0.3.3）：
+
+```text
+1. client.js 里判手机用 (maxTouchPoints > 0)，触屏笔记本/桌面 Edge 报告 10，
+   结果把标题屏按钮当成手机端删掉了。→ 只按 max-width 和无 hover 判断。
+2. 0.3.3 的 .title-foot 是 display:flex; justify-content:space-between，
+   在 flex 容器里 flex-basis:100% 不会换行，必须插入 <span class="mm-qq-row">
+   占满整行，按钮才不会顶到中间或挤掉「添加到桌面」。
+3. 改完 matchmaker/public/client.js 必须同步：
+   - patcher/features/client-announcement/files/{matchmaker/public,mm}/client.js
+   - nginx.conf 里的 /mm/client.js?v= 版本号并 nginx -s reload
+```
+
+验证方式（不要只看 DOM 存在，要量坐标）：
+
+```powershell
+node node-1\shot-qq3.mjs   # above:true 表示 Q群按钮在「添加到桌面」上方
+```
+
 ## 处理冲突
 
 只处理 `report.json` 里 `status: "conflict"`：
