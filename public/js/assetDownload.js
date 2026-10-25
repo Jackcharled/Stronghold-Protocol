@@ -45,17 +45,25 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
   };
 
   async function request(url, json = false, optional = false) {
+    let forceNoCache = false;
     for (let attempt = 0; ; attempt++) {
       const abort = new AbortController();
       const cancel = () => abort.abort();
       controller.signal.addEventListener('abort', cancel, { once: true });
       if (controller.signal.aborted) cancel();
       const timer = setTimeout(cancel, timeoutMs);
+      // 第一次用默认缓存策略（快）；一旦失败就用 no-cache 绕过浏览器缓存再试。
+      // 原因：素材带 Cache-Control: immutable + 30 天，服务器曾经返回过的 404 会被浏览器
+      // 长期记住且不再回源。服主修好之后，玩家重试仍然拿到那个旧 404
+      // （就是「服务器 200、玩家还是 404」的根因）。强制回源才能拿到最新结果。
+      const cacheMode = json ? 'no-cache' : (forceNoCache ? 'no-cache' : 'default');
       try {
-        const response = await doFetch(url, { signal: abort.signal, cache: json ? 'no-cache' : 'default' });
+        const response = await doFetch(url, { signal: abort.signal, cache: cacheMode });
         if (optional && response.status === 404) { await response.body?.cancel(); return null; }
         if (!response.ok || response.status === 206) {
           await response.body?.cancel();
+          // 可能是缓存的旧 404：下一轮强制回源
+          if (response.status === 404 || response.status === 410) forceNoCache = true;
           throw Object.assign(new Error('Asset request failed'), { status: response.status });
         }
         // Static hosts sometimes send their HTML fallback with status 200 for missing art.
@@ -84,7 +92,10 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
         return;
       } catch (error) {
         if (paused) throw error;
-        const transient = !error.status || error.status >= 500 || [408, 429].includes(error.status);
+        // 404/410 以前算「永久失败」直接放弃。但服务器的 404 也可能是浏览器缓存里的旧结论
+        // （素材带 immutable + 30 天，服务器修好后浏览器也不会回源），所以 404 也要重试一次 ——
+        // 上面已经把下一轮的 cache 改成 no-cache，重试就是真正回源确认。
+        const transient = !error.status || error.status >= 500 || [408, 429, 404, 410].includes(error.status);
         if (!transient || attempt >= retries) throw Object.assign(error, { url });
         // Keep retries bounded and avoid hammering a struggling server.
         await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));

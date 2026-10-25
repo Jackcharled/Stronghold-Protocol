@@ -6,6 +6,75 @@ import { html, Button, Modal, ProgressBar } from './components.js';
 import { assetDownload } from '../assetDownload.js';
 import { t } from '../../../shared/i18n.js';
 
+/** 本地时间 `YYYY-MM-DD HH:MM:SS` + 时区标注（导出的清单给服主看，必须是人能直接对上的时间）。 */
+export function localStamp(now = Date.now(), tzOffsetMin = new Date(now).getTimezoneOffset()) {
+  const d = new Date(now);
+  const pad = (n) => String(n).padStart(2, '0');
+  const y = d.getFullYear();
+  const mo = pad(d.getMonth() + 1);
+  const da = pad(d.getDate());
+  const h = pad(d.getHours());
+  const mi = pad(d.getMinutes());
+  const s = pad(d.getSeconds());
+  // getTimezoneOffset() 是「UTC - 本地」的分钟数（东八区为 -480）
+  const sign = tzOffsetMin <= 0 ? '+' : '-';
+  const abs = Math.abs(tzOffsetMin);
+  const tz = `UTC${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+  return { local: `${y}-${mo}-${da} ${h}:${mi}:${s}`, tz, iso: d.toISOString() };
+}
+
+/** 失败清单的文本形式：一行一个「状态<TAB>URL」，可直接贴给服主或存成 .txt。 */
+export function failuresToText(failures, now = Date.now()) {
+  const list = Array.isArray(failures) ? failures : [];
+  // 以前这里用 toISOString()（UTC），玩家看到的时间比本地慢 8 小时，以为清单是旧的。
+  // 现在第一行是本地时间 + 时区，括号里附 UTC 便于跨时区对账。
+  const t = localStamp(now);
+  const head = [
+    `# 素材下载失败清单  ${t.local}（${t.tz}，UTC ${t.iso}）`,
+    `# 共 ${list.length} 条`,
+    `# 状态\tURL`,
+  ];
+  const body = list.map((f) => `${f && f.status != null ? f.status : 'network'}\t${(f && f.url) || ''}`);
+  return [...head, ...body].join('\n') + '\n';
+}
+
+/** Download the failure list as a .txt file (no server round-trip). */
+export function exportFailures(failures) {
+  try {
+    const text = failuresToText(failures);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    // 文件名也用本地时间（以前是 UTC，文件名和内容都比本地慢 8 小时）
+    const stamp = localStamp(Date.now()).local.replace(/[: ]/g, '-');
+    a.href = url;
+    a.download = `素材下载失败清单-${stamp}.txt`;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { try { document.body.removeChild(a); } catch { /* ignore */ } URL.revokeObjectURL(url); }, 0);
+    return true;
+  } catch { return false; }
+}
+
+/** Copy the failure list to the clipboard (fallback when a download is blocked). */
+export async function copyFailures(failures) {
+  const text = failuresToText(failures);
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* fall through to the textarea trick */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand && document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch { return false; }
+}
+
 /** 下载完整素材: the button, its hint line and the download dialog. */
 export function AssetDownloadButton() {
   const [open, setOpen] = useState(false);
@@ -55,9 +124,18 @@ export function AssetDownloadButton() {
       ${state.localMissing ? html`<p class="t-lo">${t('服务器未提供额外的本地素材包，将使用基础素材。')}</p>` : null}
       ${state.failures.length ? html`<div class="asset-download__errors">
         <p>${t('下载未完成。请重试；若文件持续缺失，请联系服主补齐素材。')}</p>
-        <details><summary>${t('查看失败文件')}</summary><ul>
+        <details><summary>${t('查看失败文件')}（${state.failures.length}）</summary><ul>
           ${state.failures.slice(0, 30).map((item) => html`<li key=${item.url}><code>${item.url}</code> (${item.status})</li>`)}
+          ${state.failures.length > 30
+            ? html`<li class="t-lo">${t('仅显示前 30 条，共 {n} 条。点「导出清单」可拿到完整列表。', { n: state.failures.length })}</li>`
+            : null}
         </ul></details>
+        <div class="asset-download__export">
+          <${Button} size="sm" variant="secondary" data-testid="asset-download-export"
+            onClick=${() => exportFailures(state.failures)}>${t('导出清单')}<//>
+          <${Button} size="sm" variant="secondary" data-testid="asset-download-copy"
+            onClick=${() => copyFailures(state.failures)}>${t('复制清单')}<//>
+        </div>
       </div>` : null}
     <//>
   </div>`;
