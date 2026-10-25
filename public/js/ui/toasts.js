@@ -55,7 +55,9 @@ export function toast(text, kind = 'info', opts = {}) {
     const adminWatch = qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
       || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code')
       || !!localStorage.getItem('sp_watch_token');
-    if (adminWatch && /^(模拟已开始|Simulation already started|加入失败：|观战失败：|当前节点没有可恢复的账号对局|恢复对局失败：|恢复账号对局)/.test(msg)) return -1;
+    const closedAt = Number(localStorage.getItem('sp_admin_watch_closed_at') || 0);
+    const watchExitCooldown = closedAt > 0 && Date.now() - closedAt < 60_000;
+    if ((adminWatch || watchExitCooldown) && /^(模拟已开始|Simulation already started|加入失败：|观战失败：|当前节点没有可恢复的账号对局|恢复对局失败：|恢复账号对局)/.test(msg)) return -1;
   } catch { /* ignore */ }
   const now = Date.now();
   const ttl = Number.isFinite(opts.ttl) && opts.ttl > 0 ? opts.ttl : DEFAULT_MS[k];
@@ -117,9 +119,10 @@ export function describeError(err) {
     }
   }
   if (err.code === 'BAD_MSG' && typeof err.detail === 'string') {
-    if (/创建房间|独立模拟/.test(err.detail)) return t(err.detail);
+    if (/创建房间|创建同盟|独立模拟|游客不能|已在其他房间|请先离开/.test(err.detail)) return t(err.detail);
     if (/matchmaking maintenance/i.test(err.detail)) return t('服务器暂时关闭了匹配队友，请稍后再试');
     if (/start maintenance/i.test(err.detail)) return t('服务器暂时关闭了开始游戏，请稍后再试');
+    if (/invalid experimental options/i.test(err.detail)) return t('房间实验参数无效，请刷新页面后重试');
   }
   if (err.code && Object.hasOwn(ERR_TEXT, err.code)) return t(ERR_TEXT[err.code]);
   if (typeof err.message === 'string' && err.message) return t(err.message);

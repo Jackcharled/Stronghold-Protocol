@@ -11,6 +11,11 @@ import {
 } from './assetUrls.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
+const REMOTE_ASSET_RE = /^https?:\/\/assets\.luobomiao\.love\/assets\//i;
+/** Route raw manifest art through the same /assets-cdn/ URLs the import cache and game use. */
+const localAssetSrc = (src) => (typeof src === 'string' && REMOTE_ASSET_RE.test(src)
+  ? '/assets-cdn/' + src.replace(REMOTE_ASSET_RE, '')
+  : src);
 
 /** Data files the in-match screens use (`backups`: the 补位 stand-ins' bodies — cards, the board model, the detail card). */
 export const GAME_FILES = ['config', 'assets', 'chess', 'bonds', 'items', 'bands', 'enemies', 'bosses', 'stages', 'tokens',
@@ -64,8 +69,9 @@ export function makeLookups(ready = true) {
  */
 export function Img({ src, class: cls, alt = '', fallback = null, style, loading = 'lazy' }) {
   const [bad, setBad] = useState(null);
-  if (!src || bad === src) return fallback;
-  return html`<img class=${cls} src=${src} alt=${alt} draggable=${false} loading=${loading} decoding="async" style=${style} onError=${(e) => { const el = e && (e.currentTarget || e.target); const s = String(src || ''); if (el && !el.dataset.retry && /^https?:\/\//i.test(s)) { el.dataset.retry = '1'; try { const u = new URL(s); u.searchParams.set('retry', '1'); el.src = u.href; return; } catch { /* ignore */ } } setBad(src); }} />`;
+  const displaySrc = localAssetSrc(src);
+  if (!displaySrc || bad === src) return fallback;
+  return html`<img class=${cls} src=${displaySrc} alt=${alt} draggable=${false} loading=${loading} decoding="async" style=${style} onError=${(e) => { const el = e && (e.currentTarget || e.target); const s = String(displaySrc || ''); if (el && !el.dataset.retry && /^https?:\/\//i.test(s)) { el.dataset.retry = '1'; try { const u = new URL(s); u.searchParams.set('retry', '1'); el.src = u.href; return; } catch { /* ignore */ } } setBad(src); }} />`;
 }
 
 /** Official UI sprite by 'group/key' with a fallback. */

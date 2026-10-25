@@ -45,11 +45,16 @@ export function splitHashedPath(path) {
  * @param {string | null | undefined} hash
  */
 export function hashedPath(path, hash) {
-  const p = String(path ?? '');
+  let p = String(path ?? '');
   if (typeof hash !== 'string' || !HASH_SEGMENT_RE.test(`~${hash}`)) return p;
+  // manifests may carry absolute asset-host URLs; hash the pathname but keep the host.
+  let origin = '';
+  if (/^https?:\/\//i.test(p)) {
+    try { const u = new URL(p); origin = u.origin; p = u.pathname; } catch { return String(path ?? ''); }
+  }
   const root = HASHED_ROOTS.find((r) => p.startsWith(r));
-  if (!root || p.length === root.length || splitHashedPath(p).hash) return p;
-  return `${root}~${hash}/${p.slice(root.length)}`;
+  if (!root || p.length === root.length || splitHashedPath(p).hash) return origin ? origin + p : p;
+  return `${origin}${root}~${hash}/${p.slice(root.length)}`;
 }
 
 /** The URL with its content-hash segment removed (a URL derived from a hashed one names another file). */

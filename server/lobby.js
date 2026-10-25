@@ -913,7 +913,14 @@ export class Lobby {
       if (conflict.room !== room) return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
       // Same room: only converting this session's own spectator seat into a player seat is allowed.
       if (!(cur === room && room.spectatorOf(session.playerId))) {
-        return fail(ERR.BAD_MSG, '该账号已在该房间中，请勿重复加入');
+        // The old tab may have been closed without room.leave. Reclaim that account's
+        // disconnected seat instead of leaving the room permanently full.
+        const old = conflict.kind === 'player'
+          ? room.seats.find((s) => s && !s.isBot && !s.left && s.accountId === session.accountId && s.playerId !== session.playerId)
+          : null;
+        if (!old || old.connected !== false) return fail(ERR.BAD_MSG, '该账号已在该房间中，请勿重复加入');
+        this.removeMember(room, old.playerId, { permanent: true });
+        if (room.disposed) return fail(ERR.ROOM_NOT_FOUND);
       }
     }
     // idempotent for members; a spectator of this room goes on below: it may take a free player seat (header)
@@ -922,9 +929,25 @@ export class Lobby {
     if (room.match) return fail(ERR.ROOM_STARTED);
     if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
     const idx = room.freeSeat();
-    if (idx < 0) return fail(ERR.ROOM_FULL);
+    if (idx < 0) {
+      // A guest closing the tab cannot be identified by accountId. Reclaim only a
+      // disconnected seat with the same name and the same network key.
+      const stale = room.seats.find((s) => {
+        if (!s || s.isBot || s.left || s.connected !== false) return false;
+        if (s.accountId || session.accountId) return false;
+        if (s.name !== session.name || !session.limitKey) return false;
+        const old = this.registry.byId(s.playerId);
+        return !!old && old.limitKey === session.limitKey;
+      });
+      if (stale) {
+        this.removeMember(room, stale.playerId, { permanent: true });
+        if (room.disposed) return fail(ERR.ROOM_NOT_FOUND);
+      }
+    }
+    const seatIndex = room.freeSeat();
+    if (seatIndex < 0) return fail(ERR.ROOM_FULL);
     if (cur) this.removeMember(cur, session.playerId);
-    room.seats[idx] = this.humanSeat(idx, session);
+    room.seats[seatIndex] = this.humanSeat(seatIndex, session);
     room.restoredAt = 0;
     session.roomCode = room.code;
     session.notice = null;
@@ -1369,6 +1392,13 @@ export class Lobby {
     const on = !!(msg && msg.on);
     if (on && !gameGate().match) return fail(ERR.MATCH_DISABLED);
     if (on === room.matchmaking) return OK;
+    if (on) {
+      // 与「开始模拟」一致：所有其他真人必须在线且已准备，房间才能进入匹配池。
+      const humans = room.activeHumans();
+      if (humans.some((s) => s.playerId !== room.hostId && (!s.connected || !s.ready))) {
+        return fail(ERR.NOT_READY, 'all players must be ready before matchmaking');
+      }
+    }
     const now = this.now ? this.now() : Date.now();
     if (on) {
       room.matchmaking = true;
@@ -2099,8 +2129,14 @@ export class Lobby {
     const eligible = humans.filter((s) => !isGuest(s));
     if (!eligible.length) {
       if (room.adminCreated) {
-        this.log?.info?.(`[lobby] ${room.code} admin room: no admin heir, disposing`);
-        try { this.disposeRoom(room, 'admin-left'); } catch { /* ignore */ }
+        // The creating admin is gone. Keep the room, but drop its admin immunity;
+        // normal idle/expiry cleanup now applies.
+        room.adminCreated = false;
+        room.noExpire = false;
+        room.hostId = null;
+        room.ownerKey = null;
+        this.log?.info?.(`[lobby] ${room.code} admin room: creator left, downgraded to normal room`);
+        if (room.match) this.callMatch(room, 'setHost', null);
         return;
       }
       // 只剩游客：房主留空，等有普通玩家加入或游客自行离开
@@ -2115,9 +2151,10 @@ export class Lobby {
     const prev = room.hostId;
     const nextSession = pick && this.registry && this.registry.byId ? this.registry.byId(pick.playerId) : null;
     if (room.adminCreated && (!nextSession || nextSession.admin !== true)) {
-      this.log?.info?.(`[lobby] ${room.code} admin left, next host is not admin; disposing`);
-      try { this.disposeRoom(room, 'admin-left'); } catch { /* ignore */ }
-      return;
+      // No admin heir: downgrade instead of destroying the waiting room.
+      room.adminCreated = false;
+      room.noExpire = false;
+      this.log?.info?.(`[lobby] ${room.code} admin left, downgraded to normal room`);
     }
     room.hostId = pick ? pick.playerId : null;
     // The room's per-network quota follows its current host, not the player who
@@ -2318,6 +2355,18 @@ Lobby.prototype.sweepOldRooms = function () {
         }
       }
       if (room.match) continue;
+      // Admin-created waiting rooms are exempt while their admin is actually in the room.
+      // Once no admin is present, the room becomes a normal room and the usual cleanup applies.
+      let adminExempt = false;
+      if (room.adminCreated) {
+        adminExempt = humans.some((s) => s.connected
+          && !!(this.registry && this.registry.byId && this.registry.byId(s.playerId)?.admin === true));
+        if (!adminExempt) {
+          room.adminCreated = false;
+          room.noExpire = false;
+          this.log?.info?.(`[lobby] ${room.code} admin absent; downgraded to normal cleanup rules`);
+        }
+      }
       // A lobby with no connected human and no connected spectator is dead: AI seats and stale persisted
       // seats must not keep it visible after the player has gone.
       if (!humans.length && !connectedSpectator) {
@@ -2338,8 +2387,8 @@ Lobby.prototype.sweepOldRooms = function () {
         }
         continue;
       }
-      // 卡在等待室的房间：没有对局、玩家状态（座位/准备/实验性选项）长期没变化时，
-      // 即使 adminCreated/noExpire 也回收，避免“准备中”房间永久占着目录。
+      // 卡在等待室的房间：没有对局、玩家状态（座位/准备/实验性选项）长期没变化时回收。
+      // 管理员仍在房间时豁免；管理员离开后房间已降级为普通房，规则照常生效。
       const prepSig = JSON.stringify({
         seats: room.seats.map((s) => s ? [s.playerId, !!s.ready, !!s.connected, !!s.left] : null),
         experimental: room.experimental,
@@ -2353,7 +2402,7 @@ Lobby.prototype.sweepOldRooms = function () {
           : Math.max(Number(room.createdAt) || now, Number(room.lastMatchEndAt) || 0);
       }
       const prepBase = Math.max(Number(room.prepareAt) || Number(room.createdAt) || now, Number(room.lastMatchEndAt) || 0);
-      if (humans.length && now - prepBase >= STUCK_PREP_MS) {
+      if (!adminExempt && humans.length && now - prepBase >= STUCK_PREP_MS) {
         this.log?.info?.(`[lobby] ${room.code} stuck in preparation for ${Math.round((now - prepBase) / 60000)} min; disposing`);
         try { this.disposeRoom(room, 'stuck-preparing'); } catch { /* ignore */ }
         continue;

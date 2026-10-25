@@ -37,6 +37,14 @@
       return !!localStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_watch_token');
     } catch { return false; }
   }
+  // Closing the hidden-watch tab clears the shared watch markers immediately. A normal tab
+  // opened right afterwards must not replay its old pending join / account-resume failures.
+  function watchExitRecent(ms = 60_000) {
+    try {
+      const at = Number(localStorage.getItem('sp_admin_watch_closed_at') || 0);
+      return at > 0 && Date.now() - at < ms;
+    } catch { return false; }
+  }
   let GATE = { start: true, match: true };
   // 只有带 &n=<节点> 的完整邀请链接才自动加入；只贴房号的链接不生效
   const ROOM_PINNED = !!(q.get('room') && Number(q.get('n')) > 0);
@@ -238,6 +246,8 @@ const JOIN_COOKIE = (() => {
 
   hideLatencyLabel();
   fixCenterButtons();
+  // Once a room is actually in the matchmaking pool, every member defaults to ready.
+  installMatchmakingAutoReady(sp);
     if (AUTO_START) { installAutoStart(sp); showTransition(); }
   }
 
@@ -280,6 +290,8 @@ const JOIN_COOKIE = (() => {
     } catch { /* ignore */ }
     let tries = 0;
     const send = () => {
+      // Already watching: do not re-request on every socket status event.
+      if (sp.store.get().room || sp.store.get().match?.public) return;
       // The watch page is opened before the game socket has necessarily finished
       // its hello; sending room.spectate too early is silently lost on refresh.
       if (sp.net.status !== 'online') {
@@ -291,6 +303,13 @@ const JOIN_COOKIE = (() => {
         .catch(() => { if (tries < 8) setTimeout(send, 1200); });
     };
     send();
+    // A transient network drop/reconnect must re-establish the hidden spectator,
+    // otherwise the node falls back to the lobby after the socket comes back.
+    try {
+      sp.net.on?.('status', (snap) => {
+        if (snap && snap.status === 'online') { tries = 0; send(); }
+      });
+    } catch { /* ignore */ }
   }
 
   // 进入对局时的全屏过渡，盖住中间的「同盟等待室」，开局后自动消失
@@ -322,6 +341,27 @@ const JOIN_COOKIE = (() => {
   try { if (!document.querySelector('meta[name="mm-no-referrer"]')) { const m = document.createElement('meta'); m.name = 'mm-no-referrer'; m.setAttribute('name', 'referrer'); m.content = 'no-referrer'; document.head.appendChild(m); } } catch { /* ignore */ }
   // ---------------------------------------------------------------- 匹配成局后自动开局
 
+  function installMatchmakingAutoReady(sp) {
+    const { store, net } = sp;
+    let lastAt = 0;
+    const tick = () => {
+      const s = store.get();
+      const room = s.room;
+      // Only after the host has put this room into the pool. The pre-match rule still
+      // requires everyone to be ready before the host can click 匹配队友.
+      if (!room || !room.matchmaking) return;
+      if (room.hostId === s.me.playerId) return;
+      const mine = (room.seats || []).find((x) => x && x.playerId === s.me.playerId);
+      if (!mine || mine.ready) return;
+      if (Date.now() - lastAt < 1200) return;
+      lastAt = Date.now();
+      net.request('room.ready', { ready: true }).catch(() => { lastAt = 0; });
+    };
+    store.subscribe(() => setTimeout(tick, 80));
+    setInterval(tick, 900);
+    tick();
+  }
+
   function installAutoStart(sp) {
     const { store, net } = sp;
     let readySent = false, startSent = false, enteredAt = Date.now(), autoDone = false;
@@ -330,7 +370,9 @@ const JOIN_COOKIE = (() => {
       const s = store.get();
       const room = s.room;
       if (window.__SP_RESTART_PENDING) return; // 返回同盟提示还在：不要自动开下一局
-      if (s.match && s.match.public) { autoDone = true; hideTransition(); return; }   // 已经开始
+      // A started / in-match room already moved to the game: do not leave the transition
+      // overlay covering it while waiting for the first m.public frame.
+      if (s.room?.inMatch || s.match?.public) { autoDone = true; hideTransition(); return; }
       if (autoDone) return;   // 已经开过一局：返回房间后不要自动重开
       if (!room) { enteredAt = Date.now(); readySent = false; startSent = false; return; }
       const me = s.me.playerId;
@@ -339,19 +381,34 @@ const JOIN_COOKIE = (() => {
 
       if (!isHost) {
         const mine = humans.find((x) => x.playerId === me);
-        if (mine && !mine.ready && !readySent) {
+        // Re-send readiness if the room state still says unready (a room.state update or
+        // a dropped request used to leave us waiting forever behind the transition).
+        if (mine && !mine.ready && (!readySent || Date.now() - (tick._readyAt || 0) > 2500)) {
           readySent = true;
+          tick._readyAt = Date.now();
           net.request('room.ready', { ready: true }).catch(() => { readySent = false; });
         }
         return;
       }
       if (startSent) return;
       const others = humans.filter((x) => x.playerId !== me);
-      const allReady = others.length > 0 && others.every((x) => x.ready && x.connected !== false);
-      const full = humans.length >= 4;
+      const allReady = others.every((x) => x.ready && x.connected !== false);
+      const full = humans.length >= (Number(room.capacity) || 4);
       const waited = Date.now() - enteredAt;
-      // 4 人齐且都准备 → 立刻开始；有人掉队时 25 秒后按已到人数开始，避免一直等
-      if (allReady && (full || waited > 25000)) {
+
+      // Only a genuinely disconnected matched player may be removed. A connected player
+      // who is still loading must never be kicked from a successful match.
+      if (waited > 60_000) {
+        const stuck = others.filter((x) => x.connected === false);
+        if (stuck.length) {
+          for (const x of stuck) {
+            try { net.request('room.kick', { seat: x.seat, playerId: x.playerId }).catch(() => {}); } catch { /* ignore */ }
+          }
+          return;
+        }
+      }
+      // 4 人齐且都准备 → 立刻开始；有人掉队时 30 秒后按已到人数开始。
+      if (allReady && (full || waited > 30_000)) {
         startSent = true;
         net.request('room.start').catch(() => { startSent = false; });
       }
@@ -398,7 +455,7 @@ const JOIN_COOKIE = (() => {
   function showStyledToast(text, kind = 'error') {
     // Hidden admin watch must never surface player join/spectate failures (room full, disconnected, etc.):
     // it has no player seat and reports its own watch errors in the watch page.
-    if (adminWatchActive() && /^(加入失败|观战失败)/.test(String(text || ''))) return;
+    if ((adminWatchActive() || watchExitRecent()) && /^(加入失败|观战失败)/.test(String(text || ''))) return;
     const call = (fn) => { try { fn(text, kind); } catch { mmToast(text); } };
     if (gameToastFn) return call(gameToastFn);
     import('/js/ui/toasts.js')
@@ -535,7 +592,15 @@ const JOIN_COOKIE = (() => {
 
   function roomUi(sp) {
     const { store } = sp;
+    if (!document.getElementById('mm-room-tip-css')) {
+      const st = document.createElement('style');
+      st.id = 'mm-room-tip-css';
+      st.textContent = `.mm-room-tip{display:none}
+#mm-room-anchor:not(.is-tip-off):hover>.mm-room-tip,#mm-room-anchor:not(.is-tip-off):focus-within>.mm-room-tip{display:block!important}`;
+      document.head.appendChild(st);
+    }
     let queued = false, matched = false, polling = false, entering = false;
+    let lastPartyRoomCode = '';
     let enteringAt = 0, lastCode = '';
     let startedAt = 0, tipIndex = 0, timerId = null, tipId = null;
     // 自动开局流程进行中先别显示「匹配队友」，对局开始后（或超时）恢复；对局结束后回到房间能再次匹配
@@ -603,10 +668,31 @@ const JOIN_COOKIE = (() => {
       el.querySelector('.btn__label').textContent = matched ? '正在分配…' : queued ? '取消匹配' : '匹配队友';
       const hasBot = (room && (room.seats || []).some((x) => x && x.isBot)) === true;
       el.disabled = matched || !isHost || hasBot || !allReady || GATE.match === false;
-      if (GATE.match === false) el.title = '维护中，暂时无法匹配队友';
-      else if (hasBot) el.title = '房间内有 AI 队友，无法匹配（请先移除 AI 队友）';
-      else if (!allReady) el.title = '等待所有队友准备后才能匹配';
-      else el.title = isHost ? '把整个房间投入匹配池' : '仅房主可以发起匹配';
+      let tipText = '';
+      if (GATE.match === false) tipText = '维护中，暂时无法匹配队友';
+      else if (hasBot) tipText = '房间内有 AI 队友，无法匹配（请先移除 AI 队友）';
+      else if (!isHost) tipText = '仅房主可以发起匹配';
+      else if (!allReady) tipText = '仍有博士未准备就绪';
+      // Same hover/focus hint style as the start button. A disabled button still lets
+      // its .tt-anchor parent receive hover, so the hint stays readable.
+      let tip = el.parentElement && el.parentElement.querySelector('.mm-room-tip');
+      if (!tip && el.parentElement) {
+        tip = document.createElement('span');
+        tip.className = 'mm-room-tip';
+        tip.setAttribute('role', 'tooltip');
+        tip.style.cssText = 'position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);z-index:60;'
+          + 'display:none;padding:7px 10px;border:1px solid rgba(78,216,175,.55);border-radius:3px;'
+          + 'background:#07110e;color:#cfe9e0;font:12px/1.4 "Noto Sans SC",system-ui,sans-serif;white-space:nowrap;'
+          + 'pointer-events:none;box-shadow:0 4px 18px rgba(0,0,0,.45)';
+        el.parentElement.style.position = 'relative';
+        el.parentElement.appendChild(tip);
+      }
+      if (tip) {
+        tip.textContent = tipText;
+        tip.style.display = '';
+        if (el.parentElement) el.parentElement.classList.toggle('is-tip-off', !tipText || matched || queued);
+      }
+      el.title = '';
     };
 
     const onClick = async () => {
@@ -621,13 +707,19 @@ const JOIN_COOKIE = (() => {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ guest: !window.__SP_ACCOUNT_USER,
               roomCode: room.code, node: nodeOf(), difficulty: room.difficulty,
-              size: Math.max(1, seatsOf(room)), clientId: CLIENT_ID,
+              size: Math.max(1, seatsOf(room)), capacity: Number(room.capacity) || 4, clientId: CLIENT_ID,
             }),
           });
           if (r.error) { alert(r.error); return; }
+          // Do not leave the party queued if the node refuses matchmaking because a
+          // teammate is not ready.
+          try { await sp.net.request('room.matchmaking', { on: true }); }
+          catch (e) {
+            try { await api('/mm/api/party/leave', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ roomCode: room.code, node: nodeOf(), clientId: CLIENT_ID }) }); } catch { /* ignore */ }
+            alert((e && e.message) || '所有队友准备后才能匹配队友');
+            return;
+          }
           queued = true;
-          // 告诉节点：匹配期间暂停 15 分钟自动解散
-          try { await sp.net.request('room.matchmaking', { on: true }); } catch { /* ignore */ }
           showSearch(room.difficulty, r.state && r.state.waiting, true);
         } else {
           await api('/mm/api/party/leave', {
@@ -660,6 +752,13 @@ const JOIN_COOKIE = (() => {
       // 房号留一份：成局后 room 可能被替换 / 清空，仍要按原房号继续拿 matched 状态
       if (room && room.code) lastCode = room.code;
       const code = (room && room.code) || lastCode;
+      // A new room must not inherit the previous match's "正在分配…" state.
+      if (code !== lastPartyRoomCode) {
+        lastPartyRoomCode = code;
+        queued = false; matched = false; entering = false;
+        try { hideOverlay(); } catch { /* ignore */ }
+        ensureButton();
+      }
       if (room && room.inMatch) {
         // 5 分钟超时由节点直接开局：收起搜寻面板，进入对局
         if (queued || matched) { queued = false; matched = false; hideOverlay(); }
@@ -699,8 +798,10 @@ const JOIN_COOKIE = (() => {
             console.info('[mm-debug] party matched → enterParty', { leader: !!st.leader, code: st.code || null, node: st.node });
             enterParty(st).then((ok) => { if (!ok) entering = false; });
           }
-        } else if (st.state === 'idle' && queued) {
+        } else if (st.state === 'idle' && (queued || matched)) {
           queued = false;
+          matched = false;
+          entering = false;
           hideOverlay();
           try { await sp.net.request('room.matchmaking', { on: false }); } catch { /* ignore */ }
           ensureButton();
@@ -949,6 +1050,7 @@ const JOIN_COOKIE = (() => {
     });
     const tick = () => {
       if (tried) return;
+      if (watchExitRecent()) { tried = true; return; }
       const s = sp.store.get();
       if (!s || !s.session || !s.session.entered) return;
       if (s.room) { tried = true; return; }
@@ -1581,17 +1683,29 @@ const JOIN_COOKIE = (() => {
       const st = document.createElement('style');
       st.id = 'mm-ticker-css';
       st.textContent = `
-#mm-ticker{position:fixed;top:9%;left:50%;transform:translateX(-50%);width:min(760px,92vw);height:30px;
-  overflow:hidden;pointer-events:none;z-index:2147483647;
-  background:linear-gradient(90deg,rgba(10,14,12,.92),rgba(10,14,12,.97) 8%,rgba(10,14,12,.97) 92%,rgba(10,14,12,.92));
-  border-top:1px solid rgba(255,198,0,.35);border-bottom:1px solid rgba(255,198,0,.35)}
-#mm-ticker .line.is-static{position:absolute;left:0;top:0;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;padding:0 16px;box-sizing:border-box;transform:none!important;white-space:nowrap}
+#mm-ticker{position:fixed;top:calc(env(safe-area-inset-top,0px) + 8px);left:50%;transform:translateX(-50%);
+  width:calc(100% - 24px);max-width:1040px;min-height:48px;box-sizing:border-box;z-index:2147483647;
+  display:flex;align-items:center;gap:12px;padding:8px 10px 8px 16px;border:1px solid #34d399;border-left:4px solid #34d399;
+  border-radius:3px;background:#050606;color:#f4fff9;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,.6);
+  font-size:clamp(19px,1.8vw,23px);line-height:1.5}
 #mm-ticker:empty{display:none}
-#mm-ticker .line{position:absolute;top:0;left:0;height:100%;display:flex;align-items:center;white-space:nowrap;
-  width:max-content;max-width:none;padding:0 24px;font:15px/1.3 "Noto Sans SC",system-ui,sans-serif;color:#e8f4ef;
-  letter-spacing:1.5px;will-change:transform}
-#mm-ticker .line > span{flex:none}
-#mm-ticker .gap{display:inline-block;width:160px}
+#mm-ticker::before{content:'提醒';color:#34d399;font-size:15px;font-weight:700;white-space:nowrap;flex:none;letter-spacing:.04em}
+#mm-ticker .line{flex:1;min-width:0;overflow:hidden;position:relative;height:auto}
+#mm-ticker .line > span{display:block;width:max-content;white-space:nowrap;font-weight:600;letter-spacing:.03em}
+#mm-ticker .line.is-scrolling > span{animation:mm-notice-scroll var(--notice-duration,18s) linear infinite}
+#mm-ticker .mm-ticker__close{width:38px;height:38px;min-width:38px;flex:none;padding:0;border:0;border-radius:0;
+  background:transparent;color:#34d399;font:400 26px/1 "Noto Sans SC",system-ui,sans-serif;cursor:pointer;pointer-events:auto}
+#mm-ticker .mm-ticker__close:hover{color:#9dffe2}
+@keyframes mm-notice-scroll{
+  0%,15%{transform:translateX(0)}
+  85%,100%{transform:translateX(var(--notice-distance,0px))}
+}
+@media (max-width:700px){
+  #mm-ticker{top:calc(env(safe-area-inset-top,0px) + 6px);width:calc(100% - 16px);min-height:44px;gap:8px;padding:6px 7px 6px 10px;
+    font-size:clamp(15px,3.9vw,18px)}
+  #mm-ticker::before{font-size:13px}
+  #mm-ticker .mm-ticker__close{width:32px;height:32px;min-width:32px;font-size:22px}
+}
 `;
       document.head.appendChild(st);
     }
@@ -1647,6 +1761,15 @@ const JOIN_COOKIE = (() => {
       syncOverlay();
     };
 
+    const closeTicker = () => {
+      queue = [];
+      showing = false;
+      current = null;
+      stopFlag = true;
+      const el = document.getElementById('mm-ticker');
+      if (el) { try { el.replaceChildren(); } catch { el.innerHTML = ''; } }
+    };
+
     const strip = () => {
       let el = document.getElementById('mm-ticker');
       if (!el) {
@@ -1654,11 +1777,21 @@ const JOIN_COOKIE = (() => {
         el.id = 'mm-ticker';
         document.body.appendChild(el);
       }
+      if (!el.querySelector('.mm-ticker__close')) {
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'mm-ticker__close';
+        close.setAttribute('aria-label', '关闭提醒');
+        close.title = '关闭提醒';
+        close.textContent = '×';
+        close.addEventListener('click', closeTicker);
+        el.appendChild(close);
+      }
       syncOverlay();
       return el;
     };
 
-    // 一条公告滚 5 遍，每遍从右侧重新进入；同一时间只显示一份，避免多份并排
+    // Reference-style horizontal notice: static when it fits, slow scroll when it does not.
     const play = (item) => {
       if (!item || showing) return;
       showing = true;
@@ -1667,55 +1800,22 @@ const JOIN_COOKIE = (() => {
       const el = strip();
       const line = document.createElement('div');
       line.className = 'line';
-      line.textContent = item.text;
-      el.appendChild(line);
-      const width = el.clientWidth || 760;
-      const textWidth = line.scrollWidth || item.text.length * 18;
-      const passMs = Math.min(20000, Math.max(5000, ((width + textWidth) / 95) * 1000));
-      let pass = 0;
-
-      const finish = () => {
-        try { line.remove(); } catch { /* ignore */ }
-        showing = false;
-        current = null;
-        setTimeout(showNext, 300);
-      };
-
-      // Phones avoid the 60 fps marquee: a static one-line bulletin is much cheaper than
-      // transforming a long line every frame on a low-end mobile GPU.
-      let mobileTicker = false;
-      try { mobileTicker = window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 720; } catch { /* ignore */ }
-      if (mobileTicker) {
-        line.classList.add('is-static');
-        line.style.transform = 'none';
-        setTimeout(finish, 7000);
-        return;
-      }
-
-      const runPass = () => {
-        if (!line.isConnected || stopFlag) { finish(); return; }
-        line.style.transform = `translateX(${width}px)`;
-        let started = performance.now();
-        const step = (now) => {
-          if (!line.isConnected || stopFlag) { finish(); return; }
-          if (overlayOpen) {
-            if (!pauseStarted) pauseStarted = now;
-            requestAnimationFrame(step);
-            return;
-          }
-          if (pauseStarted) { started += now - pauseStarted; pauseStarted = 0; }
-          const p = Math.min(1, (now - started) / passMs);
-          line.style.transform = `translateX(${width - (width + textWidth) * p}px)`;
-          if (p < 1) requestAnimationFrame(step);
-          else {
-            pass += 1;
-            if (pass < 3) setTimeout(runPass, 900);
-            else finish();
-          }
-        };
-        requestAnimationFrame(step);
-      };
-      runPass();
+      const text = document.createElement('span');
+      text.textContent = item.text;
+      line.appendChild(text);
+      line.title = item.text;
+      const close = el.querySelector('.mm-ticker__close');
+      if (close) el.insertBefore(line, close); else el.appendChild(line);
+      requestAnimationFrame(() => {
+        if (!line.isConnected) return;
+        const overflow = Math.ceil(text.scrollWidth - line.clientWidth);
+        if (overflow > 4) {
+          line.style.setProperty('--notice-distance', `-${overflow}px`);
+          const seconds = Math.max(14, Math.min(36, (text.scrollWidth + line.clientWidth) / 55));
+          line.style.setProperty('--notice-duration', `${seconds.toFixed(1)}s`);
+          line.classList.add('is-scrolling');
+        }
+      });
     };
 
     const showNext = () => {
@@ -1725,10 +1825,10 @@ const JOIN_COOKIE = (() => {
     };
 
     const enqueue = (lines, key) => {
-      for (const text of lines) {
-        if ((current && current.text === text && current.key === key) || queue.some((q) => q.text === text && q.key === key)) continue;
-        queue.push({ text, key });
-      }
+      const text = lines.join('　');
+      if (!text) return;
+      if (current && current.text === text && current.key === key) return;
+      queue.push({ text, key });
       showNext();
     };
 
@@ -1737,15 +1837,15 @@ const JOIN_COOKIE = (() => {
       if (!enabled) {
         // 关闭公告：停止当前这条并清空排队，不再显示
         lastKey = '';
-        queue = [];
-        stopFlag = true;
+        closeTicker();
         return;
       }
       const key = String(d.updatedAt || d.text);
       if (key === lastKey) return;
       lastKey = key;
       const lines = String(d.text).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-      // 已有一条在播时，新公告进队列，等前面的 5 遍播完再出场
+      // New content replaces the previous reminder; the player can close each one.
+      if (showing) closeTicker();
       enqueue(lines, key);
     }).catch(() => {});
     startOverlayGuard();
@@ -1788,8 +1888,15 @@ const JOIN_COOKIE = (() => {
       document.head.appendChild(st);
     }
 
+    const markRead = () => {
+      try { localStorage.setItem('mm.annDismissed', revision); } catch { /* ignore */ }
+      dotPending = false;
+      const dot = document.querySelector('#mm-notice-btn .mm-dot');
+      if (dot) dot.remove();
+    };
+
     const open = () => {
-      if (document.getElementById('mm-notice-modal')) return;
+      if (document.getElementById('mm-notice-modal')) { markRead(); return; }
       const veil = document.createElement('div');
       veil.id = 'mm-notice-modal';
       veil.className = 'modal lobby-dialog';
@@ -1843,10 +1950,7 @@ const JOIN_COOKIE = (() => {
         if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
       });
       document.body.appendChild(veil);
-      try { localStorage.setItem('mm.annDismissed', revision); } catch { /* ignore */ }
-      dotPending = false; // 立即清除未读，避免 1.2s 后的 ensure() 重新点亮
-      const dot = document.querySelector('#mm-notice-btn .mm-dot');
-      if (dot) dot.remove();
+      markRead();
     };
 
     const ensure = () => {
@@ -1880,6 +1984,19 @@ const JOIN_COOKIE = (() => {
 
     ensure();
     setInterval(ensure, 1200);
+    // New announcements open once when the player reaches 选择模拟节点 (the lobby),
+    // not while still on the title or inside a room/match.
+    const maybeAutoOpen = () => {
+      if (!dotPending) return;
+      if (document.getElementById('mm-notice-modal')) { markRead(); return; }
+      if (!document.querySelector('.lobby-screen')) return;
+      const modal = [...document.querySelectorAll('.modal')].some((el) => {
+        try { return el.getClientRects().length > 0; } catch { return false; }
+      });
+      if (modal) return;
+      open();
+    };
+    setInterval(maybeAutoOpen, 800);
     load();
     setInterval(load, 60000);
   }
@@ -2345,17 +2462,21 @@ const JOIN_COOKIE = (() => {
       try { await sp0.net.request('room.matchmaking', { on: false }); } catch { /* ignore */ }
       return true;
     }
-    // 先主动离开旧房间：服务端按 sp_sid 保存了 session.roomCode，不离开的话新页面会先被恢复回旧房间
-    // （房主于是把旧房号当成新房间回报，客人也会因为「已有房间」而不再加入匹配到的房间）
-    try {
-      if (sp0 && sp0.net && sp0.store && sp0.store.get().room) await sp0.net.request('room.leave', {});
-    } catch (e) { /* 不在房间 / 已经离开 */ }
+    // Pin first, then close the old room. Leaving before the pin used to lose the old
+    // room when the pin failed; leaving at all is still required, otherwise the target
+    // page's account resume restores the old room and never joins the matched one.
     try {
       await api(`/mm/api/party/pin?matchId=${encodeURIComponent(st.matchId)}&node=${st.node}`);
     } catch (e) {
       console.warn('[mm] 切换到匹配节点失败，稍后重试', e && e.message);
       return false;
     }
+    try {
+      if (sp0 && sp0.net && sp0.store && sp0.store.get().room) {
+        await sp0.net.request('room.leave', {});
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } catch { /* not in a room */ }
     const sp = window.__SP__;
     const name = encodeURIComponent((sp && sp.store.get().me.name) || '');
     let target = '';
@@ -2468,13 +2589,18 @@ const JOIN_COOKIE = (() => {
 
   function joinFlow(sp, code, spectate) {
     // Hidden admin watch is not a player deep-link: joining as a player would fail
-    // with ROOM_FULL on a full room. adminWatchFlow() performs the hidden spectate.
-    if (adminWatchActive()) return;
+    // with ROOM_FULL on a full room. A tab opened just after the watch closes must
+    // discard its stale deep-link/pending join instead of surfacing an error.
+    if (adminWatchActive() || watchExitRecent()) {
+      try { sp.store.patch('ui', { pendingJoin: null, pendingSpectate: false }); } catch { /* ignore */ }
+      try { sessionStorage.removeItem('mm.pendingRoom'); } catch { /* ignore */ }
+      return;
+    }
     const { store, net } = sp;
     let inFlight = false, joined = false;
     try { store.patch('ui', { pendingJoin: null }); } catch (e) { /* ignore */ }
     const tick = () => {
-      if (adminWatchActive()) { joined = true; return; }
+      if (adminWatchActive() || watchExitRecent()) { joined = true; return; }
       const s = store.get();
       if (joined || inFlight || !s.session.entered || net.status !== 'online') return;
       if (s.room) { joined = true; return; }

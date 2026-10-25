@@ -220,6 +220,7 @@ export function AssetImportButton() {
         accepted: imported.accepted, rejected: imported.rejected, skipped: imported.skipped, failed: imported.failed,
       })}</p>` : null}
       ${imported.unsupported > 0 ? html`<p class="t-lo">${t('其中 {n} 个因压缩方式不支持被跳过', { n: imported.unsupported })}</p>` : null}
+      ${!importBusy && imported.accepted > 0 ? html`<p class="t-lo">${t('导入完成后请刷新页面，素材缓存才会对游戏生效。')}</p>` : null}
       ${storeInfo && storeInfo.usage != null ? html`<p class="t-lo">${t('已缓存 {count} 个文件，浏览器存储约 {size} MB。', {
         count: storeInfo.count, size: (storeInfo.usage / 1048576).toFixed(1),
       })}</p>` : null}

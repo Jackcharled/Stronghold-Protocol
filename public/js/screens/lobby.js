@@ -330,11 +330,20 @@ export function LobbyScreen() {
       };
     } catch { return null; }
   };
-  const create = () => run('create', () => net.request('room.create', {
-    mode: roomMode, difficulty, ...(testMode && asTest ? { test: true } : {}),
-    ...(typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE && window.__SP_ACCOUNT_ROLE !== 'player' ? { admin: true } : {}),
-    ...(() => { const experimental = experimentalForCreator(); return experimental ? { experimental } : {}; })(),
-  }));
+  const create = () => {
+    // Give the guest the real reason instead of the server's generic BAD_MSG fallback.
+    if (guest) {
+      toast(roomMode === 'solo'
+        ? t('游客不能开始独立模拟，请先登录')
+        : t('游客不能创建同盟模拟房间，请先登录'), 'warn');
+      return;
+    }
+    run('create', () => net.request('room.create', {
+      mode: roomMode, difficulty, ...(testMode && asTest ? { test: true } : {}),
+      ...(typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE && window.__SP_ACCOUNT_ROLE !== 'player' ? { admin: true } : {}),
+      ...(() => { const experimental = experimentalForCreator(); return experimental ? { experimental } : {}; })(),
+    }));
+  };
   const join = (c = code) => {
     // `onClick=${join}` hands the click EVENT as the first argument, and a default parameter only applies to
     // `undefined` — codeArg keeps an event target out of the key and falls back to the input field

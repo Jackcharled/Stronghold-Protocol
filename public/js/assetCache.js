@@ -10,13 +10,13 @@
 // also listed in one index entry of the cache (IMPORTED_INDEX_URL): Chrome cannot list a cache that large.
 
 /** Cache Storage name. Bump the suffix to drop previously imported bytes on the next activation. */
-export const IMPORTED_ASSET_CACHE = 'sp-imported-assets-v1';
+export const IMPORTED_ASSET_CACHE = 'sp-imported-assets-v2';
 
 /** Prefix of every version of this cache. Activation deletes other names that start with it. */
 export const IMPORTED_ASSET_CACHE_PREFIX = 'sp-imported-assets-';
 
 /** Pathname of a URL this cache may answer. The hash is the same 16 hex digits as shared/assetPaths.js. */
-export const IMPORTED_ASSET_PATH = /^\/(?:assets|fonts|media)\/~[0-9a-f]{16}\//;
+export const IMPORTED_ASSET_PATH = /^\/(?:assets|fonts|media|assets-cdn)\/~[0-9a-f]{16}\//;
 
 /**
  * Whether a request should be answered from the import cache.
@@ -54,7 +54,10 @@ export function importSupport(nav = globalThis.navigator, secure = globalThis.is
  */
 export function registerImportedAssetWorker(nav = globalThis.navigator, secure = globalThis.isSecureContext) {
   if (!secure || !nav?.serviceWorker?.register) return Promise.resolve(false);
-  return nav.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }).then(() => true, () => false);
+  // Version the worker URL as well as its body: an already-open tab can otherwise keep the
+  // pre-/assets-cdn worker active for its whole lifetime.
+  return nav.serviceWorker.register('/sw.js?v=20261024-3', { scope: '/', updateViaCache: 'none' })
+    .then(async (reg) => { try { await reg.update(); } catch { /* browser will retry */ } return true; }, () => false);
 }
 
 /** Content-Type stored with an imported response, chosen from the URL the game will request. */
@@ -159,7 +162,7 @@ export async function countImportedFiles(cachesApi = globalThis.caches) {
   const paths = await listImportedPaths(cachesApi);
   let n = 0;
   for (const path of paths) {
-    if (path.startsWith('/assets/') || path.startsWith('/fonts/')) n++;
+    if (path.startsWith('/assets/') || path.startsWith('/assets-cdn/') || path.startsWith('/fonts/')) n++;
   }
   return n;
 }
@@ -184,7 +187,7 @@ export async function pruneImportedPaths(wanted, cachesApi = globalThis.caches) 
       try { gone = await cache.delete(p); } catch { kept.push(p); return; }
       if (!gone) return; // listed but absent: it leaves the index
       removed++;
-      if (p.startsWith('/assets/') || p.startsWith('/fonts/')) removedFiles++;
+      if (p.startsWith('/assets/') || p.startsWith('/assets-cdn/') || p.startsWith('/fonts/')) removedFiles++;
     }));
   }
   await cache.put(IMPORTED_INDEX_URL, new Response(JSON.stringify(kept.sort()), {

@@ -81,9 +81,13 @@ function payload(msg) {
 function clearRoomParam() {
   try {
     const url = new URL(location.href);
-    if (!url.searchParams.has('room')) return;
-    url.searchParams.delete('room');
-    history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
+    let changed = false;
+    if (url.searchParams.has('room')) { url.searchParams.delete('room'); changed = true; }
+    // An invite short link must not survive a closed/kicked room: otherwise a refresh
+    // drops the player back on the title screen advertising a room that no longer exists.
+    let path = url.pathname;
+    if (/^\/r\/[A-Za-z0-9]{4,6}\/?$/i.test(path)) { path = '/'; changed = true; }
+    if (changed) history.replaceState(history.state, '', path + (url.search || '') + url.hash);
   } catch { /* ignore */ }
 }
 
@@ -102,6 +106,30 @@ let rehearsal = null;
 function clearPendingJoin() {
   store.patch('ui', { pendingJoin: null, pendingSpectate: false });
   clearRoomParam();
+  try { sessionStorage.removeItem('mm.pendingRoom'); } catch { /* ignore */ }
+}
+
+/** The account observer has already read this flag; keep the address bar clean even when it skipped. */
+function stripAccountResumeParam() {
+  try {
+    const url = new URL(location.href);
+    if (!url.searchParams.has('accountResume')) return;
+    url.searchParams.delete('accountResume');
+    history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
+  } catch { /* ignore */ }
+}
+
+/** A stale /r/CODE or ?room=CODE must not advertise a room that has already closed. */
+function validatePendingInvite(code) {
+  if (!code) return;
+  fetch('/mm/api/find-room?code=' + encodeURIComponent(code), { credentials: 'same-origin', cache: 'no-store' })
+    .then((r) => r.ok ? r.json() : null)
+    .then((j) => {
+      if (!j) return;
+      const cur = store.get().ui.pendingJoin;
+      if (cur && cur.toUpperCase() === String(code).toUpperCase() && !j.node) clearPendingJoin();
+    })
+    .catch(() => {});
 }
 
 /** Auto-join the deep-linked room once entered + online (idempotent). */
@@ -111,6 +139,12 @@ function schedulePendingJoin() {
     const qs = new URLSearchParams(location.search);
     if (qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || qs.get('watchToken')
       || sessionStorage.getItem('sp_admin_watch_code') || localStorage.getItem('sp_admin_watch_code')) return;
+    const closedAt = Number(localStorage.getItem('sp_admin_watch_closed_at') || 0);
+    if (closedAt > 0 && Date.now() - closedAt < 60_000) {
+      // A page opened right after hidden watch still carries the old deep-link; discard it.
+      clearPendingJoin();
+      return;
+    }
   } catch { /* ignore */ }
   clearTimeout(joinTimer);
   joinTimer = setTimeout(async () => {
@@ -155,10 +189,11 @@ function maybeFinishRestore() {
 function backToLobby() {
   identity.rememberMatch(null);
   clearTimeout(restoreTimer);
+  clearPendingJoin();
   const s = store.get();
   if (s.room || s.match.public) closeAllDialogs();
   store.set({ room: null, match: emptyMatch(), ticker: [], emotes: [] });
-  store.patch('ui', { restoring: false });
+  store.patch('ui', { restoring: false, buildStale: false });
 }
 
 /** The unofficial plugins a server counts in welcome / /healthz `content.plugins` (absent: none — DESIGN §32 P1a). */
@@ -185,9 +220,19 @@ function onWelcome(msg) {
   if (prevId != null && prevId !== msg.playerId) {
     // A brand-new server session (the server restarted — crashed / killed, so no room.closed arrived — or this session
     // expired on it): whatever we showed before is gone — back to the lobby cleanly and say why.
-    const notice = sessionResetNotice(prev, msg.playerId);
-    backToLobby();
-    if (notice) toast(t(notice), 'warn', { ttl: 7000 });
+    // Hidden watch has no player seat; a reconnect with a fresh guest id must keep watching the same room.
+    const adminWatch = (() => {
+      try {
+        const qs = new URLSearchParams(location.search);
+        return qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
+          || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code');
+      } catch { return false; }
+    })();
+    if (!adminWatch) {
+      const notice = sessionResetNotice(prev, msg.playerId);
+      backToLobby();
+      if (notice) toast(t(notice), 'warn', { ttl: 7000 });
+    }
   } else if (prev.room || prev.match.public) {
     // Resumed session: the server re-pushes room/match state; drop whatever it doesn't.
     store.patch('ui', { restoring: true });
@@ -258,6 +303,7 @@ function wireNet() {
   net.on('unhandledError', (err) => toastError(err));
   net.on('room.state', onRoomState);
   net.on('room.closed', (msg) => {
+    clearPendingJoin();
     backToLobby();
     const known = Object.hasOwn(CLOSE_REASON, String(msg.reason)) ? CLOSE_REASON[msg.reason] : null;
     toast(known ? t(known) : typeof msg.reason === 'string' && msg.reason.length < 60 ? t('同盟已关闭：{reason}', { reason: msg.reason }) : t('同盟已关闭'), 'warn');
@@ -418,6 +464,19 @@ async function boot() {
 
   const pendingJoin = parseRoomParam(location.search);
   const pendingSpectate = /(?:^|[?&])spectate=1(?:&|$)/.test(location.search);
+  // Consume a closed-watch cleanup request exactly once on a normal game page.
+  try {
+    const qs = new URLSearchParams(location.search);
+    const watchUrl = qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken');
+    if (!watchUrl && localStorage.getItem('sp_admin_watch_cleanup') === '1') {
+      localStorage.removeItem('sp_admin_watch_cleanup');
+      for (const k of ['sp_watch_token', 'sp_admin_watch_code', 'sp_admin_watch_node', 'sp_admin_watch_name']) {
+        localStorage.removeItem(k);
+      }
+      sessionStorage.removeItem('sp_admin_watch_code');
+      sessionStorage.removeItem('sp_admin_watch_token');
+    }
+  } catch { /* ignore */ }
   const savedName = sanitizeName(identity.loadName());
   const entered = identity.wasEntered() && !!savedName;
   store.set((s) => ({
@@ -425,8 +484,19 @@ async function boot() {
     session: { entered },
     ui: { ...s.ui, pendingJoin, pendingSpectate },
   }));
+  // A hidden watch may reload while its room directory entry is briefly stale; the watch
+  // path owns its own spectate retry and must not discard ?room= during boot.
+  const bootAdminWatch = (() => {
+    try {
+      const qs = new URLSearchParams(location.search);
+      return qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
+        || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code');
+    } catch { return false; }
+  })();
+  if (!bootAdminWatch) validatePendingInvite(pendingJoin);
 
   wireNet();
+  stripAccountResumeParam();
   installStatsRecorder(store); // follows the match on screen, so a 放弃模拟 can be recorded (ui/stats.js)
   installLoadoutSync({ net });
   installLoadoutCloudSync({ net });
@@ -470,6 +540,7 @@ async function boot() {
   const splash = document.getElementById('boot');
   if (splash) {
     splash.classList.add('is-done');
+    try { sessionStorage.removeItem('sp_boot_retry'); } catch { /* ignore */ }
     setTimeout(() => splash.remove(), 300);
   }
   globalThis.__SP__ = { store, net, data, version: 1 };
@@ -485,16 +556,44 @@ async function boot() {
         || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code');
     } catch { return false; }
   })();
+  // A normal page opened right after hidden watch should not surprise the player with a
+  // build-guard reload when they leave their first room. The marker is short-lived.
+  const recentlyLeftWatch = (() => {
+    try {
+      const at = Number(localStorage.getItem('sp_admin_watch_closed_at') || 0);
+      return at > 0 && Date.now() - at < 10 * 60_000;
+    } catch { return false; }
+  })();
   try {
-    if (!adminWatchPage) startBuildGuard({
+    let buildGuard = null;
+    if (!adminWatchPage && !recentlyLeftWatch) buildGuard = startBuildGuard({
       inMatch: () => selectRoute(store.get()) === 'game',
-      onStale: ({ waiting }) => { if (waiting) store.patch('ui', { buildStale: true }); },
+      // Never reload the page on our own: a deploy must not turn leaving a room, a lobby
+      // visit or any other state into an unexplained full-page refresh. Show the banner
+      // and let the player press 刷新页面.
+      reload: () => { store.patch('ui', { buildStale: true }); },
+      onStale: () => { store.patch('ui', { buildStale: true }); },
       // the same /healthz names how many plugins the server has: the title screen shows it before any hello
       onHealth: (h) => {
         const n = pluginCount(h.content), notices = h.content?.notices === true;
         if (n !== store.get().installedPlugins || notices !== store.get().installedNotices) store.set({ installedPlugins: n, installedNotices: notices });
       },
     });
+    if (buildGuard) {
+      // Leaving any room/match stops the build guard: no "refresh page" state should
+      // appear as a result of coming back to the lobby.
+      window.addEventListener('sp-room-left', () => {
+        try { buildGuard.stop(); } catch { /* ignore */ }
+        store.patch('ui', { buildStale: false });
+      });
+      // A normal tab already open while the admin watches must also stop its build guard
+      // when the watch closes (the marker is written by the watch tab).
+      window.addEventListener('storage', (ev) => {
+        if (ev.key !== 'sp_admin_watch_closed_at' || !ev.newValue) return;
+        try { buildGuard.stop(); } catch { /* ignore */ }
+        store.patch('ui', { buildStale: false });
+      });
+    }
   } catch (err) {
     console.warn('[app] build guard failed to start', err);
   }

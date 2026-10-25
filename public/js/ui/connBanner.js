@@ -45,7 +45,7 @@ export function ConnectionBanner() {
     // for a player who would rather do it now
     return html`<div class="conn-banner" role="alert">
       <${Icon} name="refresh" />
-      <span>${t('服务器已更新，本局结束后刷新')}</span>
+      <span>${t('服务器已更新，请刷新页面')}</span>
       <${Button} size="sm" variant="secondary" icon="refresh" onClick=${() => location.reload()}>${t('刷新页面')}<//>
     </div>`;
   }

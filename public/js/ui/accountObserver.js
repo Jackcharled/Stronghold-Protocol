@@ -13,6 +13,22 @@ let autoRedirected = false;
 let silentResume = false;
 const RESUME_HOP_KEY = 'sp.accountResumeHopAt';
 
+function watchExitRecent(ms = 60_000) {
+  try {
+    const at = Number(localStorage.getItem('sp_admin_watch_closed_at') || 0);
+    return at > 0 && Date.now() - at < ms;
+  } catch { return false; }
+}
+
+function clearResumeFlags() {
+  try {
+    sessionStorage.removeItem('sp.accountResume');
+    sessionStorage.removeItem('sp.accountResumeSilent');
+    sessionStorage.removeItem(RESUME_HOP_KEY);
+  } catch { /* ignore */ }
+  try { window.__SP_ACCOUNT_RESUME_PENDING = false; } catch { /* ignore */ }
+}
+
 async function accountRoomCode() {
   try {
     const r = await fetch('/mm/api/account/room', { credentials: 'same-origin', cache: 'no-store' });
@@ -84,7 +100,9 @@ export function installAccountObserver() {
   try {
     const qs = new URLSearchParams(location.search);
     if (qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
-      || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code')) {
+      || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code')
+      || watchExitRecent()) {
+      clearResumeFlags();
       installed = true;
       return;
     }
@@ -110,6 +128,7 @@ export function installAccountObserver() {
   if (autoResume) { try { window.__SP_ACCOUNT_RESUME_PENDING = true; } catch { /* ignore */ } }
   const tryAuto = () => {
     if (!autoWanted) return;
+    if (watchExitRecent()) { autoWanted = false; clearResumeFlags(); log('watch-exit-cooldown'); return; }
     if (!window.__SP_ACCOUNT_TOKEN) { log('no-token'); return; }
     if (autoAttempts >= 4) { autoWanted = false; log('gave-up'); return; }
     if (net.status !== 'online' && window.__SP_ACCOUNT_USER) {
@@ -176,6 +195,7 @@ export function installAccountObserver() {
   let bootProbe = false;
   async function maybeAutoResumeOnReload() {
     if (autoResume || bootProbe || !reloadNav || !window.__SP_ACCOUNT_TOKEN) return;
+    if (watchExitRecent()) { clearResumeFlags(); return; }
     try { if (new URLSearchParams(location.search).get('adminWatch') === '1') return; } catch { /* ignore */ }
     bootProbe = true;
     const code = await accountRoomCode();

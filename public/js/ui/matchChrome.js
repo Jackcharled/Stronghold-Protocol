@@ -67,10 +67,16 @@ export async function quitMatch() {
         localStorage.removeItem('sp_admin_watch_code');
         localStorage.removeItem('sp_admin_watch_node');
         localStorage.removeItem('sp_admin_watch_name');
+        // Shared marker for tabs opened after the watch closes: suppress stale join/account
+        // recovery toasts and pending joins for a short cooldown.
+        localStorage.setItem('sp_admin_watch_closed_at', String(Date.now()));
       } catch { /* ignore */ }
       try {
         sessionStorage.removeItem('sp_admin_watch_code');
         sessionStorage.removeItem('sp_admin_watch_token');
+        sessionStorage.removeItem('sp.accountResume');
+        sessionStorage.removeItem('sp.accountResumeSilent');
+        sessionStorage.removeItem('sp.accountResumeHopAt');
       } catch { /* ignore */ }
       try {
         for (const name of ['sp_admin_watch_code', 'sp_admin_watch_node', 'sp_admin_watch_name', 'sp_watch_token']) {
@@ -103,6 +109,8 @@ export async function quitMatch() {
       try { recordQuit(before); } catch (err) { console.warn('[stats] quit record failed', err); }
     }
     store.set({ room: null, match: emptyMatch() });
+    // Leaving a room must not leave a "正在同步同盟状态…" or build-refresh banner behind.
+    store.patch('ui', { restoring: false, buildStale: false });
   }
 }
 
