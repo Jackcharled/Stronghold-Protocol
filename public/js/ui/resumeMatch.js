@@ -1,6 +1,6 @@
 // Recover an explicitly selected local seat; nickname and IP never identify a player.
 import { useEffect, useState } from '../../vendor/hooks.module.js';
-import { html, Button, Modal } from './components.js';
+import { html, Button, Icon, Modal } from './components.js';
 import { identity, net } from '../net.js';
 import { store } from '../store.js';
 import { requestAccountResume } from './accountObserver.js';
@@ -114,7 +114,9 @@ export function ResumeMatchButton() {
       setBusy(false);
     }
   };
-  return html`<${Button} variant="secondary" size="sm" data-testid="resume-local-match" onClick=${() => setOpen(true)}>${resumeLabel}<//>
+  return html`<button type="button" class="verchip" data-testid="resume-local-match" onClick=${() => setOpen(true)} title=${resumeLabel}>
+      <${Icon} name="refresh" /><span class="verchip__label">${resumeLabel}</span>
+    </button>
     <${Modal} open=${open} onClose=${() => !busy && setOpen(false)} title=${resumeLabel}>
       <p>${t('选择已关闭窗口的对局。服务器重启或对局过期后无法恢复。')}</p>
       ${accountResume ? html`<${Button} variant="primary" block=${true} disabled=${busy} onClick=${resumeAccount}>${t('通过账号恢复当前对局')}<//>` : null}
