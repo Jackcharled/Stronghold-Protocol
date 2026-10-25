@@ -81,11 +81,16 @@ patcher/merge-features.py
 ## 当前状态
 
 ```text
-GitHub master：60d9df0d
-behind upstream/master：0
-ahead：26
+GitHub master：2909f15b
+  纯上游 0.3.3，behind upstream/master：0
+
+GitHub custom/production：7267e716
+  本服完整功能，behind upstream/master：0
+
 备份分支：backup/pre-upstream-merge-20261025
 本机 Git：2.56.0.windows.3
 ```
 
-2026-10-25 已完成真实合并，master 已包含 upstream/master。以后只需保持 behind 为 0。
+2026-10-25 已完成真实合并，并把 master 恢复为纯上游内容；本服功能全部放在 `custom/production` 和 `patcher/`。
+
+以后 master 只同步上游，不再直接开发，因此不会再出现无法直接同步的情况。

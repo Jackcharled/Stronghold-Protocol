@@ -1,6 +1,74 @@
 # 功能补丁维护说明
 
-这份文档给以后维护用。目标：上游 0.3.x 再更新时，不再整文件重做本服功能。
+这份文档给以后维护用。目标：上游 0.3.x 再更新时，不整文件重做本服功能，并且仓库永远可以直接同步上游。
+
+## 维护总原则（先看）
+
+### 分支职责
+
+```text
+master：
+  只跟随 sganggs/Stronghold-Protocol。
+  不含本服功能，永远保持 behind = 0。
+
+custom/production：
+  本服完整代码和补丁。
+  每次上游更新后合并 upstream/master，同样保持 behind = 0。
+```
+
+### 本服功能放哪里
+
+```text
+patcher/apply.mjs          服务端锚点补丁
+patcher/features/          功能快照
+patcher/merge-features.py  功能级三方合并
+```
+
+不要把本服功能直接提交到 master；master 只同步上游。
+
+### 每次上游更新的固定动作
+
+```text
+1. git fetch upstream
+2. master 合并 upstream/master
+3. custom/production 合并 upstream/master
+4. 运行 node patcher/check-repo-sync.mjs
+5. 只处理真实冲突
+6. 跑测试
+7. 发布
+```
+
+### 发布前硬检查
+
+```powershell
+node patcher\check-repo-sync.mjs
+```
+
+返回非 0 时禁止发布。
+
+### 绝对禁止
+
+```text
+长期不合并上游
+让 behind 累积到几十/几百
+在 master 上直接开发本服功能
+强推受保护的 master
+用假合并消除 behind 数字
+用整文件覆盖代替补丁
+```
+
+### 如果已经落后
+
+```text
+先建 backup 分支
+→ 创建 sync/upstream-日期 分支
+→ 合并 upstream/master
+→ 解决冲突
+→ PR 合并回 master
+→ 再更新 custom/production
+```
+
+不允许绕过，不允许直接忽略。
 
 ## 目录
 
@@ -238,14 +306,38 @@ node patcher\check-repo-sync.mjs
 ### 当前仓库状态
 
 ```text
-GitHub master：60d9df0d
-behind upstream/master：0
-ahead：26（本服合并提交和历史）
+GitHub master：2909f15b
+  纯上游 0.3.3
+  behind upstream/master = 0
+
+GitHub custom/production：7267e716
+  本服完整功能
+  behind upstream/master = 0
+
 备份分支：backup/pre-upstream-merge-20261025
 同步分支：sync/upstream-20261025
 ```
 
-2026-10-25 已完成真实合并，master 已包含 upstream/master。以后只需保持 behind 为 0。
+2026-10-25 已完成真实合并，并把 master 恢复为纯上游内容。以后 master 只同步上游，本服功能在 custom/production。
 
-在 Git 安装并完成真实合并前，不要继续依赖 GitHub 自动同步按钮。
+## 事故复盘：为什么会出现 488 behind
+
+当时 master 同时承担“上游同步”和“本服开发”，25 个本服提交长期没有合并上游，最终：
+
+```text
+25 ahead / 488 behind
+GitHub Sync fork 409 Conflict
+master 分支保护禁止强推
+```
+
+正确做法就是现在的结构：
+
+```text
+master       = 上游镜像
+custom/...   = 本服开发
+patcher/     = 功能补丁
+```
+
+以后只要发现 behind > 0，立即停止开发并同步，不允许继续累积。
+
 
