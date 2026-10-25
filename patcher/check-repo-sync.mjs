@@ -1,6 +1,23 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 
-const run = (args) => spawnSync('git', args, { stdio: 'pipe', encoding: 'utf8' });
+// Windows 上 git 不一定在 PATH 里（本服机器的 Git 装在 Program Files），
+// 先找 PATH，再退回常见安装位置，避免门禁脚本本身跑不起来。
+const GIT_CANDIDATES = [
+  'git',
+  'C:\\Program Files\\Git\\cmd\\git.exe',
+  'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
+];
+const GIT = GIT_CANDIDATES.find((p) => p === 'git'
+  ? spawnSync('git', ['--version'], { stdio: 'pipe' }).status === 0
+  : existsSync(p));
+
+if (!GIT) {
+  console.error('找不到 git 可执行文件');
+  process.exit(2);
+}
+
+const run = (args) => spawnSync(GIT, args, { stdio: 'pipe', encoding: 'utf8' });
 
 const inside = run(['rev-parse', '--is-inside-work-tree']);
 if (inside.status !== 0) {
