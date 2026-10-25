@@ -488,13 +488,35 @@ async function boot() {
   const identityReady = identity.init();
 
   const pendingJoin = parseRoomParam(location.search);
+  const pendingSpectate = /(?:^|[?&])spectate=1(?:&|$)/.test(location.search);
+  // Consume a closed-watch cleanup request exactly once on a normal game page.
+  try {
+    const qs = new URLSearchParams(location.search);
+    const watchUrl = qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken');
+    if (!watchUrl && localStorage.getItem('sp_admin_watch_cleanup') === '1') {
+      localStorage.removeItem('sp_admin_watch_cleanup');
+      for (const k of ['sp_watch_token', 'sp_admin_watch_code', 'sp_admin_watch_node', 'sp_admin_watch_name']) {
+        localStorage.removeItem(k);
+      }
+      sessionStorage.removeItem('sp_admin_watch_code');
+      sessionStorage.removeItem('sp_admin_watch_token');
+    }
+  } catch { /* ignore */ }
   const savedName = sanitizeName(identity.loadName());
   const entered = identity.wasEntered() && !!savedName;
   store.set((s) => ({
     me: { ...s.me, name: savedName },
     session: { entered },
-    ui: { ...s.ui, pendingJoin },
+    ui: { ...s.ui, pendingJoin, pendingSpectate },
   }));
+  const bootAdminWatch = (() => {
+    try {
+      const qs = new URLSearchParams(location.search);
+      return qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
+        || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code');
+    } catch { return false; }
+  })();
+  if (!bootAdminWatch && typeof validatePendingInvite === 'function') validatePendingInvite(pendingJoin);
 
   wireNet();
   stripAccountResumeParam();

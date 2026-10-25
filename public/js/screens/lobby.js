@@ -713,6 +713,22 @@ export function LobbyScreen() {
     }
   };
   const guest = !(window.__SP_ACCOUNT_USER || window.__SP_ACCOUNT_TOKEN);
+  // 实验房：仅 owner/admin 通过 URL 参数显式开启。
+  const experimentalForCreator = () => {
+    try {
+      const role = window.__SP_ACCOUNT_ROLE;
+      if (!role || role === 'player') return null;
+      const q = new URLSearchParams(location.search);
+      const capacity = Number(q.get('capacity') || q.get('exp') || 0);
+      if (!(Number.isInteger(capacity) && capacity >= 4 && capacity <= 20)) return null;
+      return {
+        revivalEnabled: q.get('revive') === '1',
+        disableSharedPool: q.get('pool') === '1',
+        playerCapacity: capacity,
+        ...(capacity > 4 && q.get('duck') === '1' ? { disableDuckLord: true } : {}),
+      };
+    } catch { return null; }
+  };
   // 独立模拟: at the difficulty picked on 选择模拟协议; 创建同盟: at the remembered one, changed in the room by the host
   // (`version`: the lobby's, only when welcome.versions is present — protocol §4; omitted when the server offers 第二期下半 alone)
   const create = (mode) => {
@@ -724,6 +740,7 @@ export function LobbyScreen() {
     return run('create', () => net.request('room.create', {
       mode, difficulty: mode === 'solo' ? shownSolo : shownCoop, ...(testMode && asTest ? { test: true } : {}), ...(versions ? { version } : {}),
       ...(mode === 'solo' && soloFree && soloTimed === true ? { soloUnlimited: true } : {}),
+      ...(() => { const experimental = experimentalForCreator(); return experimental ? { experimental } : {}; })(),
     }));
   };
   const join = (c = code) => {
