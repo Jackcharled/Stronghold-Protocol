@@ -32,11 +32,14 @@
 import { PROTOCOL_VERSION, ERR_TEXT } from '../../shared/constants.js';
 import { validateC2S } from '../../shared/protocol.js';
 import { N_ } from '../../shared/i18n.js';
+import { STATE_DELTA_VERSION, StateReceiver } from '../../shared/stateDelta.js';
 
 export const REQUEST_TIMEOUT_MS = 8000;
 export const HELLO_TIMEOUT_MS = 8000;
 export const PING_INTERVAL_MS = 4000;
 export const DEAD_AFTER_MS = 15000;
+/** Minimum gap between two `state.resync` requests: a gap in one channel is answered by the full frame of the next one. */
+export const RESYNC_GAP_MS = 1000;
 export const BACKOFF = Object.freeze({ base: 500, factor: 2, max: 10000, jitter: 0.2 });
 
 /** Client-side error codes (in addition to shared ERR codes). */
@@ -63,8 +66,6 @@ const QUIET_SWAP_MIN_AGE_MS = 5000;
  * @returns {string}
  */
 export function errorText(code, msg) {
-  // 游客限制优先显示服务端文案，避免显示成「无效的请求」
-  if (typeof msg === 'string' && /游客/.test(msg)) return msg;
   return ERR_TEXT[code] || CLIENT_ERR_TEXT[code] || (typeof msg === 'string' && msg) || String(code || N_('未知错误'));
 }
 
@@ -78,8 +79,6 @@ export class NetError extends Error {
     this.code = String(code || 'INTERNAL');
     this.serverMsg = msg ?? null;
     this.detail = typeof detail === 'string' ? detail : null;
-    // __guestMsg：游客限制时直接显示服务端给出的具体原因
-    if (typeof detail === 'string' && /游客/.test(detail)) this.message = detail;
   }
 }
 
@@ -103,17 +102,7 @@ export function backoffDelay(attempt, rand = Math.random) {
  */
 export function defaultWsUrl(loc = globalThis.location) {
   if (!loc || !loc.host) return 'ws://localhost:3000/ws';
-  const base = `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
-  // Hidden admin watch: pin this socket to the room node without depending on cookies
-  // (an admin's normal sp_route cookie can otherwise win over the room-page cookie).
-  try {
-    const q = new URLSearchParams(loc.search || '');
-    const n = Number(q.get('adminNode'));
-    if (q.get('adminWatch') === '1' && q.get('watchGuest') === '1' && Number.isInteger(n) && n >= 1 && n <= 30) {
-      return base + '?watchNode=' + n;
-    }
-  } catch { /* ignore */ }
-  return base;
+  return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
 }
 
 const WS_OPEN = 1;
@@ -177,6 +166,12 @@ export class Net {
     this._lastRx = 0;
     this._unansweredSince = null; // time of the oldest ping sent since the last inbound frame
     this._clockSamples = [];   // [{ offset, rtt }]
+    // State-delta decoding (shared/stateDelta.js): only ever fed frames a server chose to send this client after its
+    // hello named STATE_DELTA_VERSION. A missed frame blocks that channel, and one resync request per RESYNC_GAP_MS
+    // asks for a full one — the server answers it like a repeated hello (and throttles it the same way).
+    this._receiver = new StateReceiver();
+    this._stateRoom = null;
+    this._resyncAt = 0;        // epoch ms of the last resync request we sent
   }
 
   // ---- events ----------------------------------------------------------------------------------
@@ -366,6 +361,11 @@ export class Net {
     this._clearTimer('_helloTimer', 'clearTimeout');
     this._helloRid = null;
     this._helloSentName = null;
+    // A new socket is a new negotiation (server/net.js onHelloMsg re-baselines per connection): the sequences the old
+    // one used mean nothing here, so a stale baseline must never make the first full frame of the new one look old.
+    this._receiver?.reset();
+    this._stateRoom = null;
+    this._resyncAt = 0;
   }
 
   _clearTimer(field, fn) {
@@ -379,74 +379,13 @@ export class Net {
 
   _sendHello() {
     if (!this.name) return;
-    // Hidden admin watch uses a disposable guest observer identity. It must not take over
-    // the admin's normal player account/room, which otherwise drops the watch into the lobby.
-    let watchGuest = false;
-    try {
-      const q = new URLSearchParams(location.search);
-      watchGuest = q.get('adminWatch') === '1' && q.get('watchGuest') === '1';
-    } catch { /* ignore */ }
-    // 首次连接前若还没有账号代码，先取一次（不阻塞发包，取到后重发 hello 由上层触发）
-    if (!watchGuest && !this._accountTagProbed) {
-      this._accountTagProbed = true;
-      try {
-        const saved = localStorage.getItem('mm.tag');
-        if (!/^[0-9]{4}$/.test(saved || '')) {
-          fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
-            .then((r) => (r.ok ? r.json() : null))
-            .then((j) => {
-              const tag = j && j.user && j.user.tag;
-              if (tag && /^[0-9]{4}$/.test(tag)) {
-                localStorage.setItem('mm.tag', tag);
-                if (this.name) this.reconnectNow(this.name);
-              }
-            })
-            .catch(() => {});
-        }
-      } catch { /* 隐私模式 */ }
-    }
     const rid = this._nextRid();
-    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, guest: watchGuest || !window.__SP_ACCOUNT_USER };
-    // 服务端验签的管理员能力令牌；没有令牌时客户端里的 admin 布尔值不会生效。
+    // `delta` says this build decodes `m.state` frames (shared/stateDelta.js). A server that does not speak it ignores
+    // the field, and the client then keeps receiving the plain m.public / m.private frames it always got.
+    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, delta: STATE_DELTA_VERSION, guest: !window.__SP_ACCOUNT_USER };
     try {
       if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) msg.adminToken = window.__SP_ADMIN_TOKEN;
-      if (!watchGuest && typeof window.__SP_ACCOUNT_TOKEN === 'string' && window.__SP_ACCOUNT_TOKEN.length > 0) msg.accountToken = window.__SP_ACCOUNT_TOKEN;
-    } catch { /* 隐私模式 */ }
-    if (!watchGuest && !this._accountTokenProbed) {
-      this._accountTokenProbed = true;
-      fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((j) => {
-          if (j && j.user) {
-            window.__SP_ACCOUNT_USER = j.user.name || window.__SP_ACCOUNT_USER || null;
-            if (j.user.tag && /^[0-9]{4}$/.test(String(j.user.tag))) window.__SP_ACCOUNT_TAG = String(j.user.tag);
-          }
-          const t = j && typeof j.userToken === 'string' ? j.userToken : null;
-          if (t && t !== window.__SP_ACCOUNT_TOKEN) {
-            window.__SP_ACCOUNT_TOKEN = t;
-            if (this.name) this.reconnectNow(this.name);
-          }
-          try { window.dispatchEvent(new Event('sp-account-token')); } catch { /* ignore */ }
-        })
-        .catch(() => {});
-    }
-    if (!this._adminTokenProbed) {
-      this._adminTokenProbed = true;
-      fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((j) => {
-          const t = j && typeof j.adminToken === 'string' ? j.adminToken : null;
-          if (t && t !== window.__SP_ADMIN_TOKEN) {
-            window.__SP_ADMIN_TOKEN = t;
-            if (this.name) this.reconnectNow(this.name);
-          }
-        })
-        .catch(() => {});
-    }
-    // 账号四位代码：直接写入 hello，服务器会随 welcome / room.state 下发给所有界面
-    try {
-      const tag = localStorage.getItem('mm.tag');
-      if (/^[0-9]{4}$/.test(tag || '')) msg.tag = tag;
+      if (typeof window.__SP_ACCOUNT_TOKEN === 'string' && window.__SP_ACCOUNT_TOKEN.length > 0) msg.accountToken = window.__SP_ACCOUNT_TOKEN;
     } catch { /* 隐私模式 */ }
     let token = null;
     try { token = this.getToken(); } catch { token = null; }
@@ -608,6 +547,19 @@ export class Net {
 
   // ---- incoming --------------------------------------------------------------------------------
 
+  /**
+   * Ask the server for one full state frame (the answer to a gap in the delta stream). Rate-limited: one request per
+   * RESYNC_GAP_MS covers every channel, because the server re-sends the whole room state at once. Silent while offline —
+   * the next welcome resyncs anyway.
+   */
+  requestResync() {
+    const now = this.now();
+    if (now - this._resyncAt < RESYNC_GAP_MS) return;
+    this._resyncAt = now;
+    try { this.request('state.resync').catch(() => { /* the next full frame fixes it, or the room resyncs */ }); }
+    catch { /* offline: the reconnect resyncs the room from scratch */ }
+  }
+
   _onMessage(data) {
     this._lastRx = this.now();
     this._unansweredSince = null;
@@ -619,6 +571,21 @@ export class Net {
       return;
     }
     if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.t !== 'string') return;
+    // State-delta transport (shared/stateDelta.js): a negotiated server may compress the two big views into `m.state`
+    // frames. They are decoded here and continue as the ordinary m.public / m.private messages every listener already
+    // handles, so nothing above this line notices the difference. A frame that cannot be applied (a gap, a lost or
+    // reordered delta, an older full frame) is dropped and one rate-limited `state.resync` asks for a full one.
+    if (msg.t === 'room.closed' || (msg.t === 'room.state' && msg.code !== this._stateRoom)) {
+      this._stateRoom = msg.t === 'room.state' ? msg.code : null;
+      this._receiver.reset();
+      this._resyncAt = 0;
+    }
+    if (msg.t === 'm.state') {
+      const { message, resync } = this._receiver.receive(msg);
+      if (resync) this.requestResync();
+      if (message == null) return;
+      msg = message;
+    }
     const { t } = msg;
     const rid = msg.rid;
     const isHelloError = t === 'error' && rid != null && rid === this._helloRid;
@@ -967,18 +934,6 @@ export function createIdentity(deps = {}) {
       }
       return initPromise;
     },
-    /** Adopt a seat token issued by an account takeover (not a local tab history pick). */
-    adopt(token) {
-      if (!isToken(token)) return false;
-      current = token;
-      owned = token;
-      welcomed = false;
-      welcomeAt = null;
-      sset(session, K_TOKEN, token);
-      sset(session, K_WELCOME, JSON.stringify({ hash: tokenHash(token), at: null }));
-      writeRecent([token, ...readRecent().filter((t) => t !== token)]);
-      return true;
-    },
     /** Record only display metadata; the existing recent-token ring remains the authority. */
     rememberMatch,
     recoverable() {
@@ -1059,9 +1014,3 @@ export const identity = createIdentity({ onYield: () => net.reconnectNow(net.hel
 
 /** Browser connection singleton (created lazily-safe: nothing touches the network until connect()). */
 export const net = new Net({ getToken: () => identity.getToken(), getTokenClaim: () => identity.getTokenClaim() });
-
-if (typeof window !== 'undefined') {
-  window.addEventListener('sp-account-token', () => {
-    try { if (net.name) net.reconnectNow(net.name); } catch { /* the next status event reports it */ }
-  });
-}

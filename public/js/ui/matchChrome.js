@@ -46,11 +46,6 @@ store.subscribe((s, prev) => { if (awayStore.get().away && awayEnds(s, prev)) aw
  */
 export async function quitMatch() {
   const before = store.get();
-  const adminWatch = (() => {
-    try {
-      return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
-    } catch { return false; }
-  })();
   let left = false;
   try {
     try { await net.request('g.leave', {}); } catch (err) {
@@ -58,49 +53,6 @@ export async function quitMatch() {
     }
     try { await net.request('room.leave', {}); } catch (err) { if (err?.code !== 'NOT_IN_ROOM' && err?.code !== 'OFFLINE') throw err; }
     left = true;
-    if (adminWatch) {
-      // A hidden watcher is not a room member: after leaving, do not let auto-rejoin/deep-link
-      // try to room.join the started match on the way back to the lobby.
-      try { localStorage.removeItem('sp.lastRoom'); } catch { /* ignore */ }
-      try {
-        localStorage.removeItem('sp_watch_token');
-        localStorage.removeItem('sp_admin_watch_code');
-        localStorage.removeItem('sp_admin_watch_node');
-        localStorage.removeItem('sp_admin_watch_name');
-        // Shared marker for tabs opened after the watch closes: suppress stale join/account
-        // recovery toasts and pending joins for a short cooldown.
-        localStorage.setItem('sp_admin_watch_closed_at', String(Date.now()));
-      } catch { /* ignore */ }
-      try {
-        sessionStorage.removeItem('sp_admin_watch_code');
-        sessionStorage.removeItem('sp_admin_watch_token');
-        sessionStorage.removeItem('sp.accountResume');
-        sessionStorage.removeItem('sp.accountResumeSilent');
-        sessionStorage.removeItem('sp.accountResumeHopAt');
-      } catch { /* ignore */ }
-      try {
-        for (const name of ['sp_admin_watch_code', 'sp_admin_watch_node', 'sp_admin_watch_name', 'sp_watch_token']) {
-          document.cookie = name + '=; Path=/; Max-Age=0; SameSite=Lax';
-        }
-      } catch { /* ignore */ }
-      try {
-        const u = new URL(location.href);
-        u.searchParams.delete('room');
-        u.searchParams.delete('adminWatch');
-        u.searchParams.delete('watchToken');
-        u.searchParams.delete('accountResume');
-        history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
-      } catch { /* ignore */ }
-      store.patch('ui', { pendingJoin: null, pendingSpectate: false });
-      // The game runs inside /mm/watch.html: closing the hidden-watch action closes that tab
-      // instead of leaving its admin-watch title/favicon behind or returning to the admin console.
-      try {
-        if (window.top && window.top !== window) { window.top.close(); return; }
-        window.close();
-        return;
-      } catch { /* ignore */ }
-    }
-    try { window.dispatchEvent(new Event('sp-room-left')); } catch { /* ignore */ }
   } catch (err) {
     toastError(err);
   } finally {
@@ -109,8 +61,6 @@ export async function quitMatch() {
       try { recordQuit(before); } catch (err) { console.warn('[stats] quit record failed', err); }
     }
     store.set({ room: null, match: emptyMatch() });
-    // Leaving a room must not leave a "正在同步同盟状态…" or build-refresh banner behind.
-    store.patch('ui', { restoring: false, buildStale: false });
   }
 }
 
@@ -121,13 +71,7 @@ export async function quitMatch() {
 export function ExitModal({ open, onClose, solo, onAway }) {
   const [busy, setBusy] = useState(null);
   // a spectator seat (community report #26) only leaves its seat: nothing of the match is given up
-  // hidden admin watchers are not in room.spectators by design, but must use the same leave copy
-  const adminWatch = (() => {
-    try {
-      return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
-    } catch { return false; }
-  })();
-  const spectator = useStore((s) => isSpectating(s.room, s.me.playerId)) || adminWatch;
+  const spectator = useStore((s) => isSpectating(s.room, s.me.playerId));
   const quit = async () => {
     setBusy('quit');
     await quitMatch();
@@ -177,26 +121,31 @@ export function AwayOverlay({ onBack = () => {} }) {
 }
 
 /**
- * Pre-game step header.
- * @param {{ step: number, of: number, title: string, micro: string, pub: any, total?: number|null, onExit: Function, extra?: any }} props
+ * Pre-game step header (PR #643, the event's pre-game, video 6:29–7:51): exit over the ping | the difficulty, with
+ * `extra` beside it in one capsule (the draft's 本局信息) | "1/2 确认本局信息" ……… `status` (the draft's turn: 请选择策略 /
+ * X 正在选择策略… / 策略选择完成) | 玩法说明 and the countdown.
+ * @param {{ step: number, of: number, title: string, micro: string, pub: any, total?: number|null, onExit: Function,
+ *   extra?: any, status?: any }} props
  */
-export function StepHeader({ step, of, title, micro, pub, total, onExit, extra = null }) {
+export function StepHeader({ step, of, title, micro, pub, total, onExit, extra = null, status = null }) {
   const conn = useStore((s) => s.connection, shallowEqual);
   return html`<header class="stephead">
     <div class="stephead__left">
-      <${Button} variant="danger" size="lg" square=${true} icon="exit" onClick=${onExit} aria-label=${t('离开')} title=${t('离开')} />
-      <div class="stephead__meta">
+      <div class="stephead__exit">
+        <${Button} variant="danger" size="lg" square=${true} icon="exit" onClick=${onExit} aria-label=${t('离开')} title=${t('离开')} />
         <${PingPill} ms=${conn.ping} online=${conn.status === 'online'} />
+      </div>
+      <div class=${`stephead__mode${extra ? ' has-extra' : ''}`}>
         ${pub?.difficulty ? html`<${DifficultyTag} difficulty=${pub.difficulty} />` : null}
         ${pub?.test ? html`<${TestMark} />` : null}
+        ${extra}
       </div>
-    </div>
-    <div class="stephead__center">
-      <${MicroLabel} tone="mint">${micro}</${MicroLabel}>
-      <h1 class="stephead__title"><b class="num">${step}</b><span class="num stephead__of">/${of}</span>${title}</h1>
+      <i class="stephead__sep" aria-hidden="true"></i>
+      <h1 class="stephead__title"><b class="num">${step}</b><span class="num stephead__of">/${of}</span><span class="stephead__name">${title}</span></h1>
+      <${MicroLabel} tone="mint" class="stephead__micro">${micro}</${MicroLabel}>
     </div>
     <div class="stephead__right">
-      ${extra}
+      ${status ? html`<div class="stephead__status">${status}</div><i class="stephead__sep" aria-hidden="true"></i>` : null}
       <${GuideButton} class="stephead__guide" variant="secondary" />
       <${Countdown} deadline=${pub?.deadline} total=${total ?? undefined} size="md" />
     </div>

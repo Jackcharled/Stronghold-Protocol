@@ -7,7 +7,7 @@
 import { h } from '../../vendor/preact.module.js';
 import { useEffect, useReducer } from '../../vendor/hooks.module.js';
 import htm from '../../vendor/htm.module.js';
-import { ERR_TEXT } from '../../../shared/constants.js';
+import { ERR_TEXT, SETUP_REROLL_COOLDOWN_MS } from '../../../shared/constants.js';
 import { t, N_ } from '../../../shared/i18n.js';
 import { recordError } from '../diag.js';
 import { catalog, pluginName } from '../content.js';
@@ -48,17 +48,6 @@ export function toast(text, kind = 'info', opts = {}) {
   const k = TOAST_KINDS.includes(kind) ? kind : 'info';
   const msg = String(text ?? '').slice(0, 200).trim();
   if (!msg) return -1;
-  // Hidden admin watch enters an already-running room. Player join/recovery notices are
-  // noise for the spectator and for other tabs while that watch is active.
-  try {
-    const qs = new URLSearchParams(location.search);
-    const adminWatch = qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
-      || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code')
-      || !!localStorage.getItem('sp_watch_token');
-    const closedAt = Number(localStorage.getItem('sp_admin_watch_closed_at') || 0);
-    const watchExitCooldown = closedAt > 0 && Date.now() - closedAt < 60_000;
-    if ((adminWatch || watchExitCooldown) && /^(模拟已开始|Simulation already started|加入失败：|观战失败：|当前节点没有可恢复的账号对局|恢复对局失败：|恢复账号对局)/.test(msg)) return -1;
-  } catch { /* ignore */ }
   const now = Date.now();
   const ttl = Number.isFinite(opts.ttl) && opts.ttl > 0 ? opts.ttl : DEFAULT_MS[k];
   const same = toasts.find((t) => !t.leaving && t.text === msg && t.kind === k && now - t.at < MERGE_WINDOW_MS + t.ttl);
@@ -118,12 +107,8 @@ export function describeError(err) {
       return t('「{a}」和「{b}」的规则开关「{rule}」选项冲突', { a: name(match[2]), b: name(match[3]), rule: t(labels[match[1]]) });
     }
   }
-  if (err.code === 'BAD_MSG' && typeof err.detail === 'string') {
-    if (/创建房间|创建同盟|独立模拟|游客不能|已在其他房间|请先离开/.test(err.detail)) return t(err.detail);
-    if (/matchmaking maintenance/i.test(err.detail)) return t('服务器暂时关闭了匹配队友，请稍后再试');
-    if (/start maintenance/i.test(err.detail)) return t('服务器暂时关闭了开始游戏，请稍后再试');
-    if (/invalid experimental options/i.test(err.detail)) return t('房间实验参数无效，请刷新页面后重试');
-  }
+  // the per-seat 重刷本局 cooldown (PR #860, DESIGN §28.21): say which limit it is, not the generic RATE text
+  if (err.code === 'RATE' && err.detail === 'setup reroll cooldown') return t('每人 {s} 秒内只能发起一次重刷投票', { s: SETUP_REROLL_COOLDOWN_MS / 1000 });
   if (err.code && Object.hasOwn(ERR_TEXT, err.code)) return t(ERR_TEXT[err.code]);
   if (typeof err.message === 'string' && err.message) return t(err.message);
   if (typeof err.msg === 'string' && err.msg) return t(err.msg);
@@ -137,11 +122,6 @@ export function describeError(err) {
  */
 export function toastError(err) {
   recordError('request', err);
-  try {
-    const adminWatch = new URLSearchParams(location.search).get('adminWatch') === '1'
-      || !!sessionStorage.getItem('sp_admin_watch_code');
-    if (adminWatch && err && err.code === 'ROOM_STARTED') return -1;
-  } catch { /* ignore */ }
   return toast(describeError(err), 'error');
 }
 

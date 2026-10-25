@@ -6,6 +6,9 @@ import { html, Icon, TierChip, Tooltip } from './components.js';
 import { data, useData, localAsset } from '../data.js';
 import { parseRichText, rtClassName } from './richText.js';
 import { t as tr } from '../../../shared/i18n.js';
+import { useStore } from '../store.js';
+import { skinsStore, ownerSkin } from './skins.js';
+import { settingsStore } from './settingsStore.js';
 import {
   uiUrl, chessAvatarUrl, chessPortraitUrl, itemIconUrl, tokenAvatarUrl, enemyIconUrl, bondIconUrl, bandIconUrl,
 } from './assetUrls.js';
@@ -29,8 +32,9 @@ export const GAME_FILES = ['config', 'assets', 'chess', 'bonds', 'items', 'bands
  */
 export function useGameData() {
   const ready = useData(...GAME_FILES);
-  // (config / factions / choices are read once per memo: a language switch reads them again in the new locale)
-  return useMemo(() => makeLookups(ready), [ready, data.locale()]);
+  // (config / factions / choices are read once per memo: a language switch reads them again in the new locale, a
+  // content switch — a version or a plugin set — from the new files)
+  return useMemo(() => makeLookups(ready), [ready, data.locale(), data.contentId()]);
 }
 
 /** A 自选 operator's summon record (data/backups.json `tokens`, 0.2.0), or null. */
@@ -74,9 +78,33 @@ export function Img({ src, class: cls, alt = '', fallback = null, style, loading
   return html`<img class=${cls} src=${displaySrc} alt=${alt} draggable=${false} loading=${loading} decoding="async" style=${style} onError=${(e) => { const el = e && (e.currentTarget || e.target); const s = String(displaySrc || ''); if (el && !el.dataset.retry && /^https?:\/\//i.test(s)) { el.dataset.retry = '1'; try { const u = new URL(s); u.searchParams.set('retry', '1'); el.src = u.href; return; } catch { /* ignore */ } } setBad(src); }} />`;
 }
 
+/** Owner-aware operator pictures, with live selection / settings updates even on an already open card.
+ * `ownerId` omitted = local picker; null = unowned catalogue art. Callers resolve stand-ins / DIY first.
+ * B6, maintainer option A (2026-10-18); docs/SKINS.md and §35.4. Model outfits retain their models.
+ */
+export function OperatorImage({ m, chess, ownerId, skin = null, portrait = false, avatarFallback = false,
+  portraitClass, avatarClass, ...props }) {
+  useData('assets');
+  m = data.get('assets') || m;
+  const localSkins = useStore((s) => s.skins, Object.is, skinsStore);
+  const otherSkins = useStore((s) => s.otherSkins, Object.is, settingsStore);
+  const selected = useStore((s) => ownerSkin(chess?.charId, { ownerId, skin, myId: s.me.playerId,
+    players: s.match.public?.players || [], localSkins, otherSkins }));
+  const art = portrait ? chessPortraitUrl(m, chess, { skin: selected }) : null;
+  const src = art || (!portrait || avatarFallback ? chessAvatarUrl(m, chess, { skin: selected }) : null);
+  return html`<${Img} ...${props} src=${src} class=${art ? portraitClass ?? props.class : avatarClass ?? props.class} />`;
+}
+
 /** Official UI sprite by 'group/key' with a fallback. */
 export function Sprite({ k, class: cls, fallback = null }) {
   return html`<${Img} src=${uiUrl(data.get('assets'), k)} class=${cx('sprite', cls)} fallback=${fallback} />`;
+}
+
+/** Official promotion phase from the resolved record's status (not its shop tier or normal / golden form). */
+export function PromotionIcon({ m, phase, class: cls }) {
+  if (!Number.isInteger(phase) || phase < 0 || phase > 2) return null;
+  return html`<${Img} src=${uiUrl(m, `elite/elite_${phase}`)} class=${cls}
+    fallback=${html`<small class=${cls}>E${phase}</small>`} />`;
 }
 
 /**
@@ -108,11 +136,11 @@ export const isGoldenPiece = (piece, chess) => !!(piece?.golden || chess?.isGold
 /**
  * Square unit thumbnail for a piece / chess / item / token / enemy: art + tier chip + elite frame.
  * @param {{ kind?: 'chess'|'item'|'token'|'enemy', id: string, golden?: boolean, size?: 'xs'|'sm'|'md'|'lg', tier?: number,
- *   showTier?: boolean, class?: string, dim?: boolean, badge?: any, title?: string, rec?: any }} props
+ *   showTier?: boolean, class?: string, dim?: boolean, badge?: any, title?: string, rec?: any, ownerId?: string|null, skin?: string|null }} props
  *   `rec`: the chess record to draw instead of the data's (a 自选 piece's composed record — 0.2.0, gameLogic/diy.js; a
  *   补位 stand-in's — gameLogic/standIn.js: drawn with a small 「替补」 mark in the corner)
  */
-export function UnitThumb({ kind = 'chess', id, golden, size = 'md', tier, showTier = true, class: cls, dim = false, badge = null, title, rec = null }) {
+export function UnitThumb({ kind = 'chess', id, golden, size = 'md', tier, showTier = true, class: cls, dim = false, badge = null, title, rec = null, ownerId, skin = null }) {
   const m = data.get('assets');
   let src = null;
   let name = '';
@@ -121,7 +149,6 @@ export function UnitThumb({ kind = 'chess', id, golden, size = 'md', tier, showT
   if (kind === 'chess') {
     const c = rec || data.lookup('chess', id);
     si = rec && typeof rec.standInFor === 'string' && rec.standInFor ? rec : null;
-    src = chessAvatarUrl(m, c);
     name = c?.name || '';
     t = t ?? c?.tier;
     golden = golden ?? !!c?.isGolden;
@@ -144,7 +171,9 @@ export function UnitThumb({ kind = 'chess', id, golden, size = 'md', tier, showT
   return html`<span class=${cx('uthumb', `uthumb--${size}`, `uthumb--${kind}`, golden && 'is-golden', dim && 'is-dim', t && `uthumb--t${Math.max(1, Math.min(6, t | 0))}`, cls)}
       title=${title ?? name}>
     <span class="uthumb__art">
-      <${Img} src=${src} fallback=${html`<span class="uthumb__glyph">${glyph}</span>`} />
+      ${kind === 'chess'
+        ? html`<${OperatorImage} m=${m} chess=${rec || data.lookup('chess', id)} ownerId=${ownerId} skin=${skin} fallback=${html`<span class="uthumb__glyph">${glyph}</span>`} />`
+        : html`<${Img} src=${src} fallback=${html`<span class="uthumb__glyph">${glyph}</span>`} />`}
     </span>
     ${showTier && t && kind !== 'enemy' && kind !== 'token' ? html`<${TierChip} tier=${t} golden=${golden} size="sm" class="uthumb__tier" />` : null}
     ${kind === 'token' ? html`<span class="uthumb__tag">${tr('召唤')}</span>` : null}

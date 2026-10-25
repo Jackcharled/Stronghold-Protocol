@@ -2,6 +2,7 @@
 // Every client→server message is `{ t, rid?, ...fields }`. Unknown `t` or invalid fields ⇒ ERR.BAD_MSG.
 
 import { DIFFICULTIES, NAME_MAX_LEN, ROOM_CODE_LEN, MAX_SEATS, EMOTES, GEO } from './constants.js';
+import { MAX_PLAYER_CAPACITY } from './playerCapacity.js';
 import { isDroppableChess } from './standIn.js';
 import { diySlotIds, validateDiyPicks } from './diy.js';
 import { cultivatedStats, isPotential, isCultivate, POTENTIAL_DEFAULT, CULTIVATE_DEFAULT, hasPotentialData } from './potential.js';
@@ -30,6 +31,8 @@ const isMap = (v, max, key, val) => {
 };
 const isList = (v, max, item) => Array.isArray(v) && v.length <= max && v.every(item);
 const isScalar = (v) => isStr(v, 64) || isNum(v) || isBool(v);
+/** An official version id (shared/versions.js: the activity id, `@<sub-version>` for a sub-version) — structural only; the lobby answers VERSION_UNKNOWN for one this server does not enable (DESIGN §35.23). */
+export const isVersionId = (v) => typeof v === 'string' && v.length <= 40 && /^[a-z0-9]{1,32}(?:@[A-Za-z0-9_]{1,16})?$/.test(v);
 
 // ---- client-side combat (DESIGN §14): b.progress / b.result payloads -------------------------------------------
 
@@ -493,42 +496,64 @@ const target = (v) => {
 /** @type {Record<string, Record<string, (v:any)=>boolean> & { $optional?: string[] }>} */
 export const C2S = {
   // session & lobby
+  // `delta`: the client speaks the state-delta transport (shared/stateDelta.js) and wants m.public / m.private as
+  // `m.state` frames. Omitted by every client that cannot decode them — those keep receiving the plain frames, and a
+  // server that does not know the field ignores it (it is only read after a full validateC2S pass).
   hello: { name: (v) => isStr(v, NAME_MAX_LEN) && v.trim().length > 0, token: (v) => v == null || isStr(v, 64), version: (v) => v == null || isInt(v, 0, 1e6),
     guest: (v) => v == null || typeof v === 'boolean',
     tag: (v) => v == null || (typeof v === 'string' && /^[0-9]{4}$/.test(v)),
-    noReplace: isBool, claimAt: (v) => isNum(v, 0, Number.MAX_SAFE_INTEGER),
-  adminToken: (v) => v == null || (isStr(v, 1024) && v.length > 0),
-  accountToken: (v) => v == null || (isStr(v, 1024) && v.length > 0),
-  $optional: ['token', 'version', 'noReplace', 'claimAt', 'guest', 'tag', 'adminToken', 'accountToken'] },
+    noReplace: isBool, claimAt: (v) => isNum(v, 0, Number.MAX_SAFE_INTEGER), delta: (v) => v == null || isInt(v, 0, 1e6),
+    adminToken: (v) => v == null || (isStr(v, 1024) && v.length > 0),
+    accountToken: (v) => v == null || (isStr(v, 1024) && v.length > 0),
+    $optional: ['token', 'version', 'noReplace', 'claimAt', 'delta', 'guest', 'tag', 'adminToken', 'accountToken'] },
   ping: { c: (v) => typeof v === 'number' && Number.isFinite(v) },
   // test: only the literal true (DESIGN §34.8). Omit it for a normal room — `false` is a bad field, so a
   // string cannot sneak in as "not a test". The server still refuses it unless SP_TEST_MODE is on.
-  'room.create': { mode: (v) => v === 'solo' || v === 'coop', difficulty: (v) => DIFFICULTIES.includes(v), test: (v) => v === true, admin: (v) => v === true, experimental: (v) => v && typeof v === 'object' && !Array.isArray(v), $optional: ['test', 'admin', 'experimental'] },
+  // difficulty: may be left out — the room starts at the server's default (server/lobby.js DEFAULT_DIFFICULTY) and the
+  // host changes it in the room (room.setDifficulty), as in the event's 联合模拟; a value given must be a difficulty.
+  // soloUnlimited: the timed-solo opt-out 「不限时」 (DESIGN §35.23.10). Optional, and only the literal boolean —
+  // the server applies `true` solely to a solo room of a version whose solo is timed, and ignores it otherwise, so a
+  // default create stays the message it was.
+  'room.create': { mode: (v) => v === 'solo' || v === 'coop', difficulty: (v) => DIFFICULTIES.includes(v), test: (v) => v === true, version: isVersionId, soloUnlimited: isBool, experimental: (v) => v && typeof v === 'object' && !Array.isArray(v), $optional: ['test', 'difficulty', 'version', 'soloUnlimited', 'experimental'] },
   'room.join': { $optional: ['testAck'], testAck: (v) => v === true, code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v) },
   'room.leave': {},
+  'account.resume': {},
   'room.ready': { ready: isBool },
-  // 房主进入/退出「匹配队友」：节点暂停 15 分钟解散计时（server/lobby.js matchmaking）
-  'room.matchmaking': { on: isBool },
   'room.setDifficulty': { difficulty: (v) => DIFFICULTIES.includes(v) },
-  // experimental room rules: host-only, before the match; the server validates the snapshot.
   'room.setExperimental': { experimental: (v) => v && typeof v === 'object' && !Array.isArray(v) },
   // the co-op room option 「AI 队友最后选择」 (GitHub #338; host, before the match): the strategy and 机变 drafts order every
   // human seat before every AI seat (server/match/match/phases.js humansFirst); room.state.aiPicksLast
   'room.setAiPicksLast': { on: isBool },
+  // 「不限时」 (DESIGN §35.23.10; host, before the match, a solo room of a version whose solo is timed): the match's
+  // preparation and 机变 stay untimed (Match opts.soloUnlimited). Off by default; room.state omits the key unless it is on.
+  'room.setSoloUnlimited': { on: isBool },
+
+  // Remake-only spectator handover: host opt-in before play, default off (§35.100).
+  'room.setAiTakeover': { on: isBool },
+  'room.aiRequest': { botId: isId },
+  'room.aiVote': { voteId: (v) => typeof v === 'string' && v.length <= 16, approve: isBool },
   'room.addBot': {},
-  'room.removeBot': { seat: (v) => isInt(v, 0, MAX_SEATS - 1) },
+  'room.removeBot': { seat: (v) => isInt(v, 0, MAX_PLAYER_CAPACITY - 1) },
   // the host removes another human before the match (server/lobby.js kick; community report #17); playerId = the one the
   // host confirmed — a seat that changed hands meanwhile is refused
-  'room.kick': { seat: (v) => isInt(v, 0, MAX_SEATS - 1), playerId: isId },
+  'room.kick': { seat: (v) => isInt(v, 0, MAX_PLAYER_CAPACITY - 1), playerId: isId },
   'room.start': {},
   'room.rerollSetup': { setupRevision: (v) => isInt(v, 0, 2 ** 31) },
   'room.cancelReroll': { voteId: (v) => isInt(v, 1, 2 ** 31) },
+  // official versions (DESIGN §35.23, M1; before the match): the host proposes the room's version; the seated humans vote
+  // like 重刷 (unanimous, a decline cancels, a lone human switches at once); room.state.version / versionVote
+  'room.proposeVersion': { version: isVersionId },
+  'room.versionVote': { voteId: (v) => isInt(v, 1, 2 ** 31), agree: isBool },
+  'room.cancelVersionVote': { voteId: (v) => isInt(v, 1, 2 ** 31) },
   // operator loadout (DESIGN §16): stored per session/seat; accepted until the match leaves INFO_CHECK — `ops` (0.2.2):
   // the per-operator 潜能 / 练度 (absent = none set: every operator at 潜能 6, 精英2 Lv.60)
   'room.loadout': { entries: isLoadoutEntries, ops: isLoadoutOps, $optional: ['ops'] },
   // 干员皮肤 (docs/SKINS.md): the appearances the player wears, keyed by operator charId; PUBLIC, so it is accepted in
   // any room phase (the loadout locks at INFO_CHECK because it changes what a unit does; a skin changes only the model)
   'room.skins': { skins: isSkinSelection },
+  // 名片干员 (PR #643 split 6): the operator whose portrait fills the player's seat card in the waiting room — an
+  // operator charId ('' for none; the server keeps only a visible charId of the room's chess.json); cosmetic, any room phase
+  'room.card': { charId: (v) => v === '' || isCharId(v) },
   // operator ownership (干员持有, 0.2.0 补位): stored per session / seat; a match takes the list its seat had when it
   // started (an out-of-match setting — during a match it is stored for the next one: ROOM_STARTED)
   'room.ownership': { notOwned: isNotOwnedList },
@@ -538,9 +563,8 @@ export const C2S = {
   // spectator seats (remake feature, community report #26; MAX_SPECTATORS): take one of a co-op room's spectator seats —
   // in its lobby or while its match runs — never a player seat; the host frees one by playerId (the spectator gets
   // room.closed { reason: 'kicked' }). room.leave / g.leave leave a spectator seat like a player seat.
-  'room.spectate': { $optional: ['testAck', 'hidden', 'adminToken'], testAck: (v) => v === true, hidden: (v) => v === true, adminToken: (v) => isStr(v, 512), code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v) },
+  'room.spectate': { $optional: ['testAck'], testAck: (v) => v === true, code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v) },
   'room.removeSpectator': { playerId: isId },
-  'account.resume': {},
   // the room's plugins (DESIGN §32, P1a; host, before the match — like a difficulty change it un-readies the others):
   // the plugins of this server the room switches on, in any order (the server closes the set over their requirements
   // and sorts it: shared/plugins/order.js); [] = the original content. Cosmetic plugins (art: the room's visual set,
@@ -591,11 +615,7 @@ export const C2S = {
   'g.emote': { id: (v) => EMOTES.includes(v) },
   // playerId: the player tapped in the team panel (a 联防 / boss pair field shows two) — what an eliminated viewer or a
   // spectator seat follows from then on (Match.watchPref; community report of 2026-10-06, item 56)
-  'g.revive': { playerId: isId, round: (v) => isInt(v, 1, 1000), matchId: isId },
-  // playerId: the player tapped in the team panel (a 联防 / boss pair field shows two) — what an eliminated viewer or a
-  // spectator seat follows from then on (Match.watchPref; community report of 2026-10-06, item 56)
   'g.watch': { fieldId: (v) => isStr(v, 32), playerId: isId, $optional: ['playerId'] },
-
   'g.autoplay': { on: isBool },
   // solo pause (official PauseUp / ResumeUp, DESIGN §14): freezes the running battle (field clock, deadlines, the
   // browser's local runner) — solo matches only (co-op ⇒ WRONG_PHASE), only while a battle runs; m.public.paused
@@ -639,6 +659,11 @@ export const C2S = {
     taskId: isId, choice: (v) => v === undefined || isInt(v, 0, 7), error: (v) => v === undefined || v === true,
     $optional: ['choice', 'error'],
   },
+  // State-delta transport (shared/stateDelta.js): the client asks for one full frame after it missed one. The server
+  // answers with a full frame on each state channel it speaks (m.public / m.private), which is what restores the
+  // baseline; it is rate-limited like the other resend-heavy intents (server/net.js HEAVY_TYPES, and the lobby's
+  // resyncMinGapMs). An old client never sends it and keeps receiving the frames it always got.
+  'state.resync': {},
 };
 
 // Server → client message types (documentation + client dispatch table keys).
@@ -682,12 +707,20 @@ export function validateC2S(msg) {
   return null;
 }
 
-// Event tuple kinds inside `b.ev` (DESIGN §8.2). 'cast' ['cast', id, slot, dur?] is display only: an enemy uses the skill
-// of that slot of its data record's skills[] (server/sim/content/enemies/helpers.js castSlot; the client's skill clip
-// and official skill effects — render/app.js).
+// Event tuple kinds inside `b.ev` (DESIGN §8.2). 'cast' ['cast', id, slot, dur?, clip?] is display only: an enemy uses the
+// skill of that slot of its data record's skills[] (server/sim/content/enemies/helpers.js castSlot; the client's skill
+// clip and official skill effects — render/app.js); `clip` (s) when it is an attack-class skill cast in the attack's
+// turn: the clip played in place of the attack, 0 = the attack clip (DESIGN §35.57).
 export const EV = Object.freeze({
   SPAWN: 'spawn', ATK: 'atk', DMG: 'dmg', HEAL: 'heal', SKILL: 'skill', ENGAGE: 'engage', DIE: 'die', LEAK: 'leak',
   STATUS: 'status', FX: 'fx', LAYER: 'layer', BOUNTY: 'bounty', DEPLOY: 'deploy', CAST: 'cast',
+  // ['rate', id, seconds] - the unit's OWN attack interval (`u.s.interval`, buffs and skills included) changed. Sent
+  // once per change: the FIRST value travels in the spawn UnitInfo (`atkInterval`) and is not repeated, and a change is
+  // never swallowed by that seed; an event's value outranks the spawn-time UnitInfo for the rest of the battle (ordinary
+  // snapshots do not refresh it). Display
+  // only: the renderer paces the attack clip over it (render/attackRate.js) instead of waiting to measure two attacks,
+  // which is what made the first swing of a skill / buff change slow-motion for a while.
+  RATE: 'rate',
 });
 
 /**

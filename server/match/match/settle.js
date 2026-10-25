@@ -151,6 +151,7 @@ export class MatchSettle {
     this._finalizePendingDeaths({ notify: false, reason: 'match-ended' });
     this.offersDispose();
     this.ended = true;
+    this.externalAI?.close();
     if (this.runner) { try { this.runner.stop(); } catch { /* ignore */ } this.runner = null; }
     this._stopClientCombat();
     this.cancel(this._phaseTimer);
