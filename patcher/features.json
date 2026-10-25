@@ -1,0 +1,211 @@
+{
+  "schema": 1,
+  "upstream": "sganggs/Stronghold-Protocol",
+  "upstreamBase": "0.3.3",
+  "customRevision": "sp-2026-10-25",
+  "principles": [
+    "上游文件只作为基板，不直接手改生产文件",
+    "本服改动优先放入 patcher 锚点或 custom 模块",
+    "每次更新先 staging，再单节点，再全量",
+    "任何锚点缺失都停止，不写半套补丁"
+  ],
+  "layers": {
+    "upstream": "官方 0.3.2/0.3.3 更新包",
+    "serverPatcher": "patcher/apply.mjs，锚点插入 server/lobby.js 与 server/http/config.js",
+    "clientPorts": "public/js 中本服 UI/功能移植，按文件记录在 features",
+    "deployment": "matchmaker、nginx、ecosystem、dashboard、账号系统，独立于上游"
+  },
+  "features": [
+    {
+      "id": "server-idle-guard",
+      "name": "挂机踢人 / 同 IP 建房与 AI 上限",
+      "status": "patcher",
+      "files": [
+        "server/lobby.js",
+        "server/http/config.js"
+      ],
+      "tests": [
+        "建房",
+        "满员",
+        "挂机 20 秒扫描",
+        "重启恢复"
+      ]
+    },
+    {
+      "id": "server-snapshot-checkpoint",
+      "name": "房间/对局快照与 Redis 检查点",
+      "status": "patcher",
+      "files": [
+        "server/lobby.js",
+        "server/match/*"
+      ],
+      "tests": [
+        "重启恢复房间",
+        "重启恢复对局",
+        "本地文件丢失后从 Redis 恢复"
+      ]
+    },
+    {
+      "id": "matching-party",
+      "name": "组队匹配、容量、准备、跨节点转房",
+      "status": "matchmaking-server-ported",
+      "files": [
+        "matchmaker/**",
+        "mm/client.js",
+        "server/lobby.js"
+      ],
+      "tests": [
+        "2/4/20 人容量",
+        "全员准备",
+        "跨节点转房",
+        "断线兜底"
+      ]
+    },
+    {
+      "id": "server-player-capacity",
+      "name": "5–20 人房间容量、实验选项、20 人协议",
+      "status": "staging-manual",
+      "files": [
+        "server/lobby.js",
+        "shared/playerCapacity.js",
+        "shared/experimental.js",
+        "shared/protocol.js",
+        "public/css/screens/room.css",
+        "public/js/screens/room.js"
+      ],
+      "tests": [
+        "4 人普通房",
+        "8/12/16/20 人房间",
+        "第 20 个座位加入",
+        "缩容拒绝已占座位",
+        "room.setExperimental",
+        "5–20 人房座位保持 4 人尺寸",
+        "超出部分横向滚动可查看全部座位"
+      ]
+    },
+    {
+      "id": "client-announcement",
+      "name": "公告弹窗 + 官方Q群入口（标题/大厅/同盟房间）",
+      "status": "ported-main",
+      "files": [
+        "matchmaker/public/client.js",
+        "mm/client.js"
+      ],
+      "tests": [
+        "新公告自动打开",
+        "已读后黄点消失",
+        "刷新不重复弹出",
+        "标题屏左下角、添加到桌面按钮上方显示官方Q群按钮",
+        "大厅与同盟房间顶栏显示Q群入口"
+      ]
+    },
+    {
+      "id": "client-watch",
+      "name": "隐藏观战、退出清理、Build Guard 禁止自动刷新",
+      "status": "ported-main",
+      "files": [
+        "public/js/main.js",
+        "public/js/accountObserver.js",
+        "public/js/ui/buildGuard.js"
+      ],
+      "tests": [
+        "隐藏观战重连",
+        "退出观战回大厅",
+        "发版不自动刷新"
+      ]
+    },
+    {
+      "id": "client-guest-create",
+      "name": "游客不能建房/开始独立模拟",
+      "status": "ported",
+      "files": [
+        "public/js/screens/lobby.js",
+        "server/lobby.js"
+      ],
+      "tests": [
+        "游客建房提示",
+        "账号建房正常",
+        "管理员房间正常"
+      ]
+    },
+    {
+      "id": "client-room-spectator",
+      "name": "观战人数上限与隐藏观战状态",
+      "status": "ported-ui",
+      "files": [
+        "public/js/screens/room.js",
+        "server/lobby.js"
+      ],
+      "tests": [
+        "观战上限",
+        "隐藏观战不占玩家位",
+        "多人观战"
+      ]
+    },
+    {
+      "id": "client-asset-cache",
+      "name": "/assets-cdn、Service Worker、素材包导入",
+      "status": "ported",
+      "files": [
+        "public/js/assetCache.js",
+        "public/js/assetPack.js",
+        "public/js/ui/assetImport.js",
+        "public/sw.js"
+      ],
+      "tests": [
+        "导入素材包",
+        "刷新缓存命中",
+        "断网回退"
+      ]
+    },
+    {
+      "id": "client-shop-layout",
+      "name": "商店装备空栏与跨版本图标缓存",
+      "status": "ported",
+      "files": [
+        "public/js/ui/shopBar.js",
+        "server/match/player/views.js",
+        "public/js/render/app/host.js",
+        "public/js/render/textures.js",
+        "public/js/render/units.js"
+      ],
+      "tests": [
+        "第 5 级空装备栏",
+        "升级保留装备栏",
+        "版本切换图标不串"
+      ]
+    },
+    {
+      "id": "account-and-dashboard",
+      "name": "账号登录/MySQL/管理后台",
+      "status": "custom-outside-upstream",
+      "files": [
+        "matchmaker/account.cjs",
+        "dashboard/**",
+        "public/js/ui/accountObserver.js"
+      ],
+      "tests": [
+        "登录/注册",
+        "会话恢复",
+        "后台房间/账号管理"
+      ]
+    },
+    {
+      "id": "deployment",
+      "name": "Nginx 多节点、PM2、一键启停、watchdog",
+      "status": "custom-outside-upstream",
+      "files": [
+        "nginx/**",
+        "ecosystem.config.cjs",
+        "start-all.bat",
+        "stop-all.bat",
+        "deploy/server-watchdog.ps1"
+      ],
+      "tests": [
+        "443 入口",
+        "节点路由",
+        "停止脚本不被 watchdog 拉起"
+      ]
+    }
+  ]
+}
