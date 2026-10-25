@@ -275,13 +275,29 @@ node patcher\snapshot-features.mjs
        检查：node test\emote-danmaku-5to20.mjs
 
    8.3 隐身观战（管理员 adminWatch）必须收到对局帧
-       病根：Lobby.memberSessions() 以前只遍历 seats + spectators，
-       hiddenSpectators 拿得到 room.state 却拿不到 m.public，
-       对局屏就永远停在「正在进入模拟…」。
-       → memberSessions 要遍历 seats + spectators + hiddenSpectators 并用
-         seen 去重（否则同一 session 收两次）。
-       → startMatch 的 opts 要把 hiddenSpectators 传给对局。
-       检查：node test\hidden-watch-broadcast.mjs
+       这个坑有两层，第二层才是真病根，只修第一层会被「看起来好了」骗过去：
+
+       (a) 广播路径：Lobby.memberSessions() 以前只遍历 seats + spectators，
+           hiddenSpectators 拿不到 m.public 的广播。
+           → 要遍历 seats + spectators + hiddenSpectators 并用 seen 去重。
+           → startMatch 的 opts 也要把 hiddenSpectators 传给对局。
+
+       (b) 单播路径（真正的病根）：Lobby.sendToPlayer() 只认
+           seatOf() / spectatorOf()，而隐身观战者只存在于 hiddenSpectators，
+           两者都查不到，于是 addSpectator → _resync 的补发帧被直接
+           return false 丢掉，前端永远停在「正在进入模拟…」。
+           → sendToPlayer 的判定必须加上 room.hiddenSpectatorOf(playerId)。
+
+       为什么容易漏：单测用假的 Match 对象直接调 broadcastRoom，绕过了
+       sendToPlayer，于是只修 (a) 也能「全绿」。必须用真实进程验证：
+       建房 → 加 AI → room.start → g.infoReady（离开 INFO_CHECK，
+       否则对局不推进、不会再有 m.public）→ 隐身 spectate →
+       先收后发帧，再让房主 g.bandSkip 产生一次新广播。
+
+       检查：node test\hidden-watch-broadcast.mjs        （单测，覆盖 a）
+             node test\e2e-hidden-watch-live.mjs 3001   （真实进程，覆盖 a+b）
+       注意 e2e 脚本每次要用不同的 uid，并在退出前 room.leave，
+       否则留着僵尸房间，下次跑会撞「该账号已在其他房间中」。
 
    三者都是 node-N/public/ 或 node-N/server/ 下的文件：
    客户端文件（public/js）nginx 直接发，改完只需改 nginx.conf 里

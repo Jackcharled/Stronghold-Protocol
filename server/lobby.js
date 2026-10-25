@@ -3027,7 +3027,10 @@ export class Lobby {
   /** Match unicast. @returns {boolean} */
   sendToPlayer(room, playerId, msg, encoded = null) {
     if (room.disposed) return false;
-    const seat = room.seatOf(playerId) || room.spectatorOf(playerId);
+    // 隐身观战（adminWatch）只存在于 hiddenSpectators：既不是 seat 也不在 spectators。
+    // 以前这里只查 seatOf / spectatorOf，隐身观战者的单播一律被拒，
+    // 于是 addSpectator → _resync 发不出去，前端停在「正在进入模拟…」。
+    const seat = room.seatOf(playerId) || room.spectatorOf(playerId) || room.hiddenSpectatorOf(playerId);
     if (!seat || seat.isBot || seat.left) return false;
     const session = this.registry.byId(playerId);
     if (!session || session.roomCode !== room.code) return false;
