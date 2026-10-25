@@ -36,7 +36,12 @@ const clone = (v) => (v == null ? null : structuredClone(v));
 /** A session's settings (the lobby replaces these frozen values, never mutates them: a reference compare finds a change). */
 export const SESSION_FIELDS = Object.freeze(['loadout', 'ops', 'notOwned', 'diy', 'card', 'loadoutCs', 'notOwnedCs', 'diyCs']);
 const SEAT_FIELDS = ['seat', 'playerId', 'name', 'isBot', 'ready', 'left', 'loadout', 'revivalVote', 'ops', 'notOwned', 'diy', 'card',
-  'owner', 'loadoutCs', 'notOwnedCs', 'diyCs', 'band', 'accountId'];
+  'owner', 'loadoutCs', 'notOwnedCs', 'diyCs', 'band', 'accountId',
+  // 管理员/服主标记：控制台房间列表据此把「玩家」显示成「管理员」。
+  // 必须一起存进 Redis，否则 matchmaker 从 Redis 读房间时看不到这个字段。
+  'admin',
+  // 游客标记：游客不能当选房主（lobby.js migrateHost），也要让控制台区分「游客」。
+  'guest'];
 
 /** A room the document can carry: not disposed, no gameplay plugins. */
 export function persistableRoom(room) {

@@ -587,13 +587,24 @@ export class Room {
       revival: { enabled: this.mode === 'coop' && this.experimental?.revivalEnabled === true },
       aiPicksLast: this.aiPicksLast,
       inMatch: !!this.match,
-      expiresInMs: this.noExpire ? null : Math.max(0, Number(this.createdAt) + (this.ttlMs || roomTtlMs()) - Date.now()),
+      // 解散计时的基准：建房时间，或「上一局结束」的时间（取较晚者）。
+      // 对局进行中不退出、不倒计时（sweepOldRooms 会跳过有 match 的房间），
+      // 所以这里和 sweepOldRooms 用同一个 base，前端显示的剩余时间才不会与实际解散时机打架。
+      expiresInMs: this.noExpire ? null
+        : Math.max(0, Math.max(Number(this.createdAt) || 0, Number(this.lastMatchEndAt) || 0)
+          + (this.ttlMs || roomTtlMs()) - now),
       ttlMs: this.noExpire ? null : (this.ttlMs || roomTtlMs()),
       adminCreated: this.adminCreated === true,
+      // 前端倒计时用它判断显示 ∞ 还是 mm:ss（mm/client.js installRoomCountdown）。
+      // 之前只下发了 expiresInMs/ttlMs，唯独漏了 noExpire，导致管理员房
+      // 明明不销毁却仍然显示倒计时。
+      noExpire: this.noExpire === true,
       matchmaking: !!this.matchmaking,
       matchmakingAt: this.matchmaking ? (Number(this.matchmakingStartedAt) || this.matchmakingAt || 0) : 0,
       seats: this.seats.map((s) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left,
+          // 管理员/服主标记：控制台据此把「玩家」显示成「管理员」（仅展示用）
+          ...(s.admin === true ? { admin: true } : {}),
           // a room with gameplay plugins (header "Gameplay plugins"): has this player's page loaded and checked its content?
           ...(this.needsContent && !s.isBot ? { content: s.content || 'loading' } : {}),
           // 名片干员 (room.card): only a human seat with a card carries the key
@@ -698,6 +709,24 @@ export class Lobby {
     if (testHostOpt != null) this.setTestHost(testHostOpt);
     /** @type {Map<string, Room>} */
     this.rooms = new Map();
+    // 房间目录：每 10 秒把本节点房间码报给匹配服务（跨节点邀请链接找房、控制台房间列表）。
+    // 升级 0.3.3 时这段丢了，导致 matchmaker 的 content/rooms.json 一直是空的，
+    // 节点控制台和后台都看不到任何房间。匹配服务侧 POST /api/rooms/report 仍在。
+    try {
+      const nodeNo = Number((String(process.env.SP_NODE_DIR || '').match(/node-(\d+)/i) || [])[1])
+        || (Number(process.env.PORT) > 3000 ? Number(process.env.PORT) - 3000 : 0);
+      if (nodeNo > 0) {
+        this.roomReportTimer = setInterval(() => {
+          try {
+            fetch('http://127.0.0.1:3090/api/rooms/report', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ node: nodeNo, codes: [...this.rooms.keys()] }),
+            }).catch(() => {});
+          } catch { /* ignore */ }
+        }, 10_000);
+        this.roomReportTimer.unref?.();
+      }
+    } catch { /* ignore */ }
     /** @type {Map<string, NodeJS.Timeout>} lobby grace timers by playerId */
     this.graceTimers = new Map();
     /** @type {Map<string, NodeJS.Timeout>} deferred (coalesced) resyncs by playerId */
@@ -1154,7 +1183,8 @@ export class Lobby {
     const key = session.limitKey || null;
     // The room being left disappears with this create when the creator is its only human (a spectator is none).
     const leaving = !!cur && cur.activeHumans().length === 1 && !cur.spectatorOf(session.playerId);
-    if (key && this.opts.maxRoomsPerAddr > 0) {
+    // 同网段建房数上限：管理员/服主豁免（维护期自测会反复建房）
+    if (key && this.opts.maxRoomsPerAddr > 0 && session.admin !== true) {
       if (this.countRooms((r) => r.ownerKey === key) - (leaving && cur.ownerKey === key ? 1 : 0) >= this.opts.maxRoomsPerAddr) {
         this.limitWarn(`room limit (${this.opts.maxRoomsPerAddr}) reached for ${session.addr}`);
         return fail(ERR.RATE, 'too many rooms from your network');
@@ -1195,7 +1225,8 @@ export class Lobby {
     if (cur) this.removeMember(cur, session.playerId);
     const room = new Room(code, mode, difficulty, this.now(), version, experimental);
     room.test = test === true;
-    // 管理员建房：不自动过期，并在控制台标记
+    // 管理员建房：不自动过期，并在控制台标记。
+    // noExpire 只在房主本身是管理员/服主时成立，房主换人会由 migrateHost 重新判定。
     room.adminCreated = session.admin === true;
     room.noExpire = room.adminCreated;
     // 「不限时」 only on a solo room of a version whose solo is timed (header). Anywhere else the key is ignored, so a
@@ -1271,6 +1302,14 @@ export class Lobby {
       return OK;
     }
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
+    // 一个账号只能在一个房间里（玩家席或观战席），与 create / join 同一条规则。
+    // 以前观战没有这道检查：账号可以「在 A 房打对局的同时去 B 房观战」，或者
+    // 静默退出原房间后才进观战席。现在与 join 一致：已在别的房间就先离开。
+    // 隐藏观战（adminWatch，管理员隐身）是例外：它不占观战席、不算房间成员。
+    if (!wantHidden) {
+      const conflict = this.accountRoomConflict(session);
+      if (conflict) return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
+    }
     if (!wantHidden && room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
     if (!wantHidden && room.spectators.length >= room.spectatorLimit()) return fail(ERR.ROOM_FULL, 'no free spectator seat');
     if (cur) this.removeMember(cur, session.playerId);
@@ -1716,7 +1755,9 @@ export class Lobby {
     if (version === room.version) return fail(ERR.ALREADY);
     if (room.versionVote) return fail(ERR.VERSION_VOTE);
     const now = this.now();
-    if (now - room.versionProposeAt < this.opts.versionProposeGapMs || now < room.versionRetryAt) return fail(ERR.RATE);
+    // 版本提议频率/冷却：管理员/服主豁免（同一人自测时来回切换版本会被 300ms / 5s 卡住）
+    if (session.admin !== true
+      && (now - room.versionProposeAt < this.opts.versionProposeGapMs || now < room.versionRetryAt)) return fail(ERR.RATE);
     const humans = room.activeHumans();
     if (humans.some((s) => !s.connected)) return fail(ERR.NOT_READY);
     if (!this.versionAvailable(version)) return fail(ERR.VERSION_UNSUPPORTED, 'the data of this version is not available');
@@ -1865,8 +1906,10 @@ export class Lobby {
     if (room.match) return fail(ERR.ROOM_STARTED);
     this.dropReplay(room, session.playerId);
     if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo rooms cannot have AI teammates');
-    // 同一个网络地址能挂的 AI 队友总数（跨房间累计），防止用一堆机器人占满 CPU
-    if (this.opts.maxBotsPerAddr > 0) {
+    // 同一个网络地址能挂的 AI 队友总数（跨房间累计），防止用一堆机器人占满 CPU。
+    // 管理员/服主豁免这次限流：维护期自测（尤其 5–20 人房）需要一次加很多 AI，
+    // 被「操作过于频繁」挡住就没法测试（玩家就是管理员本人）。
+    if (this.opts.maxBotsPerAddr > 0 && session.admin !== true) {
       const key = session.limitKey;
       if (key && this.countBots(key) >= this.opts.maxBotsPerAddr) {
         this.limitWarn(`AI teammate limit (${this.opts.maxBotsPerAddr}) reached for ${session.addr}`);
@@ -1980,7 +2023,9 @@ export class Lobby {
       return fail(ERR.BAD_MSG, 'invalid seat configuration');
     }
     const key = session.limitKey || null;
-    if (key && this.opts.maxMatchesPerAddr > 0 && this.countRooms((r) => !!r.match && r.matchKey === key) >= this.opts.maxMatchesPerAddr) {
+    // 同网段同时对局数上限：管理员/服主豁免（维护期要能同时开多局自测）
+    if (key && this.opts.maxMatchesPerAddr > 0 && session.admin !== true
+      && this.countRooms((r) => !!r.match && r.matchKey === key) >= this.opts.maxMatchesPerAddr) {
       this.limitWarn(`match limit (${this.opts.maxMatchesPerAddr}) reached for ${session.addr}`);
       return fail(ERR.RATE, 'too many running matches from your network');
     }
@@ -2343,6 +2388,9 @@ export class Lobby {
         seats,
         // the spectator seats (header): watched like eliminated players, never players
         spectators: room.spectators.map((s) => s.playerId),
+        // 隐身观战者（管理员）：同样要能被 Match 当作观察者，
+        // 否则开局后才进来的 hidden spectator 收不到 m.public（会卡在「正在进入模拟…」）。
+        hiddenSpectators: (Array.isArray(room.hiddenSpectators) ? room.hiddenSpectators : []).map((s) => s.playerId),
         // the room's host: the current executor of a delegated bot layout rehearsal (DESIGN §14; setHost follows a
         // migration while the match runs)
         hostId: room.hostId,
@@ -2360,6 +2408,10 @@ export class Lobby {
         ...(versioned ? { version: room.version } : {}),
         // 「不限时」 (header): only while the room's flag is on, so a default match's opts keep their keys
         ...(room.mode === 'solo' && room.soloUnlimited === true ? { soloUnlimited: true } : {}),
+        // 本服：5–20 人实验房。Match 由 room.experimental 推出 playerCapacity，并在座位数超过容量时抛
+        // RangeError（Match.js「seats exceed room capacity」）。之前这里漏传，match 一律按默认 4 人算，
+        // 于是只要有第 5 个座位就「服务器内部错误」。普通房不带这个键（保持上游 match 的键集不变）。
+        ...(room.mode !== 'solo' && room.experimental ? { experimental: { ...room.experimental } } : {}),
         // The list the lobby just checked the picks with (kittedFor). Vanilla rooms omit it: setDiy stays on
         // KITTED_CHARS, and the worker payload / test journal of a normal match do not grow a key.
         ...(modded ? { kitted: this.kittedFor(room) } : {}),
@@ -2413,6 +2465,13 @@ export class Lobby {
     room.matchKey = null;
     room.replay = this.buildReplay(room, ctx);
     setImmediate(() => this.disposeMatchCtx(ctx));
+    // 本服：对局结束后重新开始「15 分钟未开始对局就解散」的计时。
+    // 以前这里什么都没做，解散计时一直按 room.createdAt（建房那一刻）算，
+    // 而 lastMatchEndAt 只被读取、从来没被赋值 —— 于是一局打完回到房间后，
+    // 剩余时间早就耗光，房间立刻被判超时解散（玩家反馈「对局结束房间自动解散 / 房间时间到了」）。
+    // 现在：对局一结束就把计时基准推到「现在」，玩家有完整的 15 分钟再来一局。
+    room.lastMatchEndAt = this.now();
+    room.createdAt = room.lastMatchEndAt;
     // a match of gameplay plugins, or of an official version, whose match host stopped (header "Gameplay plugins",
     // "Official versions"; its members were told: proxy.js)
     const why = summary && typeof summary.reason === 'string' && /^(?:plugin|version)-/.test(summary.reason) ? ` (${summary.reason}${summary.detail ? `: ${summary.detail}` : ''})` : '';
@@ -2447,6 +2506,16 @@ export class Lobby {
   /** Match broadcast; the latest m.public and a broadcast m.result are also kept for the replay. */
   matchBroadcast(room, ctx, msg, encoded = null) {
     if (msg.t === 'm.public' && reconcileAiTakeover(this, room)) this.broadcastState(room);
+    // 本服：把对局进度回填到 room，供后台/控制台的「回合」列显示。
+    // 以前 room.liveRound / livePhase 从来没被赋值，持久化时永远是 0，
+    // 后台只能显示「准备中」（玩家反馈「看不到玩家所在的回合」）。
+    // 注意 m.public 帧是扁平的：{ t:'m.public', phase, round, players, ... }，
+    // round / phase 直接在顶层（match/match/views.js publicView）。
+    if (msg.t === 'm.public') {
+      const r = Number(msg.round);
+      if (Number.isSafeInteger(r) && r >= 0) room.liveRound = r;
+      if (typeof msg.phase === 'string') room.livePhase = msg.phase;
+    }
     const data = this.broadcastRoom(room, msg, encoded);
     if (data == null) return;
     if (msg.t === 'm.public') ctx.lastPublic = data;
@@ -2700,6 +2769,11 @@ export class Lobby {
     const card = session.card && chessCharIds(this.dataFor(room)).has(session.card) ? session.card : null;
     return {
       seat: idx, playerId: session.playerId, name: session.name, tag: session.tag || null, accountId: session.accountId || null, isBot: false, ready: false, connected: session.connected, left: false,
+      // 游客标记：游客只能游玩/旁观，不能当选房主（migrateHost 用它排除游客）。
+      guest: session.guest === true || !session.accountId,
+      // 后台/服主标记：只用于控制台把「玩家」显示成「管理员」，不参与任何规则判定。
+      // 判定与服务端的 session.admin 完全一致（adminToken 或账号角色）。
+      admin: session.admin === true,
       loadout: session.loadout || null,
       ops: session.ops || null,
       notOwned: session.notOwned || null,
@@ -2762,19 +2836,57 @@ export class Lobby {
     return true;
   }
 
-  /** Lowest-seat connected human becomes host (else lowest-seat human, else null). */
+  /**
+   * Lowest-seat connected human becomes host (else lowest-seat human, else null).
+   * 游客不继承房主：游客只能游玩/旁观，不能创建同盟模拟房间，自然也不该成为房主
+   * （以前这里直接取第一个在线玩家，普通房主退出后房主会落到游客头上 ——
+   *  玩家反馈「游客成了房主」）。只有房间里全是游客时才退回给他们，
+   * 避免出现「没有房主、房间卡住」的情况。
+   */
   migrateHost(room) {
     const humans = room.activeHumans();
-    const pick = humans.find((s) => s.connected) || humans[0] || null;
+    const nonGuest = humans.filter((s) => s && s.guest !== true);
+    const pool = nonGuest.length ? nonGuest : humans;
+    const pick = pool.find((s) => s.connected) || pool[0] || null;
     const prev = room.hostId;
     room.hostId = pick ? pick.playerId : null;
-    if (pick && prev !== pick.playerId) this.log.info(`[lobby] ${room.code} host → ${pick.name}`);
+    if (pick && prev !== pick.playerId) {
+      this.log.info(`[lobby] ${room.code} host → ${pick.name}${pick.guest === true ? ' (all guests, fallback)' : ''}`);
+    }
+    // 房主换人后重新判定「不自动销毁」：noExpire 只在房主本人是管理员/服主时成立。
+    // 管理员建房后离开、房主交给普通玩家，房间必须恢复 15 分钟销毁计时，
+    // 否则 adminCreated/noExpire 会一直停在 true，这个房间永远扫不掉（僵尸房）。
+    // 反向也成立：普通房主走了、接任的是管理员，则从此刻起不再销毁。
+    if (room.hostId !== prev) this.syncNoExpire(room);
     // a host change voids the version vote (header "Official versions") — defensive: while a vote is open (no match) the
     // host only changes by leaving, kick or grace timeout, whose freed seat voided it already (removeMember)
     if (room.hostId !== prev && room.versionVote) this.voidVersionVote(room, 'members');
     // a running match follows the host change: its delegated bot rehearsals fall back to the server and later ones ask
     // the new host (DESIGN §14, Match.setHost)
     if (room.match && room.hostId !== prev) this.callMatch(room, 'setHost', room.hostId);
+  }
+
+  /**
+   * 按「当前房主是不是管理员」重新设置 adminCreated / noExpire。
+   * 只有建房那一刻和房主换人时需要调用；匹配开始后不再改（房间已不属于大厅）。
+   * @param {Room} room
+   */
+  syncNoExpire(room) {
+    if (!room || room.match) return;
+    // 没有房主（房间里已经没人、即将销毁）：保持原状，不要在这里把 noExpire 抹掉。
+    // 房间会紧接着被 disposeRoom('empty') 处理，此时改动只会产生误导性的日志。
+    if (!room.hostId) return;
+    const session = this.registry.byId(room.hostId);
+    const isAdmin = !!(session && session.admin === true);
+    const before = room.noExpire === true;
+    room.adminCreated = isAdmin;
+    room.noExpire = isAdmin;
+    // 从「不销毁」切回「计时」时，把起点重置为现在：否则会拿很久以前的 createdAt
+    // 去比 15 分钟，房间可能在切回的瞬间就被判定过期直接删掉。
+    if (before && !isAdmin) room.createdAt = this.now();
+    if (before !== isAdmin) {
+      this.log?.info?.(`[lobby] ${room.code} noExpire ${before} -> ${isAdmin}`);
+    }
   }
 
   startGrace(room, seat) {
@@ -2858,12 +2970,24 @@ export class Lobby {
   // Sending
   // ---------------------------------------------------------------------------------------------------
 
-  /** Connected, non-departed human sessions of a room — its spectators included (room.state, match broadcasts). */
+  /**
+   * Connected, non-departed human sessions of a room (room.state, match broadcasts).
+   * 包含席位、观战席，以及「隐身观战」的观察者（hiddenSpectators）。
+   * 以前这里只遍历 seats + spectators，隐身观战者只收到 room.state、
+   * 收不到任何对局帧（m.public），前端就一直停在「正在进入模拟…」
+   * —— 玩家反馈「隐身观战加载不出来」。
+   */
   *memberSessions(room) {
-    for (const s of [...room.seats, ...room.spectators]) {
+    const all = [...room.seats, ...room.spectators, ...(Array.isArray(room.hiddenSpectators) ? room.hiddenSpectators : [])];
+    const seen = new Set();
+    for (const s of all) {
       if (!s || s.isBot || s.left) continue;
+      if (s.playerId && seen.has(s.playerId)) continue;   // 同一人只发一次
       const session = this.registry.byId(s.playerId);
-      if (session && session.connected && session.roomCode === room.code) yield session;
+      if (session && session.connected && session.roomCode === room.code) {
+        if (s.playerId) seen.add(s.playerId);
+        yield session;
+      }
     }
   }
 

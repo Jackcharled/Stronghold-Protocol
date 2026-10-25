@@ -198,6 +198,36 @@ export class SessionRegistry {
   /** @param {string} playerId @returns {Session | null} */
   byId(playerId) { return this.byPlayerId.get(playerId) || null; }
 
+  /**
+   * 同一账号当前绑定的所有会话。
+   *
+   * 跨设备对局恢复（lobby.js resumeAccount）靠它找到该账号在别的设备上的座位；
+   * 升级 0.3.3 时这个方法随重构丢失，导致 account.resume 抛出
+   * `TypeError: this.registry.byAccount is not a function`，
+   * 玩家侧表现为「服务器内部错误」反复弹出（同一条消息被合并计数成 ×N）。
+   * @param {string} accountId @returns {Session[]}
+   */
+  byAccount(accountId) {
+    if (typeof accountId !== 'string' || !accountId) return [];
+    return [...this.byPlayerId.values()].filter((s) => s.accountId === accountId);
+  }
+
+  /**
+   * 轮换一个会话的重连令牌（跨设备接管后，旧设备的令牌立即失效）。
+   * 与 byAccount 一样是 0.3.3 升级时丢失的方法：resumeAccount 调用它会抛
+   * `this.registry.rotateToken is not a function`，同样表现为「服务器内部错误」。
+   * @param {Session} s @returns {string | null}
+   */
+  rotateToken(s) {
+    if (!s) return null;
+    if (this.byTokenMap.get(s.token) === s) this.byTokenMap.delete(s.token);
+    let token;
+    do token = newToken(); while (this.byTokenMap.has(token));
+    s.token = token;
+    this.byTokenMap.set(token, s);
+    return token;
+  }
+
   /** @param {Session} s */
   remove(s) {
     if (this.byPlayerId.get(s.playerId) === s) this.byPlayerId.delete(s.playerId);
@@ -651,7 +681,12 @@ export class Network {
     }
     if (msg.t === 'hello') { this.onHelloMsg(conn, msg, now); return; }
     if (!conn.session) { this.reply(conn, errorMsg(ERR.BAD_MSG, rid, 'hello required')); return; }
-    if (HEAVY_TYPES.has(msg.t) && !conn.heavy.take(now)) { this.reply(conn, errorMsg(ERR.RATE, rid, `${msg.t} too often`)); return; }
+    // 重请求节流（HEAVY_TYPES：room.card / room.loadout / room.skins …）。
+    // 管理员/服主豁免：维护期自测要连续改名片、调配、皮肤等，挨个保存会被
+    // 「操作过于频繁」拦下（玩家反馈的正是这类）。普通玩家仍受保护。
+    if (HEAVY_TYPES.has(msg.t) && conn.session.admin !== true && !conn.heavy.take(now)) {
+      this.reply(conn, errorMsg(ERR.RATE, rid, `${msg.t} too often`)); return;
+    }
 
     // A client that missed a delta asks for a full frame (shared/stateDelta.js StateReceiver). Dropping the baseline is
     // the point: the next frame of every state channel is then a full one, which is what restores the client. The state
@@ -760,6 +795,10 @@ export class Network {
     // 若只认 adminToken，管理员会被维护开关误拦。两者任一表明 owner/admin 即可。
     session.admin = verifyAdminToken(msg.adminToken)
       || (account != null && (account.role === 'owner' || account.role === 'admin'));
+    // 诊断用：记录本次 hello 带来的身份材料，便于排查「管理员不被识别」
+    session.accountRole = account ? account.role : null;
+    session.hadAdminToken = typeof msg.adminToken === 'string' && msg.adminToken.length > 0;
+    session.hadAccountToken = typeof msg.accountToken === 'string' && msg.accountToken.length > 0;
     session.name = name;
     session.lastSeen = now;
     session.addr = conn.ip;
