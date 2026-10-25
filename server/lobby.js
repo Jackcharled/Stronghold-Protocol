@@ -248,7 +248,7 @@ function notifyPartyLeave(room) {
 }
 
 import { aiTakeover, resetAiTakeover, reconcileAiTakeover } from './aiTakeover.js';
-import { randomBytes, randomInt } from 'node:crypto';
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { DIFFICULTIES, ERR, MAX_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
 import { roomCapacity } from '../shared/playerCapacity.js';
@@ -404,6 +404,25 @@ function roomTtlMs() {
   return __roomTtlCache.ms;
 }
 
+const __watchSecretFile = new URL('../../.secrets/watch-secret', import.meta.url);
+function watchSecret() {
+  try { return readFileSync(__watchSecretFile, 'utf8').trim(); } catch { return ''; }
+}
+function verifyWatchToken(token, code) {
+  if (typeof token !== 'string' || !token.includes('.')) return false;
+  const sec = watchSecret();
+  if (!sec) return false;
+  const [payload, sig] = token.split('.');
+  if (!payload || !sig) return false;
+  const want = createHmac('sha256', sec).update(payload).digest('base64url');
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return data && data.c === code && Number(data.exp) > Date.now();
+  } catch { return false; }
+}
+
 /** One room: 4 seat slots, host, difficulty, optional running match. */
 export class Room {
   /**
@@ -451,6 +470,8 @@ export class Room {
     this.seats = new Array(this.capacity).fill(null);
     /** @type {{ playerId: string, name: string, connected: boolean }[]} spectator seats, ≤ MAX_SPECTATORS (header) */
     this.spectators = [];
+    /** @type {{ playerId: string, name: string, connected: boolean }[]} hidden admin watchers */
+    this.hiddenSpectators = [];
     /** @type {any} running Match instance */
     this.match = null;
     // 匹配队友期间暂停 15 分钟解散计时（本服）
@@ -511,6 +532,12 @@ export class Room {
 
   /** @param {string} playerId @returns {{ playerId: string, name: string, connected: boolean } | null} */
   spectatorOf(playerId) { return this.spectators.find((s) => s.playerId === playerId) || null; }
+  hiddenSpectatorOf(playerId) { return this.hiddenSpectators.find((s) => s.playerId === playerId) || null; }
+  watcherOf(playerId) { return this.spectatorOf(playerId) || this.hiddenSpectatorOf(playerId); }
+  spectatorLimit() {
+    if (this.mode !== 'coop') return 0;
+    return Math.max(MAX_SPECTATORS, Math.ceil(this.activeHumans().length / 2));
+  }
 
   /** Lowest free seat index, or -1. */
   freeSeat() { return this.seats.indexOf(null); }
@@ -551,6 +578,7 @@ export class Room {
           ...(!s.isBot && s.skins && Object.keys(s.skins).length ? { skins: s.skins } : {}) }
         : null)),
       spectators: this.spectators.map((s) => ({ playerId: s.playerId, name: s.name, connected: s.connected, ...(this.needsContent ? { content: /** @type {any} */ (s).content || 'loading' } : {}) })),
+      maxSpectators: this.spectatorLimit(),
       ...(this.content ? { content: this.content.trusted ? {...this.content, trusted:{...this.content.trusted, consent:Object.fromEntries(this.seats.filter(x => x && !x.isBot).map(x => [x.seat,x.consentCs === this.content.cs]))}} : this.content } : {}),
       // another official version than 第二期下半, and its open vote (header "Official versions"): omitted otherwise, so a
       // default room's room.state stays identical
@@ -793,7 +821,7 @@ export class Lobby {
     session.notice = null;
     session.pendingResult = null;
     // a player seat, or a spectator seat (header): both carry `connected` / `name`
-    const seat = room.seatOf(session.playerId) || room.spectatorOf(session.playerId);
+    const seat = room.seatOf(session.playerId) || room.watcherOf(session.playerId);
     this.clearGrace(session.playerId);
     // Only a visible change (reconnect, rename, new host) is broadcast; a plain resync (repeated hello on a
     // live socket) answers the requester alone, so hello spam cannot amplify into room-wide traffic.
@@ -1200,21 +1228,35 @@ export class Lobby {
    * room.spectate: one of a co-op room's MAX_SPECTATORS spectator seats, in its lobby or during its match (header). In a
    * running match the match registers the spectator and resends what it may see (Match.addSpectator).
    */
-  spectate(session, { code, testAck }) {
+  spectate(session, { code, testAck, hidden, adminToken }) {
     const norm = String(code).trim().toUpperCase();
     const room = norm.length === ROOM_CODE_LEN ? this.rooms.get(norm) : undefined;
     if (!room) return fail(ERR.ROOM_NOT_FOUND);
     if (room.test && testAck !== true) return fail(ERR.TEST_CONFIRM);
+    const wantHidden = hidden === true;
+    if (wantHidden && !verifyWatchToken(adminToken, room.code)) return fail(ERR.BAD_MSG, 'admin watch denied');
     const cur = this.roomOf(session);
     if (cur === room) {
-      if (!room.spectatorOf(session.playerId)) return fail(ERR.ALREADY, 'seated as a player');
+      if (wantHidden && room.hiddenSpectatorOf(session.playerId)) { this.sendState(room, session); return OK; }
+      if (!room.watcherOf(session.playerId)) return fail(ERR.ALREADY, 'seated as a player');
       this.sendState(room, session);
       return OK;
     }
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
-    if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
-    if (room.spectators.length >= MAX_SPECTATORS) return fail(ERR.ROOM_FULL, 'no free spectator seat');
+    if (!wantHidden && room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
+    if (!wantHidden && room.spectators.length >= room.spectatorLimit()) return fail(ERR.ROOM_FULL, 'no free spectator seat');
     if (cur) this.removeMember(cur, session.playerId);
+    if (wantHidden) {
+      if (!room.hiddenSpectatorOf(session.playerId)) {
+        room.hiddenSpectators.push({ playerId: session.playerId, name: session.name, connected: session.connected });
+      }
+      session.roomCode = room.code;
+      session.notice = null;
+      session.pendingResult = null;
+      this.sendState(room, session);
+      if (room.match) this.callMatch(room, 'addSpectator', session.playerId, true);
+      return OK;
+    }
     room.spectators.push({ playerId: session.playerId, name: session.name, connected: session.connected });
     session.roomCode = room.code;
     session.notice = null;
@@ -1533,7 +1575,7 @@ export class Lobby {
     if (!room) return fail(ERR.NOT_IN_ROOM);
     if (!room.needsContent || room.content?.cs !== cs) return OK;
     if (!session.connected) return OK;
-    const seat = room.seatOf(session.playerId) || room.spectatorOf(session.playerId);
+    const seat = room.seatOf(session.playerId) || room.watcherOf(session.playerId);
     if (!seat) return OK;
     if (ctx && ctx.from && (ctx.from.seat !== seat || ctx.from.gen !== (seat.contentGen || 0))) return OK;
     if (ok !== false && room.content?.trusted && room.seatOf(session.playerId) && seat.consentCs !== cs) return fail(ERR.PLUGIN_CONSENT);
@@ -2674,12 +2716,15 @@ export class Lobby {
    * spectator neither holds the host nor keeps a room alive. @returns {boolean} true when it was a spectator seat
    */
   freeSpectatorSeat(room, playerId) {
-    const i = room.spectators.findIndex((s) => s.playerId === playerId);
+    let i = room.spectators.findIndex((s) => s.playerId === playerId);
+    let hidden = false;
+    if (i < 0) { i = room.hiddenSpectators.findIndex((s) => s.playerId === playerId); hidden = i >= 0; }
     if (i < 0) return false;
-    room.spectators.splice(i, 1);
+    if (hidden) room.hiddenSpectators.splice(i, 1);
+    else room.spectators.splice(i, 1);
     if (room.disposed) return true;
     this.callMatch(room, 'removeSpectator', playerId);
-    this.broadcastState(room);
+    if (!hidden) this.broadcastState(room);
     return true;
   }
 
