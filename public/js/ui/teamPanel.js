@@ -28,6 +28,7 @@ import { MissTag, uniteRemaining } from './hud.js';
 import { localAsset } from '../data.js';
 import { t } from '../../../shared/i18n.js';
 import { ReviveAction, RevivalNotice } from './revival.js';
+import { PHONE_QUERY, teamDensity, teamEmoteMode } from './teamLayout.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -117,15 +118,19 @@ export function rowLpTip(lp, cap = 10) {
  *   observe?: null | { canObserve: (p:any) => { fieldId?: string, reason?: string|null, back?: boolean }, observing: boolean, onBack: () => void } }} props
  *   uniteLocal: the local 联防 replica's per-leaker counts while it is on screen (battle runner state().uniteLeft), else null
  */
-export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = false, observe = null, self: selfLive = null, cap = 10, uniteLocal = null, spMarks = null }) {
+export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = false, observe = null, self: selfLive = null, cap = 10, uniteLocal = null, spMarks = null, onRosterOpen = null }) {
   const [openPid, setOpenPid] = useState(null);
   const [rosterOpen, setRosterOpen] = useState(true);
+  // 花名册开合上报给对局屏：表情要在「气泡」与「弹幕」之间切（ui/teamLayout.js teamEmoteMode）。
+  useEffect(() => { onRosterOpen?.(rosterOpen); }, [rosterOpen]);
   // the playerId whose avatar just called onWatch, so the other click of a double-click does not open the view again
   const askedAt = useRef(/** @type {{ id: string|null, at: number }} */ ({ id: null, at: 0 }));
   const phaseKey = `${pub?.phase}:${pub?.round}`;
   useEffect(() => { setOpenPid(null); }, [phaseKey, watching, observe?.observing]);
   const players = sortedPlayers(pub);
   if (!players.length) return null;
+  // 表情走弹幕时，行里不再挂气泡（否则同一句表情放两次）。
+  const rowBubbles = teamEmoteMode({ density: teamDensity({ count: players.length, phone: globalThis.matchMedia?.(PHONE_QUERY)?.matches }), open: rosterOpen }) === 'bubble' ? bubbles : null;
   const poolGroups = Array.isArray(pub?.poolGroups) ? pub.poolGroups.filter((g) => g && Array.isArray(g.playerIds) && g.playerIds.length) : [];
   const poolSummary = Number(pub?.playerCapacity) > 4 && poolGroups.length
     ? poolGroups.every((g) => g.playerIds.length === 1)
@@ -179,7 +184,7 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
       const status = p.alive === false ? 'dead' : p.status;
       const meta = STATUS_META[status] || STATUS_META.acting;
       const watched = teammateFieldShown(watching, p);
-      const bubble = bubbles?.get(p.playerId);
+      const bubble = rowBubbles?.get(p.playerId);
       const offline = p.connected === false && !p.isBot;
       const open = !!observe && openPid === p.playerId && !self;
       const back = !!observe && self && observe.observing;

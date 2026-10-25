@@ -101,6 +101,8 @@ import { ChoiceOverlay, spMarks } from '../ui/choiceOverlay.js';
 import { EnemyDrawer } from '../ui/enemyDrawer.js';
 import { Ticker } from '../ui/ticker.js';
 import { EmoteWheel } from '../ui/emotes.js';
+import { Danmaku } from '../ui/danmaku.js';
+import { PHONE_QUERY, teamDensity, teamEmoteMode } from '../ui/teamLayout.js';
 import { EffectsList } from '../ui/effectsList.js';
 import { CombatHud } from '../ui/combatHud.js';
 import { CombatMetricsPanel } from '../ui/combatMetrics.js';
@@ -1074,6 +1076,19 @@ function MatchScreen() {
     if (e && e.seq > lastEmote.current) { lastEmote.current = e.seq; if (e.playerId !== myId) audio.sfx('emote', { volume: 0.6 }); }
   }, [emotes]);
 
+  // 5–20 人房 / 手机 / 折起的花名册：表情改走弹幕（ui/danmaku.js），房间行里不再挂气泡。
+  const [teamRosterOpen, setTeamRosterOpen] = useState(true);
+  const [phoneNow, setPhoneNow] = useState(() => !!globalThis.matchMedia?.(PHONE_QUERY)?.matches);
+  useEffect(() => {
+    const mq = globalThis.matchMedia?.(PHONE_QUERY);
+    if (!mq) return undefined;
+    const onChange = (e) => setPhoneNow(e.matches);
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else mq.addListener?.(onChange);
+    return () => { if (mq.removeEventListener) mq.removeEventListener('change', onChange); else mq.removeListener?.(onChange); };
+  }, []);
+  const emoteMode = teamEmoteMode({ density: teamDensity({ count: players.length, phone: phoneNow }), open: teamRosterOpen });
+
   // ---- actions ----------------------------------------------------------------------------------------------
   const buy = useCallback(async (i) => {
     // Clicks and hotkeys share this guard while the same slot's purchase is awaiting a reply.
@@ -1892,9 +1907,12 @@ function MatchScreen() {
       <${TeamPanel} pub=${pub} myId=${myId} watching=${watchingNow} bubbles=${bubbles} onWatch=${watchPlayer} cap=${gd.config?.lpCapPerRound ?? 10} uniteLocal=${uniteLocal}
         spMarks=${sp ? spMarks(sp, { solo }) : null}
         self=${Number.isFinite(priv?.lp) ? { lp: priv.lp, pending: liveLpNow.pending, unite: liveLpNow.unite, left: liveLpNow.left } : null}
-        observe=${cc ? { canObserve: (p) => observeTarget(p, pub, myId, { observing: watchingOther, ownDone: localDone }), observing: watchingOther, onBack: backHome } : null} />
+        observe=${cc ? { canObserve: (p) => observeTarget(p, pub, myId, { observing: watchingOther, ownDone: localDone }), observing: watchingOther, onBack: backHome } : null}
+        onRosterOpen=${setTeamRosterOpen} />
 
       <div class="gm__effects"><${EffectsList} effects=${watchingOther && field ? (field.effects ?? null) : priv?.effects} /></div>
+
+      ${emoteMode === 'danmaku' ? html`<${Danmaku} players=${players} myId=${myId} ttl=${bubbleMs} />` : null}
 
       ${watchingOther && !combat ? html`<div class="gm__watching" role="status">
         <${GIcon} name="eye" /><span>${tParts('正在查看 {name} 的阵地（只读）', { name: html`<b>${watchedName}</b>` })}</span>

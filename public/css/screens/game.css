@@ -938,6 +938,32 @@
 .settings-btn.btn--square .btn__icon { width: 62%; height: 62%; } /* the gear glyph is drawn smaller in its box than the book */
 .set-list { display: flex; flex-direction: column; gap: .16rem; padding-top: .06rem; }
 .set-row { display: grid; grid-template-columns: minmax(0, 3.3rem) minmax(0, 1fr) auto; align-items: center; gap: .18rem; min-height: .44rem; }
+/* 窄面板（手机横屏等）：设置弹窗宽度是 7.4rem，手机横屏 1rem≈40px 时约 296px，
+   而标签列 3.3rem ≈ 132px 就占掉一半，滑条/开关/分段按钮全被挤成 0 宽，
+   整个面板被压成一根竖条。这里把「标签 | 控件 | 数值」改成两行：
+   标签独占一行，控件与数值在下一行，既保留字号与层级，又不会把控件挤没。 */
+@media (max-width: 1200px), (max-height: 620px) {
+  .set-modal { --set-modal-w: min(94vw, 7.4rem); }
+}
+@media (max-width: 900px), (max-height: 560px) {
+  .set-modal { --set-modal-w: 94vw; }
+  .set-modal .set-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: .06rem; }
+  .set-modal .set-row__label { grid-column: 1 / -1; }
+  /* 控件占满第二行并与标签左对齐。注意 .set-seg / .set-voice 自带 grid-column: 2/4
+     （原三列布局用），必须用同等或更高优先级覆盖，否则仍被推到右侧。 */
+  .set-modal .set-row > .set-toggle,
+  .set-modal .set-row > .set-seg,
+  .set-modal .set-row > .set-voice {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    max-width: 100%;
+  }
+  .set-modal .set-row > .set-toggle { justify-self: start; }
+  .set-modal .set-row > .set-range { grid-column: 1 / 2; }
+  .set-modal .set-voice .set-seg { grid-column: auto; }
+  .set-modal .set-seg { flex-wrap: wrap; }
+  .set-modal .set-seg button { flex: 1 1 auto; min-width: 0; }
+}
 /* The label column may shrink (the label wraps) instead of pushing its control out of the modal: at 设置 →「文字大小」
    大 / 特大 a phone's label (a Chinese name plus its Latin micro label) is wider than 3.3rem at 1rem = 40 px. */
 .set-row__label { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem; font-size: calc(.18 * var(--t)); color: var(--text-hi); }
