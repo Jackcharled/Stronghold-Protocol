@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>卫戍协议 · 节点控制台</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+.topline{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.topline .actions{justify-content:flex-end}
+.chips{margin:12px 0 0}
+#dashTabs{display:flex;gap:4px;flex-wrap:wrap;margin:16px 22px 8px;border-bottom:1px solid var(--line)}
+#dashTabs button{background:transparent;border:1px solid transparent;border-bottom:0;border-radius:8px 8px 0 0;padding:9px 16px;color:var(--muted)}
+#dashTabs button:hover{background:var(--panel);color:var(--text)}
+#dashTabs button.on{background:var(--panel);border-color:var(--line);color:var(--accent)}
+.tab-hidden{display:none!important}
+#rooms-body td{padding:7px 8px;border-top:1px solid var(--line)}
+#rooms-body tr:first-child td{border-top:0}
+#rooms-bar .rooms-table-wrap{margin-top:10px;border:1px solid var(--line);border-radius:12px;overflow:auto;background:rgba(8,14,18,.35)}
+#rooms-bar .rooms-table{width:100%;min-width:1120px;border-collapse:separate;border-spacing:0;font-size:13px}
+#rooms-bar .rooms-table thead th{position:sticky;top:0;z-index:1;padding:10px 12px;background:#0c171b;color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.08em;text-align:left;white-space:nowrap;border-bottom:1px solid var(--line)}
+#rooms-bar .rooms-table tbody td{padding:11px 12px;border-top:1px solid rgba(120,160,165,.12);vertical-align:middle}
+#rooms-bar .rooms-table tbody td:nth-child(1),#rooms-bar .rooms-table tbody td:nth-child(2),#rooms-bar .rooms-table tbody td:nth-child(3),#rooms-bar .rooms-table tbody td:nth-child(4),#rooms-bar .rooms-table tbody td:nth-child(6),#rooms-bar .rooms-table tbody td:nth-child(8),#rooms-bar .rooms-table tbody td:nth-child(9),#rooms-bar .rooms-table tbody td:nth-child(10){white-space:nowrap}
+#rooms-bar .rooms-table tbody tr:nth-child(even){background:rgba(255,255,255,.018)}
+#rooms-bar .rooms-table tbody tr:hover{background:rgba(78,216,175,.06)}
+#rooms-bar .rooms-table tbody tr:first-child td{border-top:0}
+#rooms-bar .room-code{display:inline-flex;align-items:center;padding:3px 7px;border:1px solid rgba(78,216,175,.28);border-radius:6px;background:rgba(78,216,175,.07);color:#9fe8d2;font:600 12px/1.4 ui-monospace,Consolas,monospace;letter-spacing:.08em;white-space:nowrap}
+#rooms-bar .room-node{white-space:nowrap;color:#d8e8e5}
+#rooms-bar .room-mode{white-space:nowrap;color:var(--muted)}
+#rooms-bar .room-diff{display:inline-block;padding:2px 6px;border-radius:5px;border:1px solid rgba(232,178,90,.28);background:rgba(232,178,90,.07);color:#ffd899;font-size:11px;white-space:nowrap}
+#rooms-bar .room-diff.diff-NORMAL{border-color:rgba(232,90,26,.32);background:rgba(232,90,26,.08);color:#ffc09e}
+#rooms-bar .room-diff.diff-HARD{border-color:rgba(231,49,24,.36);background:rgba(231,49,24,.09);color:#ffad9d}
+#rooms-bar .room-diff.diff-ABYSS{border-color:rgba(255,0,36,.38);background:rgba(255,0,36,.1);color:#ff9caa}
+#mm-bar .ngx-info{flex-wrap:wrap}
+.mm-pools{flex:1 0 100%;display:flex;gap:6px;flex-wrap:wrap;margin-top:3px}
+.mm-ver{font-style:normal;font-size:10px;padding:1px 5px;border-radius:4px;border:1px solid rgba(94,224,185,.45);color:#7ff0cf;background:rgba(94,224,185,.08);cursor:help}
+.mm-pool{display:inline-flex;align-items:center;gap:6px;padding:2px 7px;border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.025);color:#b9cecb;font-size:11px;line-height:1.5}
+.mm-pool b{font-size:11px;font-weight:600;color:#d9e9e6}
+.mm-pool i{font-style:normal;color:#7f9699}
+.mm-pool i b{color:#cfe0dd;font-weight:600}
+.mm-pool.diff-FUNNY{border-color:rgba(246,163,41,.28)}
+.mm-pool.diff-NORMAL{border-color:rgba(232,90,26,.32)}
+.mm-pool.diff-HARD{border-color:rgba(231,49,24,.36)}
+.mm-pool.diff-ABYSS{border-color:rgba(255,0,36,.38)}
+.mm-cap{display:inline-flex;align-items:center;gap:5px;padding-left:6px;margin-left:2px;border-left:1px solid rgba(255,255,255,.08);color:#8fa6a4;font-size:10px;white-space:nowrap}
+.mm-cap b{font-size:10px;color:#a9bfbc;font-weight:600}
+.mm-cap.is-exp{border-left-color:rgba(232,178,90,.28);color:#c9ab72}
+.mm-cap.is-exp b{color:#e8b25a}
+.room-cap{display:inline-flex;align-items:center;margin-left:5px;padding:1px 5px;border:1px solid rgba(232,178,90,.35);border-radius:5px;color:#e8b25a;font-size:10px;line-height:1.4;vertical-align:1px}
+.room-admin{display:inline-flex;align-items:center;margin-left:5px;padding:1px 5px;border:1px solid rgba(122,167,255,.45);border-radius:5px;background:rgba(122,167,255,.1);color:#adc6ff;font-size:10px;line-height:1.4;vertical-align:1px}
+.mm-exp{display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:1px 7px;border:1px solid rgba(232,178,90,.3);border-radius:6px;color:#c9ab72;font-size:10px;white-space:nowrap}
+.mm-exp b{color:#e8b25a;font-size:11px}
+#rooms-bar .room-state{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px}
+#rooms-bar .room-state:before{content:"";width:6px;height:6px;border-radius:50%;background:#7e9295;box-shadow:0 0 0 3px rgba(126,146,149,.12)}
+#rooms-bar .room-state.is-live:before{background:#4ed8af;box-shadow:0 0 0 3px rgba(78,216,175,.14)}
+#rooms-bar .room-state.is-queued:before{background:#e8b25a;box-shadow:0 0 0 3px rgba(232,178,90,.14)}
+#rooms-bar .room-round{display:inline-block;min-width:74px;padding:3px 7px;border-radius:6px;background:rgba(255,255,255,.04);color:#cfe0dd;font-size:12px;text-align:center;white-space:nowrap}
+#rooms-bar .room-round.is-empty{background:transparent;color:#687c7f}
+#rooms-bar .room-players,#rooms-bar .room-spectators{display:flex;flex-wrap:wrap;gap:4px;max-width:360px}
+#rooms-bar .room-players--large{max-width:560px}
+#rooms-bar .room-player,#rooms-bar .room-spectator{display:inline-flex;align-items:center;gap:4px;max-width:180px;padding:3px 7px;border:1px solid rgba(120,160,165,.2);border-radius:999px;background:rgba(255,255,255,.035);color:#d9e9e6;font-size:12px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#rooms-bar .room-player.is-host{border-color:rgba(232,178,90,.38);background:rgba(232,178,90,.08);color:#ffe0ab}
+#rooms-bar .room-player em{font-style:normal;color:#e8b25a;font-size:10px}
+#rooms-bar .room-player i,#rooms-bar .room-spectator i{font-style:normal;color:#8fa4a6;font-size:10px}
+#rooms-bar .room-kind{flex:none;padding:0 4px;border-radius:3px;font-size:9px;line-height:1.5;font-style:normal}
+#rooms-bar .room-kind.is-player{color:#9fe8cf;background:rgba(78,216,175,.12);border:1px solid rgba(78,216,175,.28)}
+#rooms-bar .room-kind.is-guest{color:#ffd08a;background:rgba(232,178,90,.1);border:1px solid rgba(232,178,90,.28)}
+#rooms-bar .room-spectator{border-color:rgba(120,160,165,.16);background:rgba(120,160,165,.05);color:#b9cecb}
+#rooms-bar .room-empty{color:#667b7e}
+#rooms-bar .room-count{display:inline-flex;min-width:24px;justify-content:center;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.045);color:#d9e9e6;font-size:12px}
+#rooms-bar .room-count.is-zero{color:#72878a;background:rgba(255,255,255,.02)}
+#rooms-bar .rooms-pager{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:12px}
+#rooms-bar .rooms-table thead th:nth-child(6),#rooms-bar .rooms-table thead th:nth-child(8),#rooms-bar .rooms-table thead th:nth-child(9),#rooms-bar .rooms-table thead th:nth-child(10){text-align:center}
+#rooms-bar .rooms-table tbody td:nth-child(6),#rooms-bar .rooms-table tbody td:nth-child(8),#rooms-bar .rooms-table tbody td:nth-child(9),#rooms-bar .rooms-table tbody td:nth-child(10){text-align:center}
+@media(max-width:760px){#rooms-bar .rooms-table{min-width:980px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="topline">
+    <div class="brand">
+      <h1>卫戍协议 · 节点控制台</h1>
+      <p class="sub">30 个游戏节点 · 端口 3001–3030 · PM2 管理</p>
+    </div>
+
+    <div class="actions">
+      <button class="act" data-act="start" data-target="all">启动全部</button>
+      <button class="act" data-act="restart" data-target="all">重启全部</button>
+      <button class="act danger" data-act="stop" data-target="all">停止全部</button>
+      <label class="toggle"><input type="checkbox" id="auto" checked><span>自动刷新</span></label>
+    </div>
+  </div>
+
+  <div class="chips">
+    <div class="chip"><b id="s-online">–</b><span>在线节点</span></div>
+    <div class="chip"><b id="s-players">–</b><span>玩家</span></div>
+    <div class="chip"><b id="s-guests">–</b><span>游客</span></div>
+    <div class="chip" title="含已登录未入房、观战和多标签连接"><b id="s-other">–</b><span>未入房/其他</span></div>
+    <div class="chip"><b id="s-total">–</b><span>总在线</span></div>
+    <div class="chip"><b id="s-rooms">–</b><span>房间</span></div>
+    <div class="chip"><b id="s-matches">–</b><span>对局中</span></div>
+    <div class="chip"><b id="s-ai">–</b><span>AI 队友</span></div>
+    <div class="chip"><b id="s-mem">–</b><span>总内存</span></div>
+    <div class="chip" title="数据最后刷新时间"><b id="s-time">–</b><span>最后更新</span></div>
+  </div>
+</header>
+
+<nav id="dashTabs">
+  <button data-g="overview" class="on">总览</button>
+  <button data-g="match">匹配与房间</button>
+  <button data-g="settings">公告与设置</button>
+  <button data-g="ops">防护与日志</button>
+</nav>
+
+<section class="ngx" id="ngx-bar" data-group="ops">
+  <div class="ngx-info">
+    <span class="dot" id="ngx-dot"></span>
+    <b>nginx</b>
+    <span id="ngx-state">检测中…</span>
+    <span class="muted" id="ngx-pid"></span>
+    <a id="ngx-portal" href="https://stronghold.luobomiao.love/" target="_blank" rel="noreferrer">打开入口门户</a>
+  </div>
+  <div class="ngx-actions">
+    <button id="ngx-start">启动</button>
+    <button id="ngx-reload">重载配置</button>
+    <button id="ngx-stop" class="danger">停止</button>
+  </div>
+</section>
+
+<section class="ngx" id="mm-bar" data-group="match">
+  <div class="ngx-info">
+    <span class="dot"></span>
+    <b>匹配队列</b>
+    <span title="房间匹配 = 同盟房间整队入池（每队按房间人数计）；单人匹配 = /mm/ 单人页队列">房间匹配 <b id="mm-parties">–</b> 队 · <b id="mm-partywait">–</b> 人 · 已组成 <b id="mm-matches">–</b> 局 · 单人匹配 <b id="mm-waiting">–</b> 人 · 排队合计 <b id="mm-totalwait">–</b> 人</span>
+    <span class="mm-exp" id="mm-exp20" title="4～20 人实验匹配池（与 4 人池分开）"></span>
+    <span class="muted" id="mm-state"></span>
+    <div class="mm-pools" id="mm-pools" aria-label="按难度匹配池"></div>
+  </div>
+</section>
+
+<section class="ngx" id="rooms-bar" data-group="match" style="flex-direction:column;align-items:stretch">
+  <div class="ngx-info">
+    <span class="dot"></span>
+    <b>房间号</b>
+    <span id="rooms-count">–</span>
+  </div>
+  <div class="rooms-table-wrap">
+    <table class="rooms-table">
+      <thead><tr>
+        <th>房间号</th><th>节点</th><th>类型</th><th>难度</th><th>状态</th><th>回合</th><th>玩家</th><th>真人</th><th>AI</th><th>观战</th><th>旁观者</th>
+      </tr></thead>
+      <tbody id="rooms-body"></tbody>
+    </table>
+  </div>
+  <div id="roomsPager" class="rooms-pager"></div>
+</section>
+
+<section class="ngx" id="ab-bar" data-group="ops">
+  <div class="ngx-info">
+    <span class="dot"></span>
+    <b>自动封 IP</b>
+    <span id="ab-state">检测中…</span>
+    <span class="muted" id="ab-bans"></span>
+  </div>
+  <div class="ngx-actions">
+    <button id="ab-start">启动守护</button>
+    <button id="ab-stop" class="danger">停止守护</button>
+  </div>
+</section>
+
+<section class="ngx" id="consistency-bar" data-group="ops">
+  <div class="ngx-info">
+    <span class="dot"></span>
+    <b>节点一致性</b>
+    <span id="consistency-state">检查中…</span>
+    <span class="muted" id="consistency-detail"></span>
+  </div>
+  <div class="ngx-actions">
+    <button id="consistency-check">重新检查</button>
+  </div>
+</section>
+
+<section class="ngx" id="ttl-bar" data-group="settings">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="dot"></span><b>同盟解散时间</b>
+      <input id="ttl-min" type="number" min="1" max="1440" step="1" style="width:90px;background:#0d1417;border:1px solid #27393b;color:#cfe;border-radius:8px;padding:6px 10px" />
+      <span class="muted" style="font-size:12px">分钟（1~1440；房间无新玩家加入时到期自动解散，保存后立即生效）</span>
+      <button id="ttl-save">保存</button>
+      <span id="ttl-msg" class="muted" style="font-size:12px"></span>
+    </div>
+  </section>
+
+<section class="ngx" id="gate-bar" data-group="settings">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <span class="dot"></span><b>维护开关</b>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input id="create-room-toggle" type="checkbox" checked /> 创建房间</label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input id="gate-start" type="checkbox" checked /> 开始游戏</label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input id="gate-match" type="checkbox" checked /> 匹配队友</label>
+      <button id="gate-save">保存</button>
+      <span id="gate-state" class="muted" style="font-size:12px"></span>
+    </div>
+  </section>
+
+<section class="ngx" id="ann-bar" data-group="settings">
+    <div style="display:flex;flex-direction:column;gap:10px;width:100%">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="dot"></span>
+        <b>临时公告</b>
+        <span class="muted" style="font-size:12px">（玩家大厅顶部的滚动条；每行一条，按顺序循环播放）</span>
+        <span style="flex:1"></span>
+        <label class="muted" style="display:flex;align-items:center;gap:6px;font-size:12px">
+          <input type="checkbox" id="ann-on" checked /> 启用
+        </label>
+      </div>
+      <textarea id="ann-text" rows="5" spellcheck="false" placeholder="例如：&#10;今晚 22:00 维护，预计 10 分钟&#10;新公告已发布，点右上角「公告」查看"
+        style="width:100%;min-height:110px;background:#0d1417;border:1px solid #27393b;color:#cfe;border-radius:8px;padding:10px;font-size:13px;line-height:1.7;resize:vertical"></textarea>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button id="ann-save">保存并发布</button>
+        <button id="ann-clear" class="danger">清空</button>
+        <span class="muted" style="font-size:12px">Ctrl + Enter 保存；每行一条</span>
+        <span id="ann-count" class="muted" style="font-size:12px;margin-left:auto">0 条 · 0 字</span>
+        <span id="ann-updated" class="muted" style="font-size:12px"></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="ngx" id="ann-board-bar" data-group="settings">
+    <div style="display:flex;flex-direction:column;gap:12px;width:100%">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="dot"></span>
+        <b>公告板</b>
+        <span class="muted" style="font-size:12px">（玩家点右上角「公告」查看；可多条，顺序即显示顺序）</span>
+        <span style="flex:1"></span>
+        <button id="ann-board-new">＋ 新增公告</button>
+        <button id="ann-board-json-toggle" style="background:#131c1f;border:1px solid #27393b;color:#9fb4b8;border-radius:8px;padding:6px 12px">高级（JSON）</button>
+      </div>
+
+      <div id="ann-board-list" style="display:flex;flex-direction:column;gap:8px"></div>
+
+      <div id="ann-board-editor" style="display:none;flex-direction:column;gap:10px;border:1px solid #27393b;border-radius:10px;padding:14px;background:#0b1214">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <input id="ann-edit-title" maxlength="120" placeholder="标题（必填，最多 120 字）"
+                 style="flex:1;min-width:280px;background:#0d1417;border:1px solid #27393b;color:#cfe;border-radius:8px;padding:8px 10px" />
+          <input id="ann-edit-date" type="date"
+                 style="width:170px;background:#0d1417;border:1px solid #27393b;color:#cfe;border-radius:8px;padding:8px 10px" />
+        </div>
+        <textarea id="ann-edit-body" rows="12" spellcheck="false"
+                  placeholder="正文：一行一段。&#10;以【】开头的段落会显示为绿色小标题，例如：【节点状态】标题页右上角……"
+                  style="width:100%;min-height:220px;background:#0d1417;border:1px solid #27393b;color:#cfe;border-radius:8px;padding:10px;font-size:13px;line-height:1.7;resize:vertical"></textarea>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button id="ann-edit-save">保存这一条</button>
+          <button id="ann-edit-cancel" style="background:#131c1f;border:1px solid #27393b;color:#9fb4b8;border-radius:8px;padding:6px 12px">取消</button>
+          <span class="muted" style="font-size:12px">每行一段，空行会被忽略</span>
+        </div>
+      </div>
+
+      <div id="ann-board-json" style="display:none;flex-direction:column;gap:8px">
+        <textarea id="ann-board-text" spellcheck="false" style="width:100%;min-height:220px;font-family:ui-monospace,Consolas,monospace;font-size:12px;background:#0d1417;border:1px solid #27393b;color:#cfe;border-radius:6px;padding:10px"></textarea>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button id="ann-board-save">保存 JSON</button>
+          <button id="ann-board-reload" style="background:#131c1f;border:1px solid #27393b;color:#9fb4b8;border-radius:8px;padding:6px 12px">重新载入</button>
+        </div>
+      </div>
+
+      <div id="ann-board-msg" class="muted" style="font-size:12px"></div>
+    </div>
+  </section>
+
+<section class="ngx" id="upd-bar" style="display:none" data-upd-bar-hidden="1">
+  <div class="ngx-info">
+    <span class="dot"></span>
+    <b>更新公告</b>
+    <input id="upd-version" maxlength="32" placeholder="版本号，如 0.3.2" style="width:140px;background:#0d1417;border:1px solid #27393b;color:#cfe;border-radius:8px;padding:6px 10px" />
+    <textarea id="upd-text" maxlength="2000" rows="2" placeholder="更新内容（玩家进入时弹窗提示一次）" style="min-width:520px;background:#0d1417;border:1px solid #27393b;color:#cfe;border-radius:8px;padding:6px 10px;resize:vertical"></textarea>
+    <label class="muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="upd-on" /> 启用</label>
+  </div>
+  <div class="ngx-actions">
+    <button id="upd-save">保存更新公告</button>
+    <button id="upd-clear" class="danger">清除</button>
+  </div>
+</section>
+
+<section class="card" id="trendCard" style="grid-column:1/-1">
+  <div class="row" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <b>指标趋势</b>
+    <span class="legend"><i style="background:#6fe0c0"></i>玩家</span>
+    <span class="legend"><i style="background:#f0c674"></i>AI 队友</span>
+    <span class="legend"><i style="background:#7aa7ff"></i>房间</span>
+    <select id="trendRange" style="margin-left:auto">
+      <option value="60">近 1 小时</option>
+      <option value="180" selected>近 3 小时</option>
+      <option value="360">近 6 小时</option>
+      <option value="1440">近 24 小时</option>
+    </select>
+  </div>
+  <div id="trendWrap" style="position:relative;margin-top:10px">
+    <svg id="trendSvg" viewBox="0 0 800 220" preserveAspectRatio="none" style="width:100%;height:220px;display:block"></svg>
+    <div id="trendTip" style="position:absolute;pointer-events:none;display:none;background:#0b1416;border:1px solid #2a4a45;color:#dff;padding:6px 8px;border-radius:6px;font-size:12px;white-space:nowrap"></div>
+  </div>
+  <div class="muted" id="trendHint" style="margin-top:6px">每 30 秒采样一次；把鼠标移到任意点上可查看该时刻数值</div>
+</section>
+
+<main id="grid"></main>
+
+<footer>
+  <span>绿色=在线且可访问 · 黄色=进程在但网页无响应 · 灰色=已停止 · 红色=异常</span>
+  <span id="err" class="err"></span>
+</footer>
+
+<div id="logs" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 id="logs-title">日志</h2>
+      <button id="logs-close">关闭</button>
+    </div>
+    <div class="modal-body">
+      <h3>stdout</h3>
+      <pre id="logs-out">加载中…</pre>
+      <h3>stderr</h3>
+      <pre id="logs-err"></pre>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/app.js"></script>
+<script>
+(function () {
+  const groups = {
+    overview: ['grid', 'trendCard'],
+    match: ['mm-bar', 'rooms-bar'],
+    settings: ['ttl-bar', 'gate-bar', 'ann-bar', 'ann-board-bar'],
+    ops: ['ngx-bar', 'ab-bar', 'consistency-bar'],
+  };
+  const buttons = [...document.querySelectorAll('#dashTabs button')];
+  function show(g) {
+    if (!groups[g]) g = 'overview';
+    buttons.forEach((b) => b.classList.toggle('on', b.dataset.g === g));
+    for (const [name, ids] of Object.entries(groups)) {
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('tab-hidden', name !== g);
+      }
+    }
+    try { localStorage.setItem('dash.tab', g); } catch (e) { /* ignore */ }
+  }
+  buttons.forEach((b) => { b.onclick = () => show(b.dataset.g); });
+  let g = 'overview';
+  try { g = localStorage.getItem('dash.tab') || 'overview'; } catch (e) { /* ignore */ }
+  show(g);
+})();
+</script>
+<!-- ann-ui-slim -->
+</body>
+</html>
