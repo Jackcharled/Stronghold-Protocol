@@ -65,3 +65,38 @@ desktop.ini
 .claude/
 # tools/sim-check.mjs: the corpus and its Node traces for /dev/sim-check.html
 public/dev/simcheck/data/
+
+# --- patcher/ feature snapshots: NOT from upstream, this server's transplant material ---------------
+# The snapshots under patcher/features/<id>/files/ are copied from the live server. Keep only the code
+# that a transplant actually needs; never commit what the repository is not allowed to hold.
+# Server-only administration (this repo's .gitignore bans admin.html / admin-*.js / admin*.cjs):
+patcher/features/*/files/matchmaker/public/admin.html
+patcher/features/*/files/matchmaker/public/admin-*.js
+patcher/features/*/files/matchmaker/admin*.cjs
+patcher/features/*/files/dashboard/
+patcher/features/*/base/dashboard/
+# binaries and build output copied from the server
+patcher/features/*/files/nginx/
+patcher/features/*/base/nginx/
+patcher/features/*/files/**/*.exe
+patcher/features/*/files/**/*.dll
+patcher/features/*/files/**/*.zip
+# screenshots and ad-hoc debug dumps taken while testing (not part of any feature)
+patcher/features/*/**/*.png
+patcher/features/*/**/*.jpg
+patcher/features/*/**/*.webp
+# secrets, credentials, runtime state
+patcher/features/*/**/.secrets/
+patcher/features/*/**/*.secret.*
+patcher/features/*/**/ecosystem.config.cjs
+patcher/features/*/**/pm2-run-node.cjs
+# certificates and private keys: NEVER committed, under any snapshot path
+patcher/features/*/**/*.pem
+patcher/features/*/**/*.key
+patcher/features/*/**/*.crt
+patcher/features/*/**/*.pfx
+patcher/features/*/**/ssl/
+# server-only operations: hard-coded local paths, service names, watchdog / start / stop scripts
+patcher/features/*/**/deploy/
+patcher/features/*/**/*.ps1
+patcher/features/*/**/*.bat

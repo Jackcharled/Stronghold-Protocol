@@ -1,0 +1,841 @@
+[
+  {
+    "id": "server-idle-guard",
+    "name": "挂机踢人 / 同 IP 建房与 AI 上限",
+    "status": "patcher",
+    "files": [
+      {
+        "path": "server/lobby.js",
+        "baseExists": true,
+        "customBytes": 135908
+      },
+      {
+        "path": "server/http/config.js",
+        "baseExists": true,
+        "customBytes": 6557
+      }
+    ]
+  },
+  {
+    "id": "server-snapshot-checkpoint",
+    "name": "房间/对局快照与 Redis 检查点",
+    "status": "patcher",
+    "files": [
+      {
+        "path": "server/lobby.js",
+        "baseExists": true,
+        "customBytes": 135908
+      },
+      {
+        "path": "server/match/audit.js",
+        "baseExists": true,
+        "customBytes": 31669
+      },
+      {
+        "path": "server/match/board.js",
+        "baseExists": true,
+        "customBytes": 14518
+      },
+      {
+        "path": "server/match/bondsMeta.js",
+        "baseExists": true,
+        "customBytes": 12635
+      },
+      {
+        "path": "server/match/bot.js",
+        "baseExists": true,
+        "customBytes": 107828
+      },
+      {
+        "path": "server/match/botEmotes.js",
+        "baseExists": true,
+        "customBytes": 3450
+      },
+      {
+        "path": "server/match/builtinMeta.js",
+        "baseExists": true,
+        "customBytes": 20201
+      },
+      {
+        "path": "server/match/choices.js",
+        "baseExists": true,
+        "customBytes": 30755
+      },
+      {
+        "path": "server/match/dslMeta.js",
+        "baseExists": true,
+        "customBytes": 7347
+      },
+      {
+        "path": "server/match/effectsMeta.js",
+        "baseExists": true,
+        "customBytes": 42434
+      },
+      {
+        "path": "server/match/fields.js",
+        "baseExists": true,
+        "customBytes": 51323
+      },
+      {
+        "path": "server/match/finalAssault.js",
+        "baseExists": true,
+        "customBytes": 10193
+      },
+      {
+        "path": "server/match/gamedata.js",
+        "baseExists": true,
+        "customBytes": 32497
+      },
+      {
+        "path": "server/match/invariants.js",
+        "baseExists": true,
+        "customBytes": 16245
+      },
+      {
+        "path": "server/match/Match.js",
+        "baseExists": true,
+        "customBytes": 47669
+      },
+      {
+        "path": "server/match/operatorTraits.js",
+        "baseExists": true,
+        "customBytes": 4231
+      },
+      {
+        "path": "server/match/PlayerState.js",
+        "baseExists": true,
+        "customBytes": 21399
+      },
+      {
+        "path": "server/match/pool.js",
+        "baseExists": true,
+        "customBytes": 14094
+      },
+      {
+        "path": "server/match/preview.js",
+        "baseExists": true,
+        "customBytes": 3289
+      },
+      {
+        "path": "server/match/results.js",
+        "baseExists": true,
+        "customBytes": 8155
+      },
+      {
+        "path": "server/match/scheduler.js",
+        "baseExists": true,
+        "customBytes": 7300
+      },
+      {
+        "path": "server/match/snapshot.js",
+        "baseExists": true,
+        "customBytes": 30450
+      },
+      {
+        "path": "server/match/StubMatch.js",
+        "baseExists": true,
+        "customBytes": 13536
+      },
+      {
+        "path": "server/match/testReplay.js",
+        "baseExists": true,
+        "customBytes": 3127
+      },
+      {
+        "path": "server/match/testTrace.js",
+        "baseExists": true,
+        "customBytes": 6173
+      },
+      {
+        "path": "server/match/unite.js",
+        "baseExists": true,
+        "customBytes": 15188
+      },
+      {
+        "path": "server/match/waves.js",
+        "baseExists": true,
+        "customBytes": 37877
+      }
+    ]
+  },
+  {
+    "id": "matching-party",
+    "name": "组队匹配、容量、准备、跨节点转房",
+    "status": "matchmaking-server-ported",
+    "files": [
+      {
+        "path": "matchmaker/account.cjs",
+        "baseExists": false,
+        "customBytes": 82341
+      },
+      {
+        "path": "matchmaker/package-lock.json",
+        "baseExists": false,
+        "customBytes": 5487
+      },
+      {
+        "path": "matchmaker/package.json",
+        "baseExists": false,
+        "customBytes": 81
+      },
+      {
+        "path": "matchmaker/public/account-title.js",
+        "baseExists": false,
+        "customBytes": 40945
+      },
+      {
+        "path": "matchmaker/public/admin.html",
+        "baseExists": false,
+        "customBytes": 63960
+      },
+      {
+        "path": "matchmaker/public/client.js",
+        "baseExists": false,
+        "customBytes": 137317
+      },
+      {
+        "path": "matchmaker/public/index.html",
+        "baseExists": false,
+        "customBytes": 20089
+      },
+      {
+        "path": "matchmaker/public/mm-mobile.css",
+        "baseExists": false,
+        "customBytes": 5800
+      },
+      {
+        "path": "matchmaker/public/ref-announcements.json",
+        "baseExists": false,
+        "customBytes": 6458
+      },
+      {
+        "path": "matchmaker/public/watch.html",
+        "baseExists": false,
+        "customBytes": 6776
+      },
+      {
+        "path": "matchmaker/README.md",
+        "baseExists": false,
+        "customBytes": 2392
+      },
+      {
+        "path": "matchmaker/server.js",
+        "baseExists": false,
+        "customBytes": 38081
+      },
+      {
+        "path": "mm/client.js",
+        "baseExists": false,
+        "customBytes": 134780
+      },
+      {
+        "path": "server/lobby.js",
+        "baseExists": true,
+        "customBytes": 135908
+      }
+    ]
+  },
+  {
+    "id": "server-player-capacity",
+    "name": "5–20 人房间容量、实验选项、20 人协议",
+    "status": "staging-manual",
+    "files": [
+      {
+        "path": "server/lobby.js",
+        "baseExists": true,
+        "customBytes": 135908
+      },
+      {
+        "path": "shared/playerCapacity.js",
+        "baseExists": true,
+        "customBytes": 877
+      },
+      {
+        "path": "shared/experimental.js",
+        "baseExists": true,
+        "customBytes": 3006
+      },
+      {
+        "path": "shared/protocol.js",
+        "baseExists": true,
+        "customBytes": 48124
+      }
+    ]
+  },
+  {
+    "id": "client-announcement",
+    "name": "公告自动弹出与未读黄点",
+    "status": "pending-port",
+    "files": [
+      {
+        "path": "matchmaker/public/client.js",
+        "baseExists": false,
+        "customBytes": 137317
+      },
+      {
+        "path": "mm/client.js",
+        "baseExists": false,
+        "customBytes": 134780
+      }
+    ]
+  },
+  {
+    "id": "client-watch",
+    "name": "隐藏观战、退出清理、Build Guard 禁止自动刷新",
+    "status": "ported-main",
+    "files": [
+      {
+        "path": "public/js/main.js",
+        "baseExists": true,
+        "customBytes": 32140
+      },
+      {
+        "path": "public/js/ui/buildGuard.js",
+        "baseExists": true,
+        "customBytes": 7855
+      }
+    ]
+  },
+  {
+    "id": "client-guest-create",
+    "name": "游客不能建房/开始独立模拟",
+    "status": "ported",
+    "files": [
+      {
+        "path": "public/js/screens/lobby.js",
+        "baseExists": true,
+        "customBytes": 25619
+      },
+      {
+        "path": "server/lobby.js",
+        "baseExists": true,
+        "customBytes": 135908
+      }
+    ]
+  },
+  {
+    "id": "client-room-spectator",
+    "name": "观战人数上限与隐藏观战状态",
+    "status": "ported-ui",
+    "files": [
+      {
+        "path": "public/js/screens/room.js",
+        "baseExists": true,
+        "customBytes": 33444
+      },
+      {
+        "path": "server/lobby.js",
+        "baseExists": true,
+        "customBytes": 135908
+      }
+    ]
+  },
+  {
+    "id": "client-asset-cache",
+    "name": "/assets-cdn、Service Worker、素材包导入",
+    "status": "ported",
+    "files": [
+      {
+        "path": "public/js/assetCache.js",
+        "baseExists": true,
+        "customBytes": 11588
+      },
+      {
+        "path": "public/js/assetPack.js",
+        "baseExists": true,
+        "customBytes": 33745
+      },
+      {
+        "path": "public/js/ui/assetImport.js",
+        "baseExists": true,
+        "customBytes": 11796
+      },
+      {
+        "path": "public/sw.js",
+        "baseExists": true,
+        "customBytes": 1731
+      }
+    ]
+  },
+  {
+    "id": "client-shop-layout",
+    "name": "商店装备空栏与跨版本图标缓存",
+    "status": "ported",
+    "files": [
+      {
+        "path": "public/js/ui/shopBar.js",
+        "baseExists": true,
+        "customBytes": 30742
+      },
+      {
+        "path": "server/match/player/views.js",
+        "baseExists": true,
+        "customBytes": 8189
+      },
+      {
+        "path": "public/js/render/app/host.js",
+        "baseExists": true,
+        "customBytes": 5532
+      },
+      {
+        "path": "public/js/render/textures.js",
+        "baseExists": true,
+        "customBytes": 78457
+      },
+      {
+        "path": "public/js/render/units.js",
+        "baseExists": true,
+        "customBytes": 151928
+      }
+    ]
+  },
+  {
+    "id": "account-and-dashboard",
+    "name": "账号登录/MySQL/管理后台",
+    "status": "custom-outside-upstream",
+    "files": [
+      {
+        "path": "matchmaker/account.cjs",
+        "baseExists": false,
+        "customBytes": 82341
+      },
+      {
+        "path": "dashboard/announce.png",
+        "baseExists": false,
+        "customBytes": 287374
+      },
+      {
+        "path": "dashboard/auto-match.png",
+        "baseExists": false,
+        "customBytes": 1655024
+      },
+      {
+        "path": "dashboard/client-preview.png",
+        "baseExists": false,
+        "customBytes": 1187494
+      },
+      {
+        "path": "dashboard/closure.json",
+        "baseExists": false,
+        "customBytes": 58
+      },
+      {
+        "path": "dashboard/closure2.json",
+        "baseExists": false,
+        "customBytes": 58
+      },
+      {
+        "path": "dashboard/closure3.json",
+        "baseExists": false,
+        "customBytes": 58
+      },
+      {
+        "path": "dashboard/closure4.json",
+        "baseExists": false,
+        "customBytes": 58
+      },
+      {
+        "path": "dashboard/debug-create.png",
+        "baseExists": false,
+        "customBytes": 1120527
+      },
+      {
+        "path": "dashboard/graph-test.json",
+        "baseExists": false,
+        "customBytes": 58
+      },
+      {
+        "path": "dashboard/guest-room.png",
+        "baseExists": false,
+        "customBytes": 1502480
+      },
+      {
+        "path": "dashboard/light-test.json",
+        "baseExists": false,
+        "customBytes": 58
+      },
+      {
+        "path": "dashboard/lobby-mm-inline.png",
+        "baseExists": false,
+        "customBytes": 1572285
+      },
+      {
+        "path": "dashboard/lobby-mm.png",
+        "baseExists": false,
+        "customBytes": 1535962
+      },
+      {
+        "path": "dashboard/lobby-pill.png",
+        "baseExists": false,
+        "customBytes": 1580127
+      },
+      {
+        "path": "dashboard/match-start.png",
+        "baseExists": false,
+        "customBytes": 1656104
+      },
+      {
+        "path": "dashboard/mm-found.png",
+        "baseExists": false,
+        "customBytes": 537703
+      },
+      {
+        "path": "dashboard/mm-inline-solo.png",
+        "baseExists": false,
+        "customBytes": 1582719
+      },
+      {
+        "path": "dashboard/mm-p0.png",
+        "baseExists": false,
+        "customBytes": 576273
+      },
+      {
+        "path": "dashboard/mm-queue.png",
+        "baseExists": false,
+        "customBytes": 89998
+      },
+      {
+        "path": "dashboard/mm-room2.png",
+        "baseExists": false,
+        "customBytes": 572884
+      },
+      {
+        "path": "dashboard/mm-room3.png",
+        "baseExists": false,
+        "customBytes": 575120
+      },
+      {
+        "path": "dashboard/mm-searching.png",
+        "baseExists": false,
+        "customBytes": 569246
+      },
+      {
+        "path": "dashboard/mm-setup.png",
+        "baseExists": false,
+        "customBytes": 544860
+      },
+      {
+        "path": "dashboard/mode-hint.png",
+        "baseExists": false,
+        "customBytes": 213413
+      },
+      {
+        "path": "dashboard/nodes-lobby-open.png",
+        "baseExists": false,
+        "customBytes": 1544791
+      },
+      {
+        "path": "dashboard/nodes-lobby.png",
+        "baseExists": false,
+        "customBytes": 276575
+      },
+      {
+        "path": "dashboard/nodes-match.png",
+        "baseExists": false,
+        "customBytes": 66138
+      },
+      {
+        "path": "dashboard/nodes-room.png",
+        "baseExists": false,
+        "customBytes": 123286
+      },
+      {
+        "path": "dashboard/panel-ann.png",
+        "baseExists": false,
+        "customBytes": 114595
+      },
+      {
+        "path": "dashboard/persist-test.json",
+        "baseExists": false,
+        "customBytes": 58
+      },
+      {
+        "path": "dashboard/preview.png",
+        "baseExists": false,
+        "customBytes": 253890
+      },
+      {
+        "path": "dashboard/public/app.js",
+        "baseExists": false,
+        "customBytes": 36071
+      },
+      {
+        "path": "dashboard/public/index.html",
+        "baseExists": false,
+        "customBytes": 21749
+      },
+      {
+        "path": "dashboard/public/style.css",
+        "baseExists": false,
+        "customBytes": 6278
+      },
+      {
+        "path": "dashboard/resume-test.json",
+        "baseExists": false,
+        "customBytes": 86
+      },
+      {
+        "path": "dashboard/room-match-btn.png",
+        "baseExists": false,
+        "customBytes": 1560246
+      },
+      {
+        "path": "dashboard/room-merged.png",
+        "baseExists": false,
+        "customBytes": 1276829
+      },
+      {
+        "path": "dashboard/room-merged2.png",
+        "baseExists": false,
+        "customBytes": 1282034
+      },
+      {
+        "path": "dashboard/room-merged3.png",
+        "baseExists": false,
+        "customBytes": 1280816
+      },
+      {
+        "path": "dashboard/room-searching.png",
+        "baseExists": false,
+        "customBytes": 139491
+      },
+      {
+        "path": "dashboard/server.js",
+        "baseExists": false,
+        "customBytes": 24451
+      },
+      {
+        "path": "dashboard/title-pill.png",
+        "baseExists": false,
+        "customBytes": 1184326
+      },
+      {
+        "path": "dashboard/transition.png",
+        "baseExists": false,
+        "customBytes": 166211
+      },
+      {
+        "path": "dashboard/update-notice.png",
+        "baseExists": false,
+        "customBytes": 1088141
+      },
+      {
+        "path": "public/js/ui/accountObserver.js",
+        "baseExists": false,
+        "customBytes": 11120
+      }
+    ]
+  },
+  {
+    "id": "deployment",
+    "name": "Nginx 多节点、PM2、一键启停、watchdog",
+    "status": "custom-outside-upstream",
+    "files": [
+      {
+        "path": "nginx/conf/fastcgi.conf",
+        "baseExists": false,
+        "customBytes": 1103
+      },
+      {
+        "path": "nginx/conf/fastcgi_params",
+        "baseExists": false,
+        "customBytes": 1032
+      },
+      {
+        "path": "nginx/conf/koi-utf",
+        "baseExists": false,
+        "customBytes": 2946
+      },
+      {
+        "path": "nginx/conf/koi-win",
+        "baseExists": false,
+        "customBytes": 2326
+      },
+      {
+        "path": "nginx/conf/mime.types",
+        "baseExists": false,
+        "customBytes": 5448
+      },
+      {
+        "path": "nginx/conf/nginx.conf",
+        "baseExists": false,
+        "customBytes": 13306
+      },
+      {
+        "path": "nginx/conf/nginx.conf.bak-before-node4-test",
+        "baseExists": false,
+        "customBytes": 8483
+      },
+      {
+        "path": "nginx/conf/scgi_params",
+        "baseExists": false,
+        "customBytes": 653
+      },
+      {
+        "path": "nginx/conf/ssl/account.key",
+        "baseExists": false,
+        "customBytes": 1706
+      },
+      {
+        "path": "nginx/conf/ssl/fullchain.pem",
+        "baseExists": false,
+        "customBytes": 5681
+      },
+      {
+        "path": "nginx/conf/ssl/privkey.pem",
+        "baseExists": false,
+        "customBytes": 1702
+      },
+      {
+        "path": "nginx/conf/uwsgi_params",
+        "baseExists": false,
+        "customBytes": 681
+      },
+      {
+        "path": "nginx/conf/win-utf",
+        "baseExists": false,
+        "customBytes": 3737
+      },
+      {
+        "path": "nginx/contrib/geo2nginx.pl",
+        "baseExists": false,
+        "customBytes": 1272
+      },
+      {
+        "path": "nginx/contrib/README",
+        "baseExists": false,
+        "customBytes": 543
+      },
+      {
+        "path": "nginx/contrib/unicode2nginx/koi-utf",
+        "baseExists": false,
+        "customBytes": 5991
+      },
+      {
+        "path": "nginx/contrib/unicode2nginx/unicode-to-nginx.pl",
+        "baseExists": false,
+        "customBytes": 1090
+      },
+      {
+        "path": "nginx/contrib/unicode2nginx/win-utf",
+        "baseExists": false,
+        "customBytes": 5339
+      },
+      {
+        "path": "nginx/contrib/vim/ftdetect/nginx.vim",
+        "baseExists": false,
+        "customBytes": 198
+      },
+      {
+        "path": "nginx/contrib/vim/ftplugin/nginx.vim",
+        "baseExists": false,
+        "customBytes": 29
+      },
+      {
+        "path": "nginx/contrib/vim/indent/nginx.vim",
+        "baseExists": false,
+        "customBytes": 250
+      },
+      {
+        "path": "nginx/contrib/vim/syntax/nginx.vim",
+        "baseExists": false,
+        "customBytes": 113553
+      },
+      {
+        "path": "nginx/docs/CHANGES",
+        "baseExists": false,
+        "customBytes": 354661
+      },
+      {
+        "path": "nginx/docs/CHANGES.ru",
+        "baseExists": false,
+        "customBytes": 543947
+      },
+      {
+        "path": "nginx/docs/CODE_OF_CONDUCT.md",
+        "baseExists": false,
+        "customBytes": 5215
+      },
+      {
+        "path": "nginx/docs/CONTRIBUTING.md",
+        "baseExists": false,
+        "customBytes": 4954
+      },
+      {
+        "path": "nginx/docs/LICENSE",
+        "baseExists": false,
+        "customBytes": 1319
+      },
+      {
+        "path": "nginx/docs/OpenSSL.LICENSE",
+        "baseExists": false,
+        "customBytes": 10175
+      },
+      {
+        "path": "nginx/docs/PCRE.LICENCE",
+        "baseExists": false,
+        "customBytes": 4011
+      },
+      {
+        "path": "nginx/docs/README.md",
+        "baseExists": false,
+        "customBytes": 14571
+      },
+      {
+        "path": "nginx/docs/SECURITY.md",
+        "baseExists": false,
+        "customBytes": 4331
+      },
+      {
+        "path": "nginx/docs/SUPPORT.md",
+        "baseExists": false,
+        "customBytes": 1720
+      },
+      {
+        "path": "nginx/docs/zlib.LICENSE",
+        "baseExists": false,
+        "customBytes": 983
+      },
+      {
+        "path": "nginx/html/50x.html",
+        "baseExists": false,
+        "customBytes": 497
+      },
+      {
+        "path": "nginx/html/index.html",
+        "baseExists": false,
+        "customBytes": 896
+      },
+      {
+        "path": "nginx/nginx.exe",
+        "baseExists": false,
+        "customBytes": 6662144
+      },
+      {
+        "path": "nginx/run-nginx.mjs",
+        "baseExists": false,
+        "customBytes": 542
+      },
+      {
+        "path": "ecosystem.config.cjs",
+        "baseExists": false,
+        "customBytes": 4816
+      },
+      {
+        "path": "start-all.bat",
+        "baseExists": false,
+        "customBytes": 680
+      },
+      {
+        "path": "stop-all.bat",
+        "baseExists": false,
+        "customBytes": 679
+      },
+      {
+        "path": "deploy/server-watchdog.ps1",
+        "baseExists": false,
+        "customBytes": 2001
+      }
+    ]
+  }
+]

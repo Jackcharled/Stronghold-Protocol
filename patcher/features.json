@@ -134,12 +134,33 @@
       "status": "ported-ui",
       "files": [
         "public/js/screens/room.js",
+        "public/js/screens/game.js",
         "server/lobby.js"
       ],
       "tests": [
-        "观战上限",
+        "观战上限随人数动态变化（5-20 人）",
+        "观战席分母显示 room.state.maxSpectators 而不是常量 2",
         "隐藏观战不占玩家位",
+        "隐藏观战收得到 m.public（不能停在「正在进入模拟…」）",
         "多人观战"
+      ]
+    },
+    {
+      "id": "client-emote-danmaku",
+      "name": "表情弹幕（5–20 人房 / 手机 / 花名册折起时）",
+      "status": "ported-ui",
+      "files": [
+        "public/js/ui/danmaku.js",
+        "public/js/ui/teamLayout.js",
+        "public/js/ui/teamPanel.js",
+        "public/js/screens/game.js",
+        "css/screens/game.css"
+      ],
+      "tests": [
+        "桌面 4 人以下为气泡、5 人以上为弹幕",
+        "手机端始终弹幕",
+        "弹幕模式下房间行里不再重复挂气泡",
+        "Danmaku 组件真的被 game.js 渲染（不是只有文件存在）"
       ]
     },
     {
@@ -205,6 +226,21 @@
         "443 入口",
         "节点路由",
         "停止脚本不被 watchdog 拉起"
+      ]
+    },
+    {
+      "id": "client-skin-io",
+      "name": "皮肤设置导入/导出",
+      "status": "ported-main",
+      "files": [
+        "public/js/ui/skinIO.js",
+        "public/js/screens/loadout.js"
+      ],
+      "tests": [
+        "更多菜单导出皮肤",
+        "更多菜单导入皮肤",
+        "导入只覆盖皮肤不动调配",
+        "非法文件被拒绝"
       ]
     }
   ]
