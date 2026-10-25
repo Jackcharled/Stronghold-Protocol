@@ -19,7 +19,7 @@
 //   * Overtime: bossTurnHpReduceTime counts REAL seconds like the level's 120 s maxPlayTime (which runs out first; the
 //     battle goes on): from 150 real s (300 game s on the 2× field clock) the team loses bossOvertimeDrainPerSec (1) LP
 //     per real second (gamedata.js bossOvertimeDue); m.public.deadline = the 120 s countdown, m.public.overtimeAt = the
-//     drain start. Minion / boss leaks cost their `lpr`; team LP 0 ⇒ defeat (all fields force-ended; PRTS Stronghold-Protocol：盟约 下半
+//     drain start. Minion / boss leaks cost their `lpr`; team LP 0 ⇒ defeat (all fields force-ended; PRTS 卫戍协议：盟约 下半
 //     "…使目标生命值扣除至0，则无视倒计时直接失败"); pool 0 ⇒ victory. The first of the two the server registers decides
 //     (Match._finalEnding): a report that arrives after the team LP ran out credits nothing (user playtest #6 item 5).
 //   * Pool HP is a float that never keeps float dust: the hit that would leave less than BOSS_POOL_MIN_HP (1) takes the
@@ -38,7 +38,6 @@
 import { BOSS_ROW_OFFSET, COLS, BOSS_POOL_MIN_HP } from '../sim/constants.js';
 import { mirrorDir, normDir } from '../sim/dir.js';
 import { bossPoolShareOf } from './gamedata.js';
-import { MAX_PLAYER_CAPACITY } from '../../shared/playerCapacity.js';
 
 /**
  * BOSS_HIT ticker thresholds (activity_table autoChessData.broadcastList comment_boss_hit_1..3, paramList 0.2 / 0.5 /
@@ -86,17 +85,15 @@ export function pairPlayers(alive, rng, previous = null) {
 }
 
 /** Shared boss HP for a boss id with `aliveCount` alive players (GameData.bossPoolShare / bossPoolShareOf; omitted ⇒ a full team). */
-export function bossPoolHp(gd, bossId, aliveCount, { experimental = false } = {}) {
+export function bossPoolHp(gd, bossId, aliveCount) {
   const boss = gd.boss(bossId);
   const diff = gd.difficulty;
   let base = boss && boss.bloodPoint && Number.isFinite(boss.bloodPoint[diff]) ? boss.bloodPoint[diff] : null;
   if (base == null && boss && boss.bloodPoint) base = Object.values(boss.bloodPoint).find((v) => Number.isFinite(v)) ?? null;
   if (base == null) base = 500000;
   const tune = typeof gd.bossHpMul === 'function' ? gd.bossHpMul(bossId) : 1;
-  const enlarged = experimental && !gd.isSolo && Number.isInteger(aliveCount) && aliveCount > 4 && aliveCount <= MAX_PLAYER_CAPACITY;
-  const shareOf = (n) => (typeof gd.bossPoolShare === 'function' ? gd.bossPoolShare(n)
-    : bossPoolShareOf(gd.mode && gd.mode.bossHpScale, gd.config && gd.config.bossHpScale, !!gd.isSolo, n));
-  const share = enlarged ? shareOf(4) * aliveCount / 4 : shareOf(aliveCount);
+  const share = typeof gd.bossPoolShare === 'function' ? gd.bossPoolShare(aliveCount)
+    : bossPoolShareOf(gd.mode && gd.mode.bossHpScale, gd.config && gd.config.bossHpScale, !!gd.isSolo, aliveCount);
   return Math.max(1, Math.round(base * share * tune));
 }
 
@@ -131,11 +128,10 @@ export class SharedBossPool {
  * @param {import('./gamedata.js').GameData} gd
  * @param {{ layerSum: number, teamLp: number }} s
  */
-export function hiddenEligible(gd, { layerSum, teamLp, aliveCount = 4, experimental = false }) {
+export function hiddenEligible(gd, { layerSum, teamLp }) {
   const hc = gd.hiddenCore;
   if (!gd.hiddenRound || !hc.difficulties.includes(gd.difficulty)) return false;
-  const scale = experimental && !gd.isSolo && Number.isInteger(aliveCount) && aliveCount > 4 && aliveCount <= MAX_PLAYER_CAPACITY ? aliveCount / 4 : 1;
-  const threshold = gd.isSolo ? hc.single : hc.multi * scale;
+  const threshold = gd.isSolo ? hc.single : hc.multi;
   return layerSum > threshold && teamLp > hc.minTeamLpExclusive;
 }
 

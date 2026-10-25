@@ -19,7 +19,7 @@
 //                               (one 特异III giant, else a tier I / II card of a free faction series) [ASSUMED];
 //                     only `draft` cards of that `draftPool` (never 战术特训 — 法术教鞭 only —, the 鸭爵 set, the 7
 //                     multi-round cards or the pre-series cards: no official draft shows them); positions shuffled; the
-//                     mode's inactive enemy list does not apply (PRTS Stronghold-Protocol：盟约 11/18 note "以上调整仅针对战术特训敌人，
+//                     mode's inactive enemy list does not apply (PRTS 卫戍协议：盟约 11/18 note "以上调整仅针对战术特训敌人，
 //                     不影响悬赏决策出场"); each card carries its official rich text `descRaw` (the battles in blue
 //                     "下场作战" / "两场作战"); a multi-round card (教鞭's 法术大师A2·多轮战术特训) lasts
 //                     MULTI_ROUND_BOUNTY_BATTLES battles and says so (`bountyBattles` / `bountyText`: the user's call
@@ -457,7 +457,7 @@ function applyDefault(m, ps, card) {
       case 'global_special_choice_gain_equip': {
         const gain = Math.min(PLUGIN_GAIN_COUNT_MAX, count);
         for (let i = 0; i < gain; i++) {
-          const id = m.rollItemId({ pool: bs.pool, player: ps });
+          const id = m.rollItemId({ pool: bs.pool });
           if (id) ps.acquireItem(id, { source: 'choice' });
         }
         handled = true;
@@ -493,8 +493,8 @@ function applyDefault(m, ps, card) {
         const gain = Math.min(PLUGIN_GAIN_COUNT_MAX, count);
         for (let i = 0; i < gain; i++) {
           const extra = typeof ps.diyStockEntries === 'function' ? ps.diyStockEntries() : null;
-          const id = ps.pool.roll(m.rngMeta, { maxTier: Math.max(1, ps.shop.level), filter: hasBond, extra })
-            || ps.pool.roll(m.rngMeta, { maxTier: 6, filter: hasBond, extra });
+          const id = m.pool.roll(m.rngMeta, { maxTier: Math.max(1, ps.shop.level), filter: hasBond, extra })
+            || m.pool.roll(m.rngMeta, { maxTier: 6, filter: hasBond, extra });
           if (id) ps.acquireChess(id, { source: 'choice' });
         }
         handled = true;

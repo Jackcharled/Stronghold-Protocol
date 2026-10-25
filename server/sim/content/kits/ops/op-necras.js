@@ -380,7 +380,7 @@ export default {
         } },
       ],
       install(battle, unit) {
-        // PRTS Stronghold-Protocol/帮助: special targeting also supplies the DEFAULT attack opportunity (#440).
+        // PRTS 卫戍协议/帮助: special targeting also supplies the DEFAULT attack opportunity (#440).
         // Query live owned blockers for both paths; S2's links still use its own effect range, S3 keeps SKILL_RANGE.
         const blockedKeys = () => {
           if (!up(unit)) return [];

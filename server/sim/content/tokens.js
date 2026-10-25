@@ -59,7 +59,7 @@
 // sees its 援军 standing; with the engine's default reinforcement the talent token replaces the generic 援军. Without
 // a board piece the token takes a tactical point: a free walkable tile of the owner's range on an enemy ground path
 // first (`tacticalPoint`), then the one nearest to the owner.
-// Placed summons (PRTS Stronghold-Protocol/帮助 §作战阶段; user playtest #6): every board summon piece marks the tile its summon
+// Placed summons (PRTS 卫戍协议/帮助 §作战阶段; user playtest #6): every board summon piece marks the tile its summon
 // deploys on. The talent ones the owner holds from the start (狼群, 海嗣, 流形, 凯瑟琳's devices) deploy with the
 // board, after the operators. A skill's summon (赫默's 医疗探机, 巫恋's 诅咒娃娃: "获得一个…") also deploys once with the
 // board, for free and ignoring the holding ("在赫默的技能未开启前未持有该召唤物，但作战开始时无视持有状态自动部署1个";
@@ -1216,7 +1216,7 @@ function yanyouFallbackDef(battle) {
 }
 
 /**
- * 炎佑 (PRTS “炎佑” 级别0(Stronghold-Protocol), enemy_database enemy_9012_acloon; user playtest #4 item 12):
+ * 炎佑 (PRTS “炎佑” 级别0(卫戍协议), enemy_database enemy_9012_acloon; user playtest #4 item 12):
  *   * moves on its own — "持续追踪全场范围内仇恨值最高的敌方单位": it flies after the highest-aggro targetable enemy of
  *     the whole field (the operator order: taunt, least remaining path, earliest spawned; while 祛恶之焰 channels, its
  *     locked target) and hovers over it (YANYOU_STOP short of its position; a 2nd 炎佑 of 9 炎 hovers 0.8 row beside the
@@ -1446,7 +1446,7 @@ export function spawnYanyou(battle, playerId, { atk, hp, atkMul = 1, dmgTakenMul
 // band map characters (预备干员-医疗 / Touch)
 
 /**
- * Exits that give Touch's 超脱 its SP (PRTS Touch(Stronghold-Protocol) 第二天赋 备注 "部分有死亡动画的强制撤退（如史尔特尔的天赋效果）也能触发这一
+ * Exits that give Touch's 超脱 its SP (PRTS Touch(卫戍协议) 第二天赋 备注 "部分有死亡动画的强制撤退（如史尔特尔的天赋效果）也能触发这一
  * 天赋"): a knock-out ('killed') and a forced exit that plays the death animation — Battle.retreat `dying`, a knock-out put
  * off by the operator's own effect: 史尔特尔's 余烬 (the PRTS example) and 骑士戒律 + 竞技旗 ("受到致命伤害时不撤退，技能结束后
  * 退场" [ASSUMED: the same kind of exit]). Not the exits a skill plans — 耀骑士临光 S2's "技能结束后自动撤退", 伊内丝 S3's "放置
@@ -1516,7 +1516,7 @@ function reserveMedicKit(bb, raw, def) {
  * heal — one implementation for the 外勤医疗 map character (touchKit) and the Touch 补位 stand-in (kits/ops/
  * standin-acmedc.js). `skill` = the skill record (`rangeGrid`, `duration`) of blackboard `bb`. Returns `{ skill:
  * SkillSpec, install(battle, unit) }`: `install` adds the heal boost, which acts while the unit's skill runs — install it
- * on a unit whose skill is this one only. PRTS Touch(Stronghold-Protocol) 技能3 and its 备注:
+ * on a unit whose skill is this one only. PRTS Touch(卫戍协议) 技能3 and its 备注:
  *   - "对生命值低于一半的友方单位治疗量提高为原来的130%": strictly below hp_ratio (PRTS 修正: 低于, not the old 不高于);
  *   - "并额外治疗一次目标或目标相邻1个友方单位，治疗量为主目标的30%": once per heal action, at the main (first = most
  *     injured) target's hit; 30 % of that heal's base (ATK × its scales, before the ×heal_scale the main target may get);

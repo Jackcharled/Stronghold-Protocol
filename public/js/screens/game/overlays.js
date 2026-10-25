@@ -11,7 +11,7 @@ export function MatchEnded() {
     <div class="awayov__box brackets">
       <${MicroLabel} tone="mint">SIMULATION CLOSED</${MicroLabel}>
       <h2>${t('本局模拟已结束')}</h2>
-      <p class="t-lo">${t('服务器重启导致对局中断，同盟已返回等待室')}</p>
+      <p class="t-lo">${t('同盟已返回等待室')}</p>
       <${Button} variant="primary" size="lg" icon="chevronLeft" onClick=${() => store.set({ match: emptyMatch() })}>${t('返回同盟')}<//>
     </div>
   </div>`;

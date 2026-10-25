@@ -382,11 +382,7 @@ export class Net {
     const rid = this._nextRid();
     // `delta` says this build decodes `m.state` frames (shared/stateDelta.js). A server that does not speak it ignores
     // the field, and the client then keeps receiving the plain m.public / m.private frames it always got.
-    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, delta: STATE_DELTA_VERSION, guest: !window.__SP_ACCOUNT_USER };
-    try {
-      if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) msg.adminToken = window.__SP_ADMIN_TOKEN;
-      if (typeof window.__SP_ACCOUNT_TOKEN === 'string' && window.__SP_ACCOUNT_TOKEN.length > 0) msg.accountToken = window.__SP_ACCOUNT_TOKEN;
-    } catch { /* 隐私模式 */ }
+    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, delta: STATE_DELTA_VERSION };
     let token = null;
     try { token = this.getToken(); } catch { token = null; }
     if (typeof token === 'string' && token.length > 0 && token.length <= 64) {

@@ -5,7 +5,7 @@
 // Forms (data/backups.json units.char_4088_hodrer, the DIY slot statuses): normal = E2 Lv1, skills at rank 4, no module;
 // elite = E2 Lv60, rank 7, the picked module at stage 1 (tier 5) or 3 (tier 6). Full potential (the owner's decision of 2026-10-07).
 // Sources: character_table / skill_table / battle_equip_table (zh_CN, as built into backups.json); PRTS 赫德雷 (备注 of 及锋而试
-// and 死境硝烟); PRTS Stronghold-Protocol/帮助 §技能操作 ("携带状态切换类技能的干员…每次部署后仅开启一次技能"); gamedata_const ba.protect 庇护,
+// and 死境硝烟); PRTS 卫戍协议/帮助 §技能操作 ("携带状态切换类技能的干员…每次部署后仅开启一次技能"); gamedata_const ba.protect 庇护,
 // ba.stun 晕眩, ba.root 束缚; PRTS 伤害分类 (无来源真实持续伤害); the client's battle data read from the local install —
 // charpack char_4088_hodrer, battle/prefabs [uc]skills skchr_hodrer_1/2/3 and [uc]equips hodrer_equip_*, buff_template_data
 // hodrer_* (named below).

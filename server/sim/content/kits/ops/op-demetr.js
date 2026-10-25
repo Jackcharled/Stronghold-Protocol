@@ -12,7 +12,7 @@
 // 家主的余裕 备注 "可触发两次第一天赋"; 军师的手段 备注; 清算 备注 — the 牵绊 rules, "每次移动的目标地块必须为合法、可部署、未部署有
 // 牵绊/贝洛内自己以外单位的地面地块", "在受到致命伤害结算后立即结束技能，因返回而部署时获得短暂的不死", "若技能开启时，若存在目标则会立刻
 // 尝试移动；否则会尝试原地移动一次", "技能结束时，若不位于初始位置且场上不存在牵绊，贝洛内将被强制撤退"); PRTS 牵绊 备注 (无敌, 孤立,
-// 晕眩 / 冻结 / 寒冷 / 沉睡 免疫); PRTS Stronghold-Protocol/帮助 特殊策略 (【清算】 "在自定义范围内存在敌人时释放技能", x-2); gamedata_const
+// 晕眩 / 冻结 / 寒冷 / 沉睡 免疫); PRTS 卫戍协议/帮助 特殊策略 (【清算】 "在自定义范围内存在敌人时释放技能", x-2); gamedata_const
 // ba.addash 移动 "不退场，以当前血量在目标位置部署"; the client's battle data — charpack char_4037_demetr (every attack ability
 // carries demetr_t1[def_dec]; S2 mode `demetr_s2[mark]`; S3 modes), skchr_demetr_3 (FlyToTarget / FlyToTargetSecond: the
 // x-2 selector around his located tile, buildable melee low-ground tiles empty but for him and his token; RespawnEnd), buff

@@ -39,7 +39,7 @@ const STAT_ROWS = [
 
 /**
  * The bonds a result card lists (at most 6): the active ones and those holding layers, most layers first. A bond whose
- * layers the game never shows (bonds.json `noStack`: 调和 协防干员 独行 绝技 — PRTS Stronghold-Protocol：盟约 下半/PRTS盟约记录 「部分盟约不会
+ * layers the game never shows (bonds.json `noStack`: 调和 协防干员 独行 绝技 — PRTS 卫戍协议：盟约 下半/PRTS盟约记录 「部分盟约不会
  * 显示叠加层数，但是叠加层数的特质/策略/装备等效果仍然对其生效」) counts none for the order and carries no number
  * (`hideLayers`), as on the bond strip since 0.1.4 (PR #66) — the card printed them until 0.2.0 (community report
  * 「独行这种盟约是不能叠层的」).

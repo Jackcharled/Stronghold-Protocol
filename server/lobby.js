@@ -227,32 +227,9 @@
 //     练度 and 自选 (keyed by charId) are checked again against the version's data (seatSettings); a setting checked for
 //     another content keeps only the ids whose operator (charId) is the same in both data sets.
 
-/** 匹配队友最长搜索时间（默认 2 分钟；测试可用 SP_MATCHMAKING_TIMEOUT_MS 缩短）。 */
-const MATCHMAKING_TIMEOUT_MS = Math.max(1000, Number(process.env.SP_MATCHMAKING_TIMEOUT_MS) || 2 * 60 * 1000);
-
-function currentNodeNumber() {
-  return Number((String(process.env.SP_NODE_DIR || '').match(/node-(\d+)/i) || [])[1])
-    || (Number(process.env.PORT) > 3000 ? Number(process.env.PORT) - 3000 : 0);
-}
-
-/** 房间开始/解散时把房间从 matchmaker 的整队队列里移除。 */
-function notifyPartyLeave(room) {
-  try {
-    const node = currentNodeNumber();
-    if (!node || !room || !room.code) return;
-    fetch('http://127.0.0.1:3090/api/party/leave', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ roomCode: room.code, node }),
-    }).catch(() => {});
-  } catch { /* 匹配器通知失败不能影响房间 */ }
-}
-
 import { aiTakeover, resetAiTakeover, reconcileAiTakeover } from './aiTakeover.js';
 import { randomBytes, randomInt } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { DIFFICULTIES, ERR, MAX_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
-import { roomCapacity } from '../shared/playerCapacity.js';
-import { EXPERIMENTAL_DEFAULTS, isExperimental, experimentalOptions } from '../shared/experimental.js';
 import { checkLoadout, checkLoadoutOps, cultivationCharIds, checkNotOwned, checkDiyPicks, charPotentialChanges, checkSkinSelection, operatorCharIds } from '../shared/protocol.js';
 import { encode, isErrCode, sendRaw, sendSession } from './net.js';
 import { getData as defaultGetData, lookup } from './data.js';
@@ -275,8 +252,6 @@ export const LOBBY_DEFAULTS = Object.freeze({
   maxRooms: 1000,
   maxRoomsPerAddr: 16,    // rooms created from one client network that may exist at once (0 = unlimited)
   maxMatchesPerAddr: 8,   // matches started from one client network that may run at once (0 = unlimited)
-  maxBotsPerAddr: 0,      // 同一 IP 跨房间累计的 AI 队友上限（0 = 不限）
-  idleKickMs: 0,          // 挂机多久后移出房间（0 = 关闭；240000 ≈ 两回合）
   resyncMinGapMs: 1000,   // heavy resyncs (match state / result replay) per session at most this often on repeated hellos
   soloReconnectWindowMs: null, // a dropped solo run stays resumable this long (null = data singleReconnectTime, 24 h)
   versionVoteMs: 60_000,  // an open version vote is cancelled after this long (header "Official versions") [ASSUMED]
@@ -391,36 +366,16 @@ function sameSkins(a, b) {
   return ka.length === kb.length && ka.every((k) => a[k] === b[k]);
 }
 
-/** 房间创建后多久未开始对局就解散；data/room-ttl.json 的 minutes，默认 15 分钟。 */
-let __roomTtlCache = { ms: 15 * 60 * 1000, at: 0 };
-function roomTtlMs() {
-  if (Date.now() - __roomTtlCache.at > 5000) {
-    try {
-      const j = JSON.parse(readFileSync(new URL('../../data/room-ttl.json', import.meta.url), 'utf8'));
-      const m = Number(j.minutes);
-      if (Number.isFinite(m) && m >= 1 && m <= 1440) __roomTtlCache = { ms: Math.round(m * 60000), at: Date.now() };
-    } catch { /* 配置缺失时用默认 15 分钟 */ }
-  }
-  return __roomTtlCache.ms;
-}
-
 /** One room: 4 seat slots, host, difficulty, optional running match. */
 export class Room {
   /**
    * @param {string} code @param {'solo'|'coop'} mode @param {string} difficulty @param {number} now
    * @param {string} [version] the official version the room plays (header "Official versions")
-   * @param {object} [experimental] 5–20 人实验房选项（本服）
    */
-  constructor(code, mode, difficulty, now, version = DEFAULT_VERSION, experimental = null) {
+  constructor(code, mode, difficulty, now, version = DEFAULT_VERSION) {
     this.code = code;
     this.mode = mode;
     this.difficulty = difficulty;
-    this.experimental = experimental || null;
-    /** 5–20 人房间：座位数由实验选项决定 */
-    this.capacity = roomCapacity(mode, this.experimental);
-    /** 15 分钟未开始对局解散（管理员房可 noExpire） */
-    this.ttlMs = roomTtlMs();
-    this.noExpire = false;
     /** the official version the room plays (shared/versions.js id; header "Official versions") */
     this.version = version;
     /**
@@ -448,15 +403,11 @@ export class Room {
     /** @type {string | null} */
     this.hostId = null;
     /** @type {(Seat | null)[]} */
-    this.seats = new Array(this.capacity).fill(null);
+    this.seats = new Array(MAX_SEATS).fill(null);
     /** @type {{ playerId: string, name: string, connected: boolean }[]} spectator seats, ≤ MAX_SPECTATORS (header) */
     this.spectators = [];
     /** @type {any} running Match instance */
     this.match = null;
-    // 匹配队友期间暂停 15 分钟解散计时（本服）
-    this.matchmaking = false;
-    this.matchmakingAt = 0;
-    this.matchmakingStartedAt = 0;
     /** @type {{ live: boolean, ended: boolean, disposed: boolean, match: any } | null} */
     this.matchCtx = null;
     this.matchCount = 0;
@@ -494,9 +445,6 @@ export class Room {
   /** Does the room play a content set with gameplay plugins (its own cs; header "Gameplay plugins")? */
   get modded() { return !!this.content && this.content.vanilla === false; }
 
-  /** 5–20 人实验房：返回给客户端的实际座位上限。 */
-  get playerCapacity() { return this.capacity; }
-
   /**
    * Must every member's page load and check the room's content before ready / start (header "Gameplay plugins",
    * "Official versions")? A set with gameplay plugins, or another official version than 第二期下半.
@@ -530,16 +478,8 @@ export class Room {
       hostId: this.hostId,
       mode: this.mode,
       difficulty: this.difficulty,
-      capacity: this.capacity,
-      experimental: this.experimental ? { ...this.experimental } : null,
-      revival: { enabled: this.mode === 'coop' && this.experimental?.revivalEnabled === true },
       aiPicksLast: this.aiPicksLast,
       inMatch: !!this.match,
-      expiresInMs: this.noExpire ? null : Math.max(0, Number(this.createdAt) + (this.ttlMs || roomTtlMs()) - Date.now()),
-      ttlMs: this.noExpire ? null : (this.ttlMs || roomTtlMs()),
-      adminCreated: this.adminCreated === true,
-      matchmaking: !!this.matchmaking,
-      matchmakingAt: this.matchmaking ? (Number(this.matchmakingStartedAt) || this.matchmakingAt || 0) : 0,
       seats: this.seats.map((s) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left,
           // a room with gameplay plugins (header "Gameplay plugins"): has this player's page loaded and checked its content?
@@ -649,19 +589,6 @@ export class Lobby {
     this.graceTimers = new Map();
     /** @type {Map<string, NodeJS.Timeout>} deferred (coalesced) resyncs by playerId */
     this.resyncTimers = new Map();
-    /** 挂机检测定时器（idleKickMs > 0 时启用） */
-    this.idleTimer = null;
-    if (this.opts.idleKickMs > 0) {
-      this.idleTimer = setInterval(() => {
-        try { this.sweepIdle(); } catch (e) { this.log.warn('[lobby] idle sweep failed', e); }
-      }, 20_000);
-      this.idleTimer.unref?.();
-    }
-    /** 15 分钟房间扫描定时器 */
-    this.roomTimer = setInterval(() => {
-      try { this.sweepOldRooms(); } catch (e) { this.log.warn('[lobby] room sweep failed', e); }
-    }, 20_000);
-    this.roomTimer.unref?.();
     /** per-network limit warnings: at most one log line per 10 s (the rest are counted) */
     this.limitLog = { at: -Infinity, suppressed: 0 };
     /** log lines said once (warnOnce) */
@@ -814,49 +741,7 @@ export class Lobby {
    * @param {any} msg
    * @returns {{ ok: true } | { error: string, detail?: string } | Promise<{ ok: true } | { error: string, detail?: string }>}
    */
-  /** 每 20 秒扫描：创建后超过 15 分钟仍未开始对局的房间解散；匹配超过 2 分钟强制开局。 */
-  sweepOldRooms() {
-    const now = this.now();
-    for (const room of [...this.rooms.values()]) {
-      if (!room || room.disposed || room.match) continue;
-      if (room.matchmaking) {
-        const started = Number(room.matchmakingAt) || now;
-        if (now - started >= MATCHMAKING_TIMEOUT_MS) {
-          try { this.forceStartMatchmaking(room); } catch (e) { this.log?.warn?.('[lobby] 匹配超时开局失败 ' + (e && e.message)); }
-        }
-        continue;
-      }
-      if (room.noExpire) continue;
-      const base = Math.max(Number(room.createdAt) || now, Number(room.lastMatchEndAt) || 0);
-      if (now - base < (room.ttlMs || roomTtlMs())) continue;
-      this.log?.info?.('[lobby] ' + room.code + ' expired (15 min without a match)');
-      try { this.disposeRoom(room, 'expired'); } catch { /* ignore */ }
-    }
-  }
-
-  /** 匹配队友 2 分钟没凑满：按当前人数直接开局，并通知匹配器移出队列。 */
-  forceStartMatchmaking(room) {
-    if (!room || room.match) return;
-    const humans = room.activeHumans();
-    if (!humans.length || !humans.some((s) => s.connected)) { this.disposeRoom(room, 'empty'); return; }
-    for (const s of humans) {
-      s.ready = true;
-      if (room.modded) s.content = 'ready';
-    }
-    room.matchmaking = false;
-    room.matchmakingAt = 0;
-    room.matchmakingStartedAt = 0;
-    notifyPartyLeave(room);
-    const host = room.seatOf(room.hostId);
-    const hostSession = host && this.registry?.byId ? this.registry.byId(host.playerId) : null;
-    const key = hostSession ? hostSession.limitKey : null;
-    this.log?.info?.(`[lobby] ${room.code} 匹配超时，按当前 ${humans.length} 人开局`);
-    this.startMatch(room, key);
-  }
-
   onMessage(session, msg) {
-    // 挂机检测：任何一条来自玩家的消息都算「还在操作」
-    session.lastActiveAt = this.now();
     const room = this.queuedRoom(session);
     if (!room) return this.handleMessage(session, msg);
     // a queued room.contentReady speaks for the page that sent it: the seat and its generation now — a disconnect in
@@ -924,10 +809,8 @@ export class Lobby {
       case 'room.create': return this.create(session, msg);
       case 'room.join': return this.join(session, msg);
       case 'room.leave': return this.leave(session);
-      case 'account.resume': return this.resumeAccount(session);
       case 'room.ready': return this.ready(session, msg);
       case 'room.setDifficulty': return this.setDifficulty(session, msg);
-      case 'room.setExperimental': return this.setExperimental(session, msg);
       case 'room.setAiPicksLast': return this.setAiPicksLast(session, msg);
       case 'room.setSoloUnlimited': return this.setSoloUnlimited(session, msg);
       case 'room.setAiTakeover': return this.setAiTakeover(session, msg);
@@ -936,7 +819,6 @@ export class Lobby {
       case 'room.addBot': return this.addBot(session);
       case 'room.removeBot': return this.removeBot(session, msg);
       case 'room.kick': return this.kick(session, msg);
-      case 'room.matchmaking': return this.matchmaking(session, msg);
       case 'room.start': return this.start(session);
       case 'room.rerollSetup': return this.rerollSetup(session, msg);
       case 'room.cancelReroll': return this.rerollSetup(session, msg, true);
@@ -1017,8 +899,6 @@ export class Lobby {
     this.offContentStale?.();
     this.offStale = null;
     this.offContentStale = null;
-    if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = null; }
-    if (this.roomTimer) { clearInterval(this.roomTimer); this.roomTimer = null; }
     for (const room of [...this.rooms.values()]) this.disposeRoom(room, reason);
     for (const t of this.graceTimers.values()) clearTimeout(t);
     this.graceTimers.clear();
@@ -1027,61 +907,10 @@ export class Lobby {
   }
 
   // ---------------------------------------------------------------------------------------------------
-  // 挂机踢人
-  // ---------------------------------------------------------------------------------------------------
-
-  /** 每 20 秒扫一次：房间里坐着但长时间没有任何消息的真人，移出房间（房主走了会自动移交）。 */
-  sweepIdle() {
-    const idleMs = this.opts.idleKickMs;
-    if (!idleMs || idleMs <= 0) return;
-    const now = this.now();
-    for (const room of [...this.rooms.values()]) {
-      if (room.disposed) continue;
-      for (const seat of room.seats) {
-        if (!seat || seat.isBot || seat.left) continue;
-        if (seat.ready) continue; // 已准备就绪：不算挂机
-        const session = this.registry.byId(seat.playerId);
-        if (!session || !session.connected) continue;
-        const last = session.lastActiveAt || now;
-        if (now - last < idleMs) continue;
-        this.kickIdle(room, seat.playerId, session);
-      }
-    }
-  }
-
-  /** 把一个挂机的真人移出房间：先提示，再按「被移出」关房；断线中的玩家等回来时看到提示。 */
-  kickIdle(room, playerId, session) {
-    const replay = this.replayFor ? this.replayFor(room, playerId) : null;
-    this.removeMember(room, playerId);
-    if (session.roomCode === room.code) session.roomCode = null;
-    session.lastActiveAt = this.now();
-    if (session.connected) {
-      sendSession(session, { t: 'm.toast', kind: 'warn', text: '长时间未操作，你已被自动移出同盟' });
-      sendSession(session, { t: 'room.closed', reason: 'kicked' });
-    } else {
-      session.notice = 'kicked';
-      session.pendingResult = replay;
-    }
-    this.log.info(`[lobby] ${room.code} ${session.name || playerId} removed for idling`);
-  }
-  // ---------------------------------------------------------------------------------------------------
   // room.* handlers
   // ---------------------------------------------------------------------------------------------------
 
-  create(session, { mode, difficulty: asked, test, version: askedVersion, soloUnlimited, experimental = null } = {}) {
-    // 5–20 人实验房：只接受合法选项；独立模拟始终只有 1 个座位。
-    if (experimental != null && !isExperimental(experimental)) return fail(ERR.BAD_MSG, 'invalid experimental options');
-    if (mode === 'solo') experimental = null;
-    // 本服：游客不能建房，先给出明确原因，避免只拿到 BAD_MSG。
-    if (session.guest || !session.accountId) {
-      return fail(ERR.BAD_MSG, mode === 'solo'
-        ? '游客不能开始独立模拟，请先登录'
-        : '游客不能创建同盟模拟房间，请先登录');
-    }
-    const conflict = this.accountRoomConflict(session);
-    if (conflict && conflict.room !== this.roomOf(session)) {
-      return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
-    }
+  create(session, { mode, difficulty: asked, test, version: askedVersion, soloUnlimited } = {}) {
     // A test room exists only when the process switch allowed it. The check runs before the room is built.
     if (test === true && this.testEnabled !== true) return fail(ERR.TEST_DISABLED);
     // the official version (header "Official versions"): left out, the server's default
@@ -1137,11 +966,8 @@ export class Lobby {
       } else initial = r.content;
     }
     if (cur) this.removeMember(cur, session.playerId);
-    const room = new Room(code, mode, difficulty, this.now(), version, experimental);
+    const room = new Room(code, mode, difficulty, this.now(), version);
     room.test = test === true;
-    // 管理员建房：不自动过期，并在控制台标记
-    room.adminCreated = session.admin === true;
-    room.noExpire = room.adminCreated;
     // 「不限时」 only on a solo room of a version whose solo is timed (header). Anywhere else the key is ignored, so a
     // stray true cannot change a default or co-op create.
     if (mode === 'solo' && soloUnlimited === true && this.versionSoloTimed(version)) room.soloUnlimited = true;
@@ -1156,8 +982,6 @@ export class Lobby {
     session.pendingResult = null;
     this.log.info(`[lobby] ${code} created (${mode}/${difficulty}${version !== DEFAULT_VERSION ? `, ${version}` : ''}${room.test ? ', test' : ''}) by ${session.name}`);
     this.broadcastState(room);
-    // 建房立刻持久化，避免重启前 10 秒窗口丢房间
-    try { this.persistFlush?.('room-create'); } catch { /* ignore */ }
     return OK;
   }
 
@@ -1170,8 +994,6 @@ export class Lobby {
     // idempotent for members; a spectator of this room goes on below: it may take a free player seat (header)
     if (cur === room && !room.spectatorOf(session.playerId)) { this.sendState(room, session); return OK; }
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
-    const conflict = this.accountRoomConflict(session);
-    if (conflict) return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
     if (room.match) return fail(ERR.ROOM_STARTED);
     if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
     const idx = room.freeSeat();
@@ -1242,34 +1064,6 @@ export class Lobby {
     return OK;
   }
 
-  /** account.resume: move this account's seat to this device; the old device loses the seat, not the account. */
-  resumeAccount(session) {
-    if (!session.accountId) return fail(ERR.BAD_TARGET, 'account login required');
-    if (session.guest) return fail(ERR.BAD_TARGET, 'guest cannot resume');
-    const candidates = this.registry.byAccount(session.accountId)
-      .filter((s) => s !== session && s.roomCode && this.rooms.get(s.roomCode)?.seatOf(s.playerId));
-    if (!candidates.length) return fail(ERR.BAD_TARGET, 'no active match for this account');
-    const old = candidates.find((s) => s.connected) || candidates[0];
-    const token = this.registry.rotateToken(old);
-    if (!token) return fail(ERR.INTERNAL, 'cannot rotate seat token');
-    if (old.connected) sendSession(old, { t: 'account.detached', roomCode: old.roomCode, playerId: old.playerId });
-    if (old.ws) {
-      const oldWs = old.ws;
-      setTimeout(() => { try { oldWs.close(4001, 'account moved'); } catch { /* ignore */ } }, 120);
-      old.ws = null;
-      old.connected = false;
-      old.disconnectedAt = this.now();
-    }
-    sendSession(session, {
-      t: 'account.resume',
-      token,
-      roomCode: old.roomCode,
-      playerId: old.playerId,
-      name: old.name,
-    });
-    return OK;
-  }
-
   ready(session, { ready }) {
     const room = this.roomOf(session);
     if (!room) return fail(ERR.NOT_IN_ROOM);
@@ -1283,28 +1077,6 @@ export class Lobby {
       seat.ready = ready;
       this.broadcastState(room);
     }
-    return OK;
-  }
-
-  /** Room-owned experimental rules (host-only, before a match); enlarging keeps seats, shrinking requires empty tail seats. */
-  setExperimental(session, { experimental }) {
-    const room = this.roomOf(session);
-    if (!room) return fail(ERR.NOT_IN_ROOM);
-    if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
-    if (room.mode === 'solo') return fail(ERR.BAD_MSG, 'experimental options are for co-op only');
-    if (room.match) return fail(ERR.ROOM_STARTED);
-    if (!isExperimental(experimental)) return fail(ERR.BAD_MSG, 'invalid experimental options');
-    const next = experimentalOptions(experimental);
-    const capacity = roomCapacity(room.mode, next);
-    if (room.seats.some((s, i) => s && i >= capacity)) return fail(ERR.ROOM_FULL, 'occupied seats exceed the new capacity');
-    room.experimental = next;
-    room.capacity = capacity;
-    if (room.mode !== 'solo') {
-      while (room.seats.length < capacity) room.seats.push(null);
-      room.seats.length = capacity;
-    }
-    for (const s of room.seats) if (s && !s.isBot && s.playerId !== room.hostId) s.ready = false;
-    this.broadcastState(room);
     return OK;
   }
 
@@ -1795,14 +1567,6 @@ export class Lobby {
     if (room.match) return fail(ERR.ROOM_STARTED);
     this.dropReplay(room, session.playerId);
     if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo rooms cannot have AI teammates');
-    // 同一个网络地址能挂的 AI 队友总数（跨房间累计），防止用一堆机器人占满 CPU
-    if (this.opts.maxBotsPerAddr > 0) {
-      const key = session.limitKey;
-      if (key && this.countBots(key) >= this.opts.maxBotsPerAddr) {
-        this.limitWarn(`AI teammate limit (${this.opts.maxBotsPerAddr}) reached for ${session.addr}`);
-        return fail(ERR.RATE, 'too many AI teammates from your network');
-      }
-    }
     const idx = room.freeSeat();
     if (idx < 0) return fail(ERR.ROOM_FULL);
     const used = new Set(room.seats.filter((s) => s && s.isBot).map((s) => s.name));
@@ -1851,40 +1615,6 @@ export class Lobby {
     return OK;
   }
 
-  /** 房主进入/退出「匹配队友」：匹配期间暂停 15 分钟解散计时。 */
-  matchmaking(session, msg) {
-    const room = this.roomOf(session);
-    if (!room) return fail(ERR.NOT_IN_ROOM);
-    if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
-    if (room.match) return fail(ERR.ROOM_STARTED);
-    const on = !!(msg && msg.on);
-    if (on === room.matchmaking) return OK;
-    if (on) {
-      const humans = room.activeHumans();
-      if (humans.some((s) => s.playerId !== room.hostId && (!s.connected || !s.ready))) {
-        return fail(ERR.NOT_READY, 'all players must be ready before matchmaking');
-      }
-    }
-    const now = this.now();
-    if (on) {
-      room.matchmaking = true;
-      room.matchmakingAt = now;
-      room.matchmakingStartedAt = now;
-      this.log?.info?.('[lobby] ' + room.code + ' 开始匹配队友，暂停解散计时');
-    } else {
-      const started = Number(room.matchmakingStartedAt) || now;
-      room.matchmaking = false;
-      room.matchmakingAt = 0;
-      room.matchmakingStartedAt = 0;
-      // 暂停计时：把匹配期间的时间补回房间寿命，剩余时间不被消耗
-      const elapsed = Math.max(0, now - started);
-      room.createdAt = (Number(room.createdAt) || now) + elapsed;
-      if (room.lastMatchEndAt) room.lastMatchEndAt = Number(room.lastMatchEndAt) + elapsed;
-      this.log?.info?.('[lobby] ' + room.code + ' 取消匹配，恢复解散计时（暂停 ' + Math.round(elapsed / 1000) + 's）');
-    }
-    this.broadcastState(room);
-    return OK;
-  }
   start(session) {
     const room = this.roomOf(session);
     if (!room) return fail(ERR.NOT_IN_ROOM);
@@ -2214,12 +1944,6 @@ export class Lobby {
 
   /** @param {Room} room @param {string | null} [key] per-network limit key of the starter */
   startMatch(room, key = null) {
-    if (room.matchmaking) {
-      room.matchmaking = false;
-      room.matchmakingAt = 0;
-      room.matchmakingStartedAt = 0;
-      notifyPartyLeave(room);
-    }
     if (room.test && !this.testEnabled) return fail(ERR.TEST_DISABLED);
     // another official version's match runs in that version's match host — never here, where every module singleton
     // holds 第二期下半's data (header "Official versions"); a test that gave its own MatchClass runs it in place
@@ -2477,15 +2201,6 @@ export class Lobby {
     this.log.warn(line);
   }
 
-  /** 某个网络地址在所有房间里的 AI 队友总数（maxBotsPerAddr）。 */
-  countBots(key) {
-    let n = 0;
-    for (const r of this.rooms.values()) {
-      if (r.disposed || r.ownerKey !== key) continue;
-      for (const s of r.seats) if (s && s.isBot) n++;
-    }
-    return n;
-  }
   /** Number of rooms matching a predicate. */
   countRooms(pred) {
     let n = 0;
@@ -2603,27 +2318,10 @@ export class Lobby {
    * @param {number} idx @param {any} session @param {Room} room
    * @returns {Seat}
    */
-  /** The account may hold at most one seat (player or spectator) across all rooms. */
-  accountRoomConflict(session) {
-    const accountId = session.accountId;
-    if (!accountId) return null;
-    for (const room of this.rooms.values()) {
-      if (!room || room.disposed) continue;
-      for (const seat of room.seats) {
-        if (!seat || seat.isBot || seat.left) continue;
-        if (seat.accountId === accountId && seat.playerId !== session.playerId) return { room, kind: 'player' };
-      }
-      for (const spec of room.spectators) {
-        if (spec && spec.accountId === accountId && spec.playerId !== session.playerId) return { room, kind: 'spectator' };
-      }
-    }
-    return null;
-  }
-
   humanSeat(idx, session, room) {
     const card = session.card && chessCharIds(this.dataFor(room)).has(session.card) ? session.card : null;
     return {
-      seat: idx, playerId: session.playerId, name: session.name, tag: session.tag || null, accountId: session.accountId || null, isBot: false, ready: false, connected: session.connected, left: false,
+      seat: idx, playerId: session.playerId, name: session.name, isBot: false, ready: false, connected: session.connected, left: false,
       loadout: session.loadout || null,
       ops: session.ops || null,
       notOwned: session.notOwned || null,

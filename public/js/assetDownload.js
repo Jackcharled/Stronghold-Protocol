@@ -13,15 +13,9 @@ import { listImportedPaths } from './assetCache.js';
  */
 export function collectAssetUrls(...manifests) {
   const urls = new Set();
-  const remote = /^https?:\/\/assets\.luobomiao\.love\/assets\//i;
-  const gameUrl = (value) => remote.test(value) ? '/assets-cdn/' + value.replace(remote, '') : value;
   const visit = (value) => {
     if (typeof value === 'string') {
-      let path = value;
-      if (/^https?:\/\//i.test(path)) {
-        try { path = new URL(path).pathname; } catch { return; }
-      }
-      if (/^\/(?:assets|fonts)\/[^/]/.test(path) && !/[?#\\]/.test(value)) urls.add(mediaUrl(gameUrl(value)));
+      if (/^\/(?:assets|fonts)\/[^/]/.test(value) && !/[?#\\]/.test(value)) urls.add(mediaUrl(value));
     } else if (value && typeof value === 'object') {
       for (const child of Object.values(value)) visit(child);
     }

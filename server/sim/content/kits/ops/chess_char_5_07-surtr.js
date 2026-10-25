@@ -65,9 +65,9 @@ export default {
           // 禁疗 (异常效果 HEAL_FREE "无法成为治疗类能力的目标，且受到的治疗量变为0", an HP-regen attribute excepted) = flags
           // noHeal (no heal pick, no heal from others) + healFree (her own heals too; S3's start heal "无视禁疗"), shown as
           // the status 'healFree' until she leaves. "强制退出战场视为撤回干员": a retreat (Battle.retreat drops the buff) — she
-          // lies down where she stood and redeploys there, like every operator that leaves the field (PRTS Stronghold-Protocol/帮助
+          // lies down where she stood and redeploys there, like every operator that leaves the field (PRTS 卫戍协议/帮助
           // "干员退场后…原地留下一个“倒地干员”…自动部署至该位置"; Battle.isDown, GitHub #60). With her death animation
-          // (`dying`): PRTS Touch(Stronghold-Protocol) 超脱 备注 counts it as a knock-out ("如史尔特尔的天赋效果").
+          // (`dying`): PRTS Touch(卫戍协议) 超脱 备注 counts it as a knock-out ("如史尔特尔的天赋效果").
           const wait = num(t1['surtr_t_2[withdraw].interval'], 8);
           battle.on('deploy', (c) => { if (c.unit === unit) unit.mem.ember = false; }, { owner: unit });
           battle.on('fatal', (c) => {

@@ -1,9 +1,8 @@
 // Classic service worker for art a player imported on this origin.
 // Keep these three lines in sync with public/js/assetCache.js (that module documents why this file is not a module).
-const IMPORTED_ASSET_CACHE = 'sp-imported-assets-v2';
+const IMPORTED_ASSET_CACHE = 'sp-imported-assets-v1';
 const IMPORTED_ASSET_CACHE_PREFIX = 'sp-imported-assets-';
-const IMPORTED_ASSET_PATH = /^\/(?:assets|fonts|media|assets-cdn)\/~[0-9a-f]{16}\//;
-const SW_REVISION = '2026-10-24-3';
+const IMPORTED_ASSET_PATH = /^\/(?:assets|fonts|media)\/~[0-9a-f]{16}\//;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(self.skipWaiting());

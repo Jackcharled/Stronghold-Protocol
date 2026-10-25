@@ -38,7 +38,7 @@
 //   the owner's AUTO rule): ASPD +attack_speed, T1's splash radius talent@range_radius; her placed 本能的召唤 piece takes the
 //   field on its tile when the skill starts and again each time it is ready ("退场时返还1个可部署的本能的召唤": its own 25 s
 //   redeploy time) while the skill runs (content/tokens.js releaseSkillSummon; like every placed skill summon it also deploys
-//   once, free, at the battle start — PRTS Stronghold-Protocol/帮助); her leaving withdraws it ("酒神退场时强制撤退场上的本能的召唤").
+//   once, free, at the battle start — PRTS 卫戍协议/帮助); her leaving withdraws it ("酒神退场时强制撤退场上的本能的召唤").
 //   本能的召唤 (kit below): untargetable, no attack, blocks nothing; every 0.1 s it 诱导s (the catalogue `attract`, to its
 //   tile, for the rest of its life) the enemies of its x-1 (13 tiles) it can lure — at most max_target in all, ELITE / leader
 //   first [ASSUMED: then the nearest], only "可达" ones (a ground path to its tile; flyers always); it leaves 10 s after its

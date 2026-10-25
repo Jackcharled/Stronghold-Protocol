@@ -410,7 +410,7 @@ const PROMOTE_KEYS = new Set(['use_equip_upgrade_char', 'equip_round_start_upgra
 
 /**
  * Whether dropping item `uid` on the chess `targetPiece` opens the replace dialog: its two slots are used and the server
- * would replace one of them — every item, a consume-on-equip one too (PRTS Stronghold-Protocol/帮助 "达到上限强行佩戴会改为替换装备";
+ * would replace one of them — every item, a consume-on-equip one too (PRTS 卫戍协议/帮助 "达到上限强行佩戴会改为替换装备";
  * GitHub #263: the pick is destroyed, then the item resolves and the slot stays free). Not when nothing is replaced: an
  * attaching item that completes an item merge (the server merges it instead of equipping, `equipMerges`) or a
  * 博士投影 on an elite (refused by the server).

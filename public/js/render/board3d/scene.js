@@ -1,4 +1,4 @@
-// render/board3d/scene.js — the official Stronghold-Protocol board as a real three.js scene (DESIGN §15), rendered on its own
+// render/board3d/scene.js — the official 卫戍协议 board as a real three.js scene (DESIGN §15), rendered on its own
 // canvas UNDER the Pixi canvas (units, FX, highlights, HP bars stay in Pixi). One camera model drives both layers:
 // render/projection.js `syncThreeCamera` makes the three.js PerspectiveCamera project exactly like the Pixi one.
 //

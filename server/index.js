@@ -44,7 +44,6 @@
 import http from 'node:http';
 import path from 'node:path';
 import { getData, loadData } from './data.js';
-import { createPersistence } from './persist/index.js';
 import { getBotStrategy } from './match/botStrategies.js';
 import { noteLlmIgnored, releaseIgnoresExternalAi, validateExternalConfig } from './match/llmGate.js';
 import { ROOT, listenAddress, bindCandidates, serveDirs, makeLogger, parseTrustProxy, assetIndexOptionsFrom, versionsFrom, parseRoomCode } from './http/config.js';
@@ -166,13 +165,6 @@ export async function startServer(opts = {}) {
   log.info(`[versions] enabled: ${versions.ids.map((id) => `${id} (${t(/** @type {any} */ (versionById(id)).label)}${id === versions.defaultId ? ', default' : ''})`).join(', ')}`);
   const simPool = createRoomWorkerPool({ data });
   const { registry, lobby, network } = createSessionStack(opts, { data, log, content, plugins: roomSets, hosts, versions, versionHosts, simPool });
-  let persistence = null;
-  try {
-    persistence = await createPersistence({ registry, lobby, log });
-    if (persistence && lobby) lobby.persistence = persistence;
-  } catch (e) {
-    log.warn('[persist] init failed: ' + (e && e.message));
-  }
   // Main-thread event-loop delay sampling (server/health/eventLoop.js): opt-in with SP_LOOP_SAMPLE=1, no worker pool involved, and a
   // LOCAL log line per window (`[loop] p50=… p95=… p99=… max=… cpu=… mem=… rooms=… humans=… phase=…`) — deliberately not
   // part of /healthz. This is what tells an operator whether a stall is the rehearsal / battle slice or something else.
@@ -272,7 +264,6 @@ export async function startServer(opts = {}) {
     if (closing) return closing;
     closing = (async () => {
       try { lobby.shutdown('shutdown'); } catch (e) { log.error('[shutdown] lobby', e); }
-  try { await persistence?.close(); } catch (e) { log.error('[shutdown] persist', e); }
       try { hosts.close(); } catch (e) { log.error('[shutdown] match hosts', e); }
       try { versionHosts?.close(); } catch (e) { log.error('[shutdown] version hosts', e); }
       // after the lobby: every room is gone, so no rehearsal can still be waiting on a thread

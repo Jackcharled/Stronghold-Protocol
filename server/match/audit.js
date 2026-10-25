@@ -19,7 +19,7 @@
 //                 price, the level rises by one and its price resets to the next base; Ready only with an empty temp
 //   merges        a merge consuming a deployed copy puts the elite on that copy's tile (of several, the first in deploy
 //                 order legal for it — board.js mergeTile; a 突变细胞 carrier destroyed before the gain is no copy) with
-//                 its facing, else into the hand / temp; the deploy count never grows (PRTS Stronghold-Protocol/帮助, user playtest
+//                 its facing, else into the hand / temp; the deploy count never grows (PRTS 卫戍协议/帮助, user playtest
 //                 #6 follow-up)
 //   combat start  nothing overdue in temp, everyone ready, funds lost (carry bands excepted), unfrozen shop cleared,
 //                 one field per alive player
@@ -130,7 +130,7 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
           if (t > ps.shop.level) fail(`${ps.playerId}: rolled tier ${t} at shop level ${ps.shop.level}`);
           // (a slotted 自选 piece comes from the player's own stock, 0.2.0 player/diy.js — once the 调度中心 is at its level)
           const diy = ps.diyStock && ps.diyStock.has(base) ? ps.diyStock.entries.get(base) : null;
-          if (!m.poolFor(ps).has(base) && !diy) fail(`${ps.playerId}: rolled ${s.id} outside the match pool (banned/hidden)`);
+          if (!m.pool.has(base) && !diy) fail(`${ps.playerId}: rolled ${s.id} outside the match pool (banned/hidden)`);
           if (diy && ps.shop.level < diy.shopLevel) fail(`${ps.playerId}: rolled 自选 ${s.id} at shop level ${ps.shop.level} < ${diy.shopLevel}`);
           if (s.basePrice !== gd.chessPrice(s.id)) fail(`${ps.playerId}: ${s.id} basePrice ${s.basePrice} != ${gd.chessPrice(s.id)}`);
         });
@@ -241,7 +241,7 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
       });
       return res;
     });
-    // merges (PRTS Stronghold-Protocol/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置", user playtest #6 follow-up): with a
+    // merges (PRTS 卫戍协议/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置", user playtest #6 follow-up): with a
     // deployed copy among the consumed ones the elite stands on the first such tile in deploy order that is legal for
     // it, with that copy's facing; else in the hand / temp (the incoming copy is never deployed: a 突变细胞
     // transformation destroyed its carrier before the gain, so that freed tile is no copy's). A merge never grows the
@@ -467,9 +467,9 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
       m.fields.forEach((f, i) => { if (f.fieldId !== `b${i + 1}`) fail(`boss field id ${f.fieldId}`); });
       if (!hidden && m.teamLp !== lpSum) fail(`team LP ${m.teamLp} != Σ alive LP ${lpSum}`);
       if (hidden && m.teamLp !== teamLp0) fail(`hidden core changed team LP ${teamLp0} → ${m.teamLp}`);
-      const want = bossPoolHp(gd, hidden ? m.hiddenBossId : m.bossId, alive.length, { experimental: m.capacityExperiment });
+      const want = bossPoolHp(gd, hidden ? m.hiddenBossId : m.bossId, alive.length);
       if (!m.bossPool || m.bossPool.maxHp !== want) fail(`boss pool ${m.bossPool && m.bossPool.maxHp} != ${want}`);
-      if (hidden && !hiddenEligible(gd, { layerSum: m.hiddenLayerSum, teamLp: m.teamLp, aliveCount: m.finalAliveCount, experimental: m.capacityExperiment })) fail('hidden core entered while not eligible');
+      if (hidden && !hiddenEligible(gd, { layerSum: m.hiddenLayerSum, teamLp: m.teamLp })) fail('hidden core entered while not eligible');
       if (hidden && gd.difficulty === 'FUNNY') fail('hidden core on FUNNY');
     });
     return res;

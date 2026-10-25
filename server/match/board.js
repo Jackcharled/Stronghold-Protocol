@@ -229,7 +229,7 @@ export function boardOrder(board) {
 }
 
 /**
- * Where a merge's elite stands (PRTS Stronghold-Protocol/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置"): of the board tiles
+ * Where a merge's elite stands (PRTS 卫戍协议/帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置"): of the board tiles
  * the consumed copies stood on (`[{ key, dir }]`), the first in deployment order (the left board column first, top to
  * bottom within a column — the copy the battle deploys first, Battle.start; the right-hand boss half is mirrored on
  * screen but deploys in the same board order) that `legal(r, c)` accepts for the elite, or null (⇒ the hand). [ASSUMED]

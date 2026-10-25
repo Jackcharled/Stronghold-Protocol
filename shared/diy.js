@@ -3,7 +3,7 @@
 // `diy` (docs/DATA.md §18), composed with shared/standIn.js composeUnitRecord into a record shaped like a data/chess.json
 // record, so normalizeChess, resolveLoadout / loadoutRecord and the detail card read it unchanged.
 //
-// The rules (research 0.2.0 §2; PRTS Stronghold-Protocol, Stronghold-Protocol：盟约 下半/PRTS盟约记录; the owner's decisions of 2026-10-05):
+// The rules (research 0.2.0 §2; PRTS 卫戍协议, 卫戍协议：盟约 下半/PRTS盟约记录; the owner's decisions of 2026-10-05):
 // - two slots per tier, 5 and 6: chess_char_5_diy1/2_a, chess_char_6_diy1/2_a, each with its `_b` elite twin (tier,
 //   price, merge of the slot: buy 4, sell 1);
 // - the picks of a tier: the owned 6★ outside the chess pool (`diy.ownedPool`: no preset operator, no collab) and the

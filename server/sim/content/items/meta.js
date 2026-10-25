@@ -15,7 +15,7 @@
 //   寻呼模块     the special refresh shows `refresh_cnt` DIFFERENT operators (fewer when the pool has no more)
 //   教鞭       trap_create_self_choice {choice_event: hunter_band_1, choiceType PERSONAL_CHOOSE}: a personal choice of
 //               one of THREE 战术特训 cards (choices.json cards.bounty payout `perfect`, e.g. 战术特训·飞行I "若各自行动阶段就
-//               达成完美作战，获得1资金") whose enemy the mode can field — PRTS Stronghold-Protocol：盟约 下半/PRTS盟约记录 §法术 教鞭
+//               达成完美作战，获得1资金") whose enemy the mode can field — PRTS 卫戍协议：盟约 下半/PRTS盟约记录 §法术 教鞭
 //               "使用后销毁，于3个战术特训的悬赏任务中选择一项", §机变阶段 "※以下悬赏任务仅由法术教鞭生成", and 杜宾 加练！
 //               "<教鞭>：使用后为下场战斗添加额外敌人，若自身战斗完美作战可获得资金". onArt → ctx.offerBountyChoice
 //               (Match.offerBountyChoice): the three cards go to the owner alone, who confirms one inside the PREP

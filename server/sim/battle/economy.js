@@ -54,7 +54,7 @@ export class BattleEconomy {
    * that dealt the blow pays its player ("将其击倒者获得N资金" — a 联防 helper included); any other death — 无来源 damage
    * (terrain, an uncredited tick), its own drain, another enemy, an ownerless unit — pays the card's owner when that
    * player fights here (own field, Final Assault / Hidden Core), else (联防, where the owner is the leaker) the player
-   * whose half of the field it fell on: PRTS Stronghold-Protocol：盟约 决策 "该敌人于对应玩家所属区域倒下时，使相应玩家获得额外资金"
+   * whose half of the field it fell on: PRTS 卫戍协议：盟约 决策 "该敌人于对应玩家所属区域倒下时，使相应玩家获得额外资金"
    * [ASSUMED for 联防: no source names the payee of a death nobody caused there]. Until 0.2.0 that fallback was the
    * leaker, who has no entry in a 联防 battle, and addCoins dropped the coins (community report of 2026-10-06
    * 「被源石地板烫死的悬赏没给赏金」: in 0.1.x the 联防 field was the round's map, as it is again since 0.2.1, 战场#04's

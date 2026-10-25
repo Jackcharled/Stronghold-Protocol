@@ -1,6 +1,4 @@
 // server/match/pool.js — the SHARED chess pool (copies per base chess, across all players), per-match bans,
-import { MAX_SEATS } from '../../shared/constants.js';
-import { MAX_PLAYER_CAPACITY } from '../../shared/playerCapacity.js';
 // copy-weighted shop rolls (research 00-INDEX §3, §6; DESIGN §6.2).
 //
 // Model:
@@ -272,31 +270,4 @@ export class SharedItemPool {
     for (const [id, weight] of pairs) if ((r -= Math.max(0, weight)) < 0) return id;
     return pairs.at(-1)?.[0] || null;
   }
-}
-
-
-export function createPoolGroups(gd, players, { banned = [], experimental = false, independent = false, fixedChunks = false } = {}) {
-  if (!Array.isArray(players) || players.length < 1 || players.length > MAX_PLAYER_CAPACITY) throw new RangeError('pool groups require 1..20 players');
-  const sorted = players.slice().sort((a, b) => a.seat - b.seat);
-  const count = sorted.length;
-  const chunked = experimental && !independent && (fixedChunks || count > MAX_SEATS);
-  const groups = independent ? count : chunked ? Math.ceil(count / 4) : 1;
-  const size = Math.floor(count / groups), remainder = count % groups;
-  let offset = 0;
-  return Array.from({ length: groups }, (_, i) => {
-    const n = chunked ? Math.min(4, count - offset) : size + (i < remainder ? 1 : 0);
-    const playerIds = sorted.slice(offset, offset += n).map(p => p.playerId);
-    const scale = !independent && !chunked && experimental && count > 4 && count < 7 ? count / 4 : 1;
-    return { id: i + 1, playerIds, scale, pool: new SharedPool(gd, { banned, scale }) };
-  });
-}
-
-
-export function createItemPools(gd, groups, playerOf) {
-  const out = new Map();
-  for (const g of groups) {
-    const pool = new SharedItemPool(gd, () => g.playerIds.map(playerOf).filter(Boolean), { scale: g.scale });
-    for (const id of g.playerIds) out.set(id, pool);
-  }
-  return out;
 }

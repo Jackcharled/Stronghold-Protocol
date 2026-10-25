@@ -23,7 +23,7 @@ const SLASH_PROFILE = Object.freeze({ canHitFly: true });
 
 export default {
   // 郁金香 (尖兵, blocks 2) — numbers from data/backups.json (normal E2 Lv1 rank 4, elite E2 Lv60 rank 7; skill_table and
-  // PRTS 郁金香(Stronghold-Protocol) agree). DP (部署费用) is the player's redeploy currency here (DESIGN §5.5 "DP").
+  // PRTS 郁金香(卫戍协议) agree). DP (部署费用) is the player's redeploy currency here (DESIGN §5.5 "DP").
   //   无垠之心: from each deployment until her 2nd skill activation of it, SP recovery +sp_recovery_per_sec (module SOL-X Lv3:
   //      +1/s) — `cnt` 2.
   //   浪潮之心: ATK +atk; each enemy she kills +cost DP.

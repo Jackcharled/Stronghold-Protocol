@@ -24,7 +24,7 @@ export class BattleDeploy {
     const k = R0 * COLS + C0;
     const occ = this._occ[k];
     if (occ && occ !== u && occ.alive && occ.deployed) { this.log(`tile ${R0},${C0} occupied; ${u} not deployed`); return false; }
-    // "倒地干员所在地块视为可部署，但所有我方单位在此处的部署行为将被阻止" (PRTS Stronghold-Protocol/帮助 §作战阶段 单位部署)
+    // "倒地干员所在地块视为可部署，但所有我方单位在此处的部署行为将被阻止" (PRTS 卫戍协议/帮助 §作战阶段 单位部署)
     if (this.downOn(R0, C0, u)) { this.log(`a knocked-out operator lies on ${R0},${C0}; ${u} not deployed`); return false; }
     const first = u.deploySeq === 0;
     u.alive = true;
@@ -47,7 +47,7 @@ export class BattleDeploy {
     u.ground = this.grid.isLow(R0, C0) && !this._elevated?.has(k);
     u.markDirty();
     u.hp = u.s.maxHp;
-    // 联防 carry (PRTS Stronghold-Protocol/帮助 §联防阶段 "将对应单位的生命比例、技力修改至与上一阶段结束时相同（召唤物仅修改技力…）"):
+    // 联防 carry (PRTS 卫戍协议/帮助 §联防阶段 "将对应单位的生命比例、技力修改至与上一阶段结束时相同（召唤物仅修改技力…）"):
     // an operator restores HP/SP, a summon SP only; actual 联防 opening restoration is deferred until Battle.start ends
     const cs = initial || (first && this._startDeploying) ? (carry ?? u.carry) : null;
     // 联防 reconstructs deployment/battle-start effects first, then restores HP/SP once in Battle.start.
@@ -58,7 +58,7 @@ export class BattleDeploy {
     if (!u.skill) this._setupUnit(u);
     u.skill.reset(restoreLater ? null : cs);
     const sk = u.skill;
-    // "自动操作具有3s冷却，在完成一次操作或作战开始时部署的单位将进入冷却" (PRTS Stronghold-Protocol/帮助; skills.js)
+    // "自动操作具有3s冷却，在完成一次操作或作战开始时部署的单位将进入冷却" (PRTS 卫戍协议/帮助; skills.js)
     if (initial) sk.opReadyAt = this.time + this.flags.startOpCooldown;
     // keepSp (突袭 "保留技力"): the SP / charges before the jump — not for a skill that costs no SP (spCost 0, the
     // deploy-timed skills), which reset() just re-armed as at every deployment: the retreat ended it, so its snapshot
@@ -230,7 +230,7 @@ export class BattleDeploy {
 
   /**
    * Automatic redeploys (DESIGN §5.5): an operator that left the field and whose timer is done comes back on its rest
-   * tile — where it lies ("满足再部署条件时，移除场上的该倒地干员并自动部署至该位置", PRTS Stronghold-Protocol/帮助) — when that tile
+   * tile — where it lies ("满足再部署条件时，移除场上的该倒地干员并自动部署至该位置", PRTS 卫戍协议/帮助) — when that tile
    * is free and its player has the DP.
    */
   _checkRedeploys() {

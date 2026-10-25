@@ -1,7 +1,6 @@
 // ui/gameLogic/draft.js — 机变 and band-draft normalisation. Re-exported from ../gameLogic.js.
 
 import { isObj } from './shared.js';
-import { MAX_DRAFT_CARDS } from '../../../../shared/playerCapacity.js';
 import { PHASE } from '../../../../shared/constants.js';
 import { t } from '../../../../shared/i18n.js';
 
@@ -35,20 +34,7 @@ export function normalizeDraft(draft, players = []) {
   const sk = draft?.skipsLeft ?? draft?.skips;
   if (isObj(sk)) for (const [k, v] of Object.entries(sk)) if (Number.isFinite(v)) skipsLeft.set(k, v);
   const done = order.length > 0 && order.every((pid) => picks.has(pid));
-  return { order, turnPid, picks, skipsLeft, done,
-    ...(draft?.allowRepeat === true ? { allowRepeat: true } : {}),
-    ...(draft?.concurrent === true ? { concurrent: true } : {}) };
-}
-
-/**
- * Whether it is `myId`'s turn to pick in a normalised draft (normalizeDraft / normalizeSp):
- * solo always; a concurrent draft while I have not picked; otherwise the named turn.
- */
-export function draftMyTurn(d, myId, solo = false) {
-  if (!d) return false;
-  if (solo) return true;
-  if (d.concurrent === true) return !!myId && d.order.includes(myId) && !(d.picks || d.pickOf).has(myId);
-  return d.turnPid === myId;
+  return { order, turnPid, picks, skipsLeft, done };
 }
 
 /**
@@ -75,8 +61,7 @@ export function normalizeSp(sp, players = []) {
   if (!isObj(sp)) return null;
   const ids = (Array.isArray(players) ? players : []).filter(isObj).map((p) => p.playerId);
   const order = Array.isArray(sp.order) && sp.order.length ? sp.order.filter((x) => typeof x === 'string') : ids;
-  const allowRepeat = sp.allowRepeat === true;
-  const cards = (Array.isArray(sp.cards) ? sp.cards : []).slice(0, MAX_DRAFT_CARDS).map((c, idx) => {
+  const cards = (Array.isArray(sp.cards) ? sp.cards : []).slice(0, 6).map((c, idx) => {
     const card = typeof c === 'string' ? { id: c } : isObj(c) ? { ...c } : {};
     return { ...card, idx, takenBy: typeof card.takenBy === 'string' ? card.takenBy : null };
   });
@@ -102,8 +87,6 @@ export function normalizeSp(sp, players = []) {
     desc: typeof sp.desc === 'string' && sp.desc ? sp.desc : null,
     untimed: !!sp.untimed,
     cards, order, turnPid, pickOf, takenBy, pickedCount: pickOf.size,
-    ...(allowRepeat ? { allowRepeat: true } : {}),
-    ...(sp.concurrent === true ? { concurrent: true } : {}),
   };
 }
 

@@ -161,7 +161,7 @@ const PIC_WAIT_MS = 400;
  * — bounded: after the last one the view keeps its diamond until `retryAssets` (a manifest that arrived late, the tab
  * shown again). Counted from the failure; a hidden tab runs no frames, so nothing is retried while hidden.
  */
-export const SPINE_RETRY_MS = Object.freeze([1200, 4000, 10000, 25000]);
+export const SPINE_RETRY_MS = Object.freeze([2000, 6000, 15000, 30000]);
 /**
  * A Spine load begun while the tab was hidden and still in flight this long (ms, real time) after the tab is shown again
  * is started again (`retryAssets` arms it, `update` fires it; GitHub #68: such a load — a request the hidden tab left

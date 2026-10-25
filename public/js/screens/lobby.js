@@ -712,20 +712,12 @@ export function LobbyScreen() {
       if (alive.current) setBusy(null);
     }
   };
-  const guest = !(window.__SP_ACCOUNT_USER || window.__SP_ACCOUNT_TOKEN);
   // 独立模拟: at the difficulty picked on 选择模拟协议; 创建同盟: at the remembered one, changed in the room by the host
   // (`version`: the lobby's, only when welcome.versions is present — protocol §4; omitted when the server offers 第二期下半 alone)
-  const create = (mode) => {
-    // 本服账号功能：游客不能建房，先提示，服务端还会再校验一次。
-    if (guest) {
-      toast(mode === 'solo' ? t('游客不能开始独立模拟，请先登录') : t('游客不能创建同盟模拟房间，请先登录'), 'warn');
-      return;
-    }
-    return run('create', () => net.request('room.create', {
-      mode, difficulty: mode === 'solo' ? shownSolo : shownCoop, ...(testMode && asTest ? { test: true } : {}), ...(versions ? { version } : {}),
-      ...(mode === 'solo' && soloFree && soloTimed === true ? { soloUnlimited: true } : {}),
-    }));
-  };
+  const create = (mode) => run('create', () => net.request('room.create', {
+    mode, difficulty: mode === 'solo' ? shownSolo : shownCoop, ...(testMode && asTest ? { test: true } : {}), ...(versions ? { version } : {}),
+    ...(mode === 'solo' && soloFree && soloTimed === true ? { soloUnlimited: true } : {}),
+  }));
   const join = (c = code) => {
     // `onClick=${join}` hands the click EVENT as the first argument, and a default parameter only applies to
     // `undefined` — codeArg keeps an event target out of the key and falls back to the input field

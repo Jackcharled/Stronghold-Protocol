@@ -5,7 +5,7 @@
 // kind — time, attack, hurt or granted). A stunned / frozen / levitated unit (canAct false) neither attacks nor casts, but
 // its time SP keeps recovering (PRTS: only 阻回 pauses the SP cooldown; 晕眩 does not — community report #18).
 // Charges (maxCharges > 1): SP fills to spCost → +1 charge (SP restarts) until charges == max (SP stays full).
-// Trigger rules (the official 技能策略, PRTS Stronghold-Protocol/帮助 §作战阶段 技能操作; data: tools/build-data.mjs resolveTrigger):
+// Trigger rules (the official 技能策略, PRTS 卫戍协议/帮助 §作战阶段 技能操作; data: tools/build-data.mjs resolveTrigger):
 //   DEFAULT — the basic strategy: ready + about to attack/heal + enemy / injured ally in the INITIAL range (or blocked by
 //   a melee unit) — or, checked every tick, an enemy inside one of the content trigger ranges added with
 //   addTriggerRange: 海嗣, 流形, 谬因 S2's beam, the summons' areas a skill acts through (麦哲伦 S1, 令 S3, 电弧 S2 / S3 —
@@ -262,7 +262,7 @@ export class SkillRuntime {
 
   /**
    * Called on every (re)deployment. `carry` = { sp } for unite (联防) helpers: their 技力 at the end of their own combat
-   * (unitsEnd `sp` = spTotal, rebuilt into charges here). Nothing else of the skill is carried — PRTS Stronghold-Protocol/帮助 §联防阶段
+   * (unitsEnd `sp` = spTotal, rebuilt into charges here). Nothing else of the skill is carried — PRTS 卫戍协议/帮助 §联防阶段
    * "将对应单位的生命比例、技力修改至与上一阶段结束时相同": a skill that was running enters 联防 switched off, with the SP it
    * had left (spent at its activation: 0 for a one-charge skill — PRTS 技能 "触发技能后…消耗相应的技力").
    */
@@ -509,7 +509,7 @@ export class SkillRuntime {
       const here = [u.tileR * COLS + u.tileC];
       if (b.enemiesInKeys(here, u, u.profile).length > 0 || this._allyTargetIn(here)) return true;
     }
-    // the enemies a unit blocks are always its targets (Battle.blockedTargets), in range or not — PRTS Stronghold-Protocol/帮助
+    // the enemies a unit blocks are always its targets (Battle.blockedTargets), in range or not — PRTS 卫戍协议/帮助
     // "敌人被近战干员自身阻挡" satisfies the target condition of the basic strategy (a ranged blocker too: user playtest #6)
     if (!this.healSkill && u.blocking.length && b.blockedTargets(u, u.profile).length > 0) return true;
     return !this.healSkill && this.triggerRanges.length > 0 && this._extraTriggerSatisfied();

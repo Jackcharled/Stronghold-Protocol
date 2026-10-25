@@ -7,7 +7,7 @@
 // Sources: character_table / skill_table / battle_equip_table (zh_CN, as built into backups.json; the 幻影 token record
 // backups.json tokens.token_10003_cgbird_bird with its owner-form / module variants) and PRTS 夜莺 (S2 备注
 // "多个屏障吸收量可叠加，持续时间独立计算，优先消耗先生成的屏障，法术抗性增加效果不可叠加"; 转瞬即逝的幻影 备注 "幻影的持有上限为3个，
-// 每次部署夜莺时补充2个幻影 / Y模组2级时…补充3个 / 夜莺离场时，已部署的幻影会留在场上"); PRTS Stronghold-Protocol/帮助 §作战阶段 (summons:
+// 每次部署夜莺时补充2个幻影 / Y模组2级时…补充3个 / 夜莺离场时，已部署的幻影会留在场上"); PRTS 卫戍协议/帮助 §作战阶段 (summons:
 // "所有手动部署的召唤物，无视所属干员的持有状态，不消耗持有数量，作战开始时立即部署一次", "若战场区初始部署有召唤物，若召唤物在
 // 战斗期间退场，将在满足条件后立即原地再部署1个").
 // - Trait (群愈师) "同时恢复三个友方单位的生命": the profession default (3 heals). Module RIN-Y “莺歌” "同时恢复四个友方单位的

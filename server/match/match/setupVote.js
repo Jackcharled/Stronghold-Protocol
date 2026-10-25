@@ -7,7 +7,7 @@
 import { PHASE, ERR, SETUP_REROLL_COOLDOWN_MS as REROLL_COOLDOWN_MS } from '../../../shared/constants.js';
 import { createRng, deriveSeed } from '../../sim/rng.js';
 import { setupMatchWaves } from '../waves.js';
-import { drawDisabledBonds, SharedPool, createPoolGroups, createItemPools } from '../pool.js';
+import { drawDisabledBonds, SharedPool } from '../pool.js';
 import { OK, fail } from './common.js';
 
 // One start per seat per cooldown: the vote freezes the INFO_CHECK countdown, so an endless restart loop would stall
@@ -92,30 +92,18 @@ export class MatchSetupVote {
       const setup = setupMatchWaves(this.gd, rng);
       const stage = setup.stageId ? this.gd.stage(setup.stageId) : null;
       const bans = drawDisabledBonds(this.gd, rng);
-      let poolGroups = null;
-      let playerPools = null;
-      let pool;
-      if (this.capacityExperiment) {
-        poolGroups = createPoolGroups(this.gd, this.order, { banned: bans.banned,
-          experimental: true, independent: this.disableSharedPool, fixedChunks: this.twentyPlayerMode });
-        pool = this.disableSharedPool ? new SharedPool(this.gd, { banned: bans.banned }) : poolGroups[0].pool;
-        if (!pool.entries.size || poolGroups.some((g) => !g.pool.entries.size)) throw new Error('rerolled chess pool is empty');
-        playerPools = this.disableSharedPool || this.capacityExperiment
-          ? new Map(poolGroups.flatMap((g) => g.playerIds.map((id) => [id, g.pool]))) : null;
-      } else {
-        pool = new SharedPool(this.gd, { banned: bans.banned });
-        if (!pool.entries.size) throw new Error('rerolled chess pool is empty');
-      }
+      const pool = new SharedPool(this.gd, { banned: bans.banned });
+      if (!pool.entries.size) throw new Error('rerolled chess pool is empty');
       const off = new Set([...bans.drawn, ...bans.staticOff]);
       const stocks = this.order.map((ps) => ps.buildDiyStock(off));
-      prepared = { setup, stage, bans, pool, poolGroups, playerPools, stocks };
+      prepared = { setup, stage, bans, pool, stocks };
     } catch (e) {
       this.reportError('reroll setup', e);
       this.cancelSetupVote();
       return fail(ERR.INTERNAL);
     }
     // All data-dependent work succeeds before any opening or player state changes.
-    const { setup, stage, bans, pool, poolGroups, playerPools, stocks } = prepared;
+    const { setup, stage, bans, pool, stocks } = prepared;
     this.stageId = setup.stageId;
     this.stage = stage;
     this.factions = setup.factions;
@@ -125,12 +113,6 @@ export class MatchSetupVote {
     this.staticInactiveBonds = bans.staticOff;
     this.bannedChess = bans.banned;
     this.pool = pool;
-    if (this.capacityExperiment) {
-      this.poolGroups = poolGroups;
-      this.playerPools = playerPools;
-      this.playerItemPools = createItemPools(this.gd, poolGroups, (id) => this.players.get(id));
-      this.itemPool = this.playerItemPools.get(poolGroups[0].playerIds[0]);
-    }
     this._botPath = null;
     for (const [i, ps] of this.order.entries()) {
       ps.diyStock = stocks[i].stock;

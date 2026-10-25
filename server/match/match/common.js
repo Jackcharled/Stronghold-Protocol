@@ -22,14 +22,6 @@ export const DELAYS = Object.freeze({
   PUBLIC_THROTTLE: 100,
 });
 
-/** Experimental rescue: a leak-free unite helper with at least 11 LP pays 10 to cancel a teammate's death. */
-export const REVIVAL_COST = 10;
-export const REVIVAL_MIN_DONOR_LP = 11;
-export const REVIVAL_WINDOW_SECONDS = 15;
-export const REVIVAL_UNAVAILABLE_REASONS = Object.freeze([
-  'disabled', 'no-helper', 'donor-lp', 'window-expired', 'window-closed', 'already-used', 'left', 'match-ended',
-]);
-
 /**
  * Seconds of one turn of the co-op strategy draft (user playtest #4 item 4: the old 12 s per turn — research 06 §724,
  * itself [ASSUMED] — inside the 50 s step was far too little and counted apart from the header's 50 s). [ASSUMED]: the

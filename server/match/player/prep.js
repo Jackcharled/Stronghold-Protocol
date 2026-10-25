@@ -20,7 +20,7 @@ export class PlayerPrep {
   /**
    * g.reward {idx}: the pick of the first queued offer (promotion reward, a strategy's special refresh, an item offer).
    * A pick is a 招募 like a purchase: a full regular hand refuses it, also when it would complete a merge (PRTS
-   * Stronghold-Protocol/帮助 §手牌区, see buy; GitHub #82).
+   * 卫戍协议/帮助 §手牌区, see buy; GitHub #82).
    */
   pickReward(idx) {
     const g = this._gate(); if (g) return g;

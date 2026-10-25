@@ -229,7 +229,7 @@ export function checkAssets() {
   for (const u of urls) {
     let st = null;
     try { st = fs.statSync(path.join(pub, ...u.split('/').filter(Boolean).map(decodeURIComponent))); } catch { /* missing */ }
-    if (!st || !st.size) missing.push(u);
+    if (!st || !st.isFile() || !st.size) missing.push(u);
   }
   return { ok: present && missing.length === 0 && urls.length > 0, present, manifest: true, total: urls.length, missing: missing.length, sample: missing.slice(0, 5), bytes: Number(m.stats?.bytes) || 0 };
 }
@@ -558,7 +558,7 @@ export function sceneInstallPlan(o = {}) {
     return { run: false, state: 'skip', detail: '未提取各战场官方场景：3D 棋盘用金属地块（node tools/setup.mjs --scenes 可在本机下载并提取）' };
   }
   if (o.client === 'incomplete') {
-    return { run: false, state: 'warn', detail: '客户端缺少Stronghold-Protocol资源，战场场景未提取。3D 棋盘继续用金属地块' };
+    return { run: false, state: 'warn', detail: '客户端缺少卫戍协议资源，战场场景未提取。3D 棋盘继续用金属地块' };
   }
   if (!o.client) {
     return { run: false, state: 'skip', detail: '没有本机客户端，不能提取战场场景（贴图仍取自客户端）。3D 棋盘用金属地块；完整包已带场景时可复制 public/assets/local 和 data/local-assets.json' };
@@ -904,7 +904,7 @@ async function main() {
   const add = (state, label, detail = '') => summary.push({ state, label, detail });
   let fatal = false;
 
-  say(c.bold('\nStronghold-Protocol：盟约 · setup') + c.dim(`  (${ROOT})`));
+  say(c.bold('\n卫戍协议：盟约 · setup') + c.dim(`  (${ROOT})`));
 
   // 1. Node
   const node = checkNode();
@@ -1001,7 +1001,7 @@ async function main() {
       if (already) pushArt(local, local.board3d ? '，3D 棋盘可用' : '', '已提取', false);
       else add('skip', '本地客户端美术（可选）', `${opts.game ? `找不到 ${opts.game}` : '未检测到本机明日方舟客户端'}：${LOCAL_ART_FALLBACK}（见 docs/DEPLOY.md 第 6 节）`);
     } else if (!client.autochess) {
-      add(already ? localArtState(local) : 'warn', '本地客户端美术（可选）', `${client.kind} 客户端缺少Stronghold-Protocol资源（请在游戏内下载全部资源）：${client.path}${already ? localGaps(local, { client: false }) : ''}`);
+      add(already ? localArtState(local) : 'warn', '本地客户端美术（可选）', `${client.kind} 客户端缺少卫戍协议资源（请在游戏内下载全部资源）：${client.path}${already ? localGaps(local, { client: false }) : ''}`);
     } else if (already && opts.local !== 'force') {
       if (local.board3d && !local.tiles && !opts.check) cropBoardTiles(log);
       pushArt(local, local.board3d ? '，3D 棋盘可用' : '', '已提取', true);

@@ -45,7 +45,6 @@ import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import { C2S, validateC2S } from '../shared/protocol.js';
 import { ERR, ERR_TEXT, NAME_MAX_LEN, PROTOCOL_VERSION } from '../shared/constants.js';
-import { verifyAdminToken, readUserToken } from './adminAuth.js';
 
 /** Tunables (all overridable through the Network / SessionRegistry constructors). */
 export const NET_DEFAULTS = Object.freeze({
@@ -743,19 +742,8 @@ export class Network {
       session.ws = conn.ws;
       session.connected = true;
       session.claimAt = Number.isFinite(msg.claimAt) ? msg.claimAt : null;
-      session.guest = msg.guest === true;
-      session.tag = (typeof msg.tag === 'string' && /^[0-9]{4}$/.test(msg.tag)) ? msg.tag : null;
       session.disconnectedAt = null;
     }
-    // 每次 hello（含重连/重复）都同步账号身份与 tag，避免重连后丢失
-    const account = readUserToken(msg.accountToken);
-    if (account) {
-      session.accountId = String(account.uid);
-      session.accountTag = account.tag;
-      session.tag = account.tag || session.tag;
-    }
-    session.guest = msg.guest === true;
-    session.admin = verifyAdminToken(msg.adminToken);
     session.name = name;
     session.lastSeen = now;
     session.addr = conn.ip;
@@ -766,7 +754,7 @@ export class Network {
 
     let extra = null;
     try { extra = this.handler.welcomeInfo?.() ?? null; } catch (e) { this.log.error('[net] welcomeInfo crashed', e); }
-    const welcome = { ...(extra && typeof extra === 'object' ? extra : null), t: 'welcome', playerId: session.playerId, token: session.token, name: session.name, tag: session.tag || null, serverNow: now, version: PROTOCOL_VERSION, resumed };
+    const welcome = { ...(extra && typeof extra === 'object' ? extra : null), t: 'welcome', playerId: session.playerId, token: session.token, name: session.name, serverNow: now, version: PROTOCOL_VERSION, resumed };
     if (session.aiTakeoverFrom) { welcome.takeoverFrom = session.aiTakeoverFrom; session.aiTakeoverFrom = null; }
     if (validRid(rid)) welcome.rid = rid;
     this.reply(conn, welcome);

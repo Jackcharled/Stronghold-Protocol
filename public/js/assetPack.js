@@ -361,11 +361,7 @@ export async function modelHashOf(parts) {
  */
 export function plainRel(url) {
   if (typeof url !== 'string' || /[?#\\]/.test(url) || url.includes('\0')) return null;
-  let raw = url;
-  if (/^https?:\/\//i.test(raw)) {
-    try { raw = new URL(raw).pathname; } catch { return null; }
-  }
-  const split = splitHashedPath(raw);
+  const split = splitHashedPath(url);
   if (!split.hash) return null;
   let path;
   try { path = decodeURIComponent(split.path); } catch { return null; }
@@ -381,8 +377,7 @@ function isObj(value) {
 }
 
 function isSpine(value) {
-  return isObj(value) && typeof value.skel === 'string' && /\.skel$/.test(value.skel)
-    && (value.skel.startsWith('/') || /^https?:\/\//i.test(value.skel));
+  return isObj(value) && typeof value.skel === 'string' && value.skel.startsWith('/') && /\.skel$/.test(value.skel);
 }
 
 /** Skeleton, atlas, then pages. No pages listed → the default `<skel>.png` under the same hash, as the server does. */
@@ -558,13 +553,9 @@ export async function pruneImportedAssets({ fetch: doFetch = (...args) => global
 /** The cache keys of one served URL: itself, plus the `/media/~hash/…` alias when playback would request it. */
 export function cacheUrlsFor(url) {
   const out = [];
-  // The game localizes external art to this server's /assets-cdn/ proxy; cache the same URL
-  // so the service worker can actually answer the request the game makes.
-  const remote = /^https?:\/\/assets\.luobomiao\.love\/assets\//i;
-  const local = typeof url === 'string' && remote.test(url) ? '/assets-cdn/' + url.replace(remote, '') : url;
-  if (typeof local === 'string' && local) out.push(local);
-  const media = mediaUrl(local);
-  if (typeof media === 'string' && media && media !== local) out.push(media);
+  if (typeof url === 'string' && url) out.push(url);
+  const media = mediaUrl(url);
+  if (typeof media === 'string' && media && media !== url) out.push(media);
   return out;
 }
 

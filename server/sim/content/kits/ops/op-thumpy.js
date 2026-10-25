@@ -11,7 +11,7 @@
 // 为已有屏障Buff累加伤害吸收量"; S1 备注 "推动效果为径向推力，攻击到未被阻挡的敌人时也会生效"; S2 备注 — the spraying order,
 // "强力胶的效果施加无视无法选择，但其不会对隐藏、隐匿、无敌的单位产生停顿与伤害效果", "停顿效果先于此技能的物理伤害生效", "追加侵蚀
 // 损伤的“其他干员”判断以伤害的来源为准，无来源伤害始终无法触发此效果"; S3 备注 — the conveyor "影响自身前方4格可通行地块（不包括
-// 自身所在格，中心判定）内的所有未被阻挡的地面敌方敌人，可影响隐匿单位，无法影响自缚单位", "每帧…传送0.8/30格…Stronghold-Protocol为每秒20帧",
+// 自身所在格，中心判定）内的所有未被阻挡的地面敌方敌人，可影响隐匿单位，无法影响自缚单位", "每帧…传送0.8/30格…卫戍协议为每秒20帧",
 // "伤害效果影响自身所在格及正前方4格内所有地面敌方单位，以及所有被自身阻挡的敌方单位").
 // - Trait (本源铁卫) "能够阻挡三个敌人，可以造成元素损伤": the profession default (block 3), ground-only physical melee on her
 //   own tile (range 0-1). Module PRP-X 出发的勇气 adds "阻挡敌人时，自身造成的元素损伤提升15%" (trait bb ep_damage_scale):
@@ -42,7 +42,7 @@
 // - S3 “不准走！” (MANUAL; DEFAULT): `duration` s — block +block_cnt, strikes every blocked enemy at once, ATK / DEF +. The
 //   conveyor: the passable tiles among the max_cnt − 1 tiles ahead of her (not hers); every tick each unblocked ground enemy
 //   standing on one (by its centre tile), 重量 ≤ mass_level, not 自缚 — 隐匿 ones too — is carried towards her after its own
-//   movement by CONVEYOR_FRAME × CONVEYOR_FPS × dt: the official 0.8 / 30 tile per frame at Stronghold-Protocol's 20 frames per second
+//   movement by CONVEYOR_FRAME × CONVEYOR_FPS × dt: the official 0.8 / 30 tile per frame at 卫戍协议's 20 frames per second
 //   (PRTS: 0.533 tiles/s here, not the regular game's 0.8), never into an impassable tile (keeping 0.2 tile off its edge on a
 //   horizontal belt). Every `interval` s, the cast included [ASSUMED], every targetable ground enemy on her tile and the
 //   max_cnt − 1 tiles ahead and every enemy she blocks takes atk_scale × ATK physical; an enemy there whose 侵蚀 bursts
@@ -60,7 +60,7 @@ const S2 = 'skchr_thumpy_2';
 const S3 = 'skchr_thumpy_3';
 /** PRTS S3 备注: the conveyor carries 0.8 / 30 tile per frame ("传送带矢量"; conveyor_speed / 30) … */
 const CONVEYOR_FRAMES = 30;
-/** … and Stronghold-Protocol runs 20 frames per second ("如果游戏的实际运行帧率发生改变（例如Stronghold-Protocol为每秒20帧），位移量也将随之变化"). */
+/** … and 卫戍协议 runs 20 frames per second ("如果游戏的实际运行帧率发生改变（例如卫戍协议为每秒20帧），位移量也将随之变化"). */
 const CONVEYOR_FPS = 20;
 /** PRTS S3 备注: a horizontal belt keeps its enemies 0.2 tile off the edge of an impassable tile. */
 const BELT_EDGE = 0.2;

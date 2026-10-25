@@ -1,8 +1,8 @@
-// server/sim/content/kits/ops/standin-acspec.js — Misery (char_615_acspec, Stronghold-Protocol 6★ 特种·处决者) 补位 stand-in kit.
+// server/sim/content/kits/ops/standin-acspec.js — Misery (char_615_acspec, 卫戍协议 6★ 特种·处决者) 补位 stand-in kit.
 // Stands in for 缄默德克萨斯 (tier 4, S2), 山 (tier 5, S3 + EXE-X) and 新约能天使 / 锏 (tier 6, S3 + EXE-X):
 // data/backups.json `units.char_615_acspec.standsIn`. Kit contract: ../README.md "Stand-in kits".
 // Numbers: the blackboards of data/backups.json (skill_table / character_table / battle_equip_table); what the data
-// does not carry: PRTS Misery(Stronghold-Protocol), cited where used.
+// does not carry: PRTS Misery(卫戍协议), cited where used.
 
 import { num, talentBb, traitBb, skillRec, statBuff, toggleBuff } from '../shared/tier1.js';
 import { lonely } from '../shared/tier4.js';

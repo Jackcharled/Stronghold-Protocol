@@ -3,7 +3,7 @@
 // proves the composition below rebuilds every record at every potential), the simulation (server/sim/simdata.js), the
 // server (PlayerState) and the client (干员调配 / detail cards).
 //
-// Official (调度手册 autochess_shop_3 「Stronghold-Protocol中干员潜能由自身已持有干员潜能决定」; PRTS Stronghold-Protocol 「干员的潜能等级始终以自身
+// Official (调度手册 autochess_shop_3 「卫戍协议中干员潜能由自身已持有干员潜能决定」; PRTS 卫戍协议 「干员的潜能等级始终以自身
 // 持有状态为准」): an operator fights at the player's own potential; the season's chess rows carry none. The data records
 // (data/chess.json, data/backups.json forms, the token variants of data/tokens.json and backups.json `tokens`) are
 // built at FULL potential (潜能 6 = rank 5, the default) and carry what any lower potential changes (docs/DATA.md §2.3):

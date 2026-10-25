@@ -23,10 +23,10 @@ export class PlayerRound {
     // temp is NOT wiped here: the last prep's deadline resolved what the player could act on (endPrep); what overflowed
     // after it (battle-result grants, SETTLE merges, returned equipment) is shown and usable in this prep (tempDue).
     // Queued reward offers (a promotion's pick, a strategy's special refresh, an item offer) are kept until picked —
-    // they do not lapse at the prep deadline (PRTS Stronghold-Protocol/帮助: the temporary shop leaves its state when one is bought;
+    // they do not lapse at the prep deadline (PRTS 卫戍协议/帮助: the temporary shop leaves its state when one is bought;
     // community report relayed by the maintainer on 2026-10-15) — so an offer left with 稍后 is shown again in this prep
     this.ready = false;
-    // summon stacks removed from temp at the last prep deadline come back (PRTS Stronghold-Protocol/帮助 §手牌区); full hand ⇒ temp
+    // summon stacks removed from temp at the last prep deadline come back (PRTS 卫戍协议/帮助 §手牌区); full hand ⇒ temp
     for (const p of [...this.board.values()]) if (p.kind === 'chess') this.grantTokensFor(p);
     this.rollShop({ keepFrozen: true });
     this.shop.frozen = false;
@@ -52,7 +52,6 @@ export class PlayerRound {
   // `effects` are kept: a 信标 gift still pending is delivered to the teammate at the next round start (builtin_gift is
   // flagged afterElimination — GitHub #86); nothing else of an eliminated player is dispatched.
   eliminate(round) {
-    this.pendingDeath = false;
     this.alive = false;
     this.ready = false;
     this.eliminatedRound = round;
@@ -82,7 +81,7 @@ export class PlayerRound {
     this.deployMap(); // a change of the deploy field (a boss round's prep) marks the legality stale
     if (this._legalityStale) this._evictIllegal();
     this._liftOutOfRange();
-    // a free regular hand slot pulls a temp piece in (PRTS Stronghold-Protocol/帮助 §手牌区 "常规手牌区出现空位时自动移入")
+    // a free regular hand slot pulls a temp piece in (PRTS 卫戍协议/帮助 §手牌区 "常规手牌区出现空位时自动移入")
     this._fillHandFromTemp();
     // the states the last recompute stored: the change since then is reported once (_reportActiveBonds)
     const before = this.bonds;
@@ -125,7 +124,7 @@ export class PlayerRound {
 
   /**
    * `reached`: the bonds carry the layers this round's own combat reached (bondsView: the pending in-battle gains, capped
-   * like settle()) — the 联防 field (unite.js; PRTS Stronghold-Protocol/帮助 §联防阶段 "将以其阵地当前的状态", [ASSUMED] the current
+   * like settle()) — the 联防 field (unite.js; PRTS 卫戍协议/帮助 §联防阶段 "将以其阵地当前的状态", [ASSUMED] the current
    * state includes those layers, as the strip shows them). The gains stay pending: settle() adds them once.
    */
   battleInput({ side = 'L', colOffset = 0, carry = null, reached = false } = {}) {

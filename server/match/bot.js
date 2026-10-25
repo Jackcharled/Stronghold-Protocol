@@ -23,7 +23,7 @@
 //      bond thresholds (focus, second) > role needs (blockers, anti-air when the wave flies, one or two healers) >
 //      tier and armour fit (the share of a dealer's damage the round's DEF / RES lets through, effDps; an attack on every
 //      enemy in range — 阵法术师 / 轰击术师 — counts double, splash and chain a little, CROWD). A merge that
-//      consumes a deployed copy leaves the elite on that copy's tile (PRTS Stronghold-Protocol/帮助, PlayerState._mergeChess):
+//      consumes a deployed copy leaves the elite on that copy's tile (PRTS 卫戍协议/帮助, PlayerState._mergeChess):
 //      nothing here assumes it in the hand — steps 3–4 plan it like any owned unit (kept, moved or benched).
 //   3. lineup: the deployed set maximizes unit value (tier, elite, items, armour fit) + activated bond tiers (exact
 //      counting via computeBonds; every deployed focus member counts toward the next threshold) + composition
@@ -762,7 +762,7 @@ function buyScore(m, ps, id, ctx) {
   // [ASSUMED] A soft 18-point cooperation weight (PR #407), not an official rule or a reserved card.
   // Leave high-tier shared chess to living teammates whose opening strategy needs its faction.
   // Humans and bots count equally; a single soft penalty still allows valuable own merges.
-  if (c.tier >= 5 && !c.isGolden && !c.diyFor && ps.pool.has(base) && m.alivePlayers().some((mate) =>
+  if (c.tier >= 5 && !c.isGolden && !c.diyFor && m.pool.has(base) && m.alivePlayers().some((mate) =>
     mate !== ps && gd.bandBondIds(mate.bandId).some((b) => !gd.modeInactiveBonds.has(b) && c.bonds.includes(b)))) s -= 18;
   return s + (ctx.policy?.buyBonus(m, ps, id, ctx) || 0);
 }
@@ -1957,7 +1957,7 @@ export function* buyLoopSteps(m, ps, { fillOnly = false, maxRefreshes = 0, polic
     // [ASSUMED] Do not underfill the deploy cap merely to reserve a hand slot.
     // Product-policy tracking: https://github.com/sganggs/Stronghold-Protocol/issues/315
     if (used >= gd.benchSize - 1 && ownedN > ps.deployCap) sellWeakestHand(m, ps, { keepFresh: true });
-    // a full hand refuses every purchase, the third copy of a held pair too (PlayerState.buy, PRTS Stronghold-Protocol/帮助 §手牌区):
+    // a full hand refuses every purchase, the third copy of a held pair too (PlayerState.buy, PRTS 卫戍协议/帮助 §手牌区):
     // an affordable one sheds the weakest hand single first (like the shed above, never one of this prep)
     if (freeSlot(ps.hand) < 0 && ps.shop.slots.some((s) => s && !s.sold && s.kind === 'chess' && ps.priceOf(s) <= ps.funds
       && (ps.completesChessMerge(s.id) || (advisor && !mergesOnly && planBuyTarget(m, ps, s.id))))) {

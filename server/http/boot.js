@@ -69,7 +69,7 @@ export function isProcessEntry(metaUrl) {
  * @param {{ url: string, host: string, port: number, studio?: { pageUrl: (base: string) => string | null } | null }} srv
  */
 export function printBanner(srv) {
-  console.log(`\n  Stronghold-Protocol：盟约 · Stronghold Protocol: Alliance v${APP_VERSION}`);
+  console.log(`\n  卫戍协议：盟约 · Stronghold Protocol: Alliance v${APP_VERSION}`);
   if (DEV_BUILD) console.log('  ! 开发版（dev 分支）：不稳定，请勿用于公开服务器 · development build — unstable, not for public servers');
   console.log(`  Local:   ${srv.url}`);
   if (srv.host === '0.0.0.0' || srv.host === '::') {

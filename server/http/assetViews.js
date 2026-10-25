@@ -30,19 +30,12 @@ export const VIEW_MANIFESTS = Object.freeze(['assets.json', 'local-assets.json',
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const ART_URL = /^\/(?:assets|fonts)\/./;
-const artPath = (url) => {
-  if (typeof url !== 'string') return null;
-  if (!/^https?:\/\//i.test(url)) return url;
-  try { return new URL(url).pathname; } catch { return null; }
-};
-const isArtUrl = (url) => ART_URL.test(artPath(url) || '');
 
 /** URL path of a manifest → the index's rel path ('/assets/a%20b.png' → 'assets/a b.png'), or null. */
 export function relOf(url) {
-  const raw = artPath(url);
-  if (typeof raw !== 'string' || !ART_URL.test(raw) || /[?#]/.test(raw)) return null;
+  if (typeof url !== 'string' || !ART_URL.test(url) || /[?#]/.test(url)) return null;
   let p;
-  try { p = decodeURIComponent(raw); } catch { return null; }
+  try { p = decodeURIComponent(url); } catch { return null; }
   if (p.includes('\0') || p.includes('\\')) return null;
   const segs = p.slice(1).split('/');
   if (segs.some((s) => s === '' || s === '.' || s === '..')) return null;
@@ -50,8 +43,7 @@ export function relOf(url) {
 }
 
 /** Is `o` a Spine object of data/assets.json (`{ skel: '/….skel', atlas, textures? }`)? */
-const isSpine = (o) => isObj(o) && typeof o.skel === 'string' && /\.skel$/.test(o.skel)
-  && (o.skel.startsWith('/') || /^https?:\/\//i.test(o.skel));
+const isSpine = (o) => isObj(o) && typeof o.skel === 'string' && o.skel.startsWith('/') && /\.skel$/.test(o.skel);
 
 /** The URLs of a Spine object: skeleton, atlas, pages (the `<skel name>.png` when it lists none). */
 function spineUrls(o) {
@@ -91,7 +83,7 @@ export function rewriteManifest(doc, name, index) {
     return h;
   };
   const walk = (v) => {
-    if (typeof v === 'string') return isArtUrl(v) ? own(v) : v;
+    if (typeof v === 'string') return ART_URL.test(v) ? own(v) : v;
     if (Array.isArray(v)) return v.map(walk);
     if (!isObj(v)) return v;
     if ((name === 'assets.json' || name === 'local-assets.json') && isSpine(v)) {

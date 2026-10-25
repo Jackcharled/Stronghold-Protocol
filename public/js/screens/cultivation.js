@@ -1,8 +1,8 @@
 // 潜能 / 练度 controls of the 干员调配 overlay (0.2.2, the owner's decision of 2026-10-08: 「调配干员里自己设置吧，默认满潜
 // 满加成」): per operator (by charId — the normal, elite and 自选 forms share them), 潜能 1–6 and the 自持有 练度 tier
 // (effects.json CHAR_MAP aceffect_char_1…4: 未精英化 / 精英阶段1 / 精英阶段2 / 精英阶段2-60级 — their official names and
-// texts, localized by the data overlay), default 潜能 6 / 精英阶段2-60级. Official: 调度手册 「Stronghold-Protocol中干员潜能由自身已
-// 持有干员潜能决定」 and 「提升已持有的干员，将为Stronghold-Protocol中同名的干员提供加成」 (an operator the player does not own fights
+// texts, localized by the data overlay), default 潜能 6 / 精英阶段2-60级. Official: 调度手册 「卫戍协议中干员潜能由自身已
+// 持有干员潜能决定」 and 「提升已持有的干员，将为卫戍协议中同名的干员提供加成」 (an operator the player does not own fights
 // at 潜能 1 with no bonus: set by hand for a 特许 one; a NORMAL one not owned is its stand-in, which has neither).
 // CultivationSelects: two compact selects (a roster row, a 自选 slot card); CultivationSection: the detail's segmented
 // controls with the tier's effect. Hook-free views (the tests draw them). The settings live in ui/loadoutSync.js

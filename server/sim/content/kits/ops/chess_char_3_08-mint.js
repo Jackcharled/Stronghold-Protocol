@@ -9,7 +9,7 @@ export default {
   //      every enemy in range; 地质学者: DEF aura (skill off) / less likely targeted (skill on);
   //      精锐 module PLX-X: keeps part of the guard (DEF/RES) while the skill runs
   //      S1 风语: wider range (skill grid), attacks every enemy on it at attack@atk_scale. Auto-cast: the official
-  //      rule is the 阵法术师 row SEARCH (PRTS Stronghold-Protocol/帮助 "不受基础策略影响，在初始攻击范围内存在敌人时释放技能"; it covers
+  //      rule is the 阵法术师 row SEARCH (PRTS 卫戍协议/帮助 "不受基础策略影响，在初始攻击范围内存在敌人时释放技能"; it covers
   //      every MANUAL skill of the class — user playtest #6) = an enemy inside her INITIAL range, never any enemy on the
   //      field (she would burn the skill on enemies that just spawned). Since 0.2.0 the owner's ACTIVE_RANGE rule
   //      (2026-10-05) widens it: the S1 x-2 strictly contains her x-1, so the data rule is ACTIVE_RANGE on the x-2 (rawRule

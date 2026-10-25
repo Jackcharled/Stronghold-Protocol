@@ -69,9 +69,6 @@ export class PlayerViews {
       seat: this.seat,
       alive: this.alive,
       lp: this.lp,
-      pendingDeath: this.pendingDeath === true,
-      revived: this.revived === true,
-      ...(this.revivalUnavailableReason ? { revivalUnavailableReason: this.revivalUnavailableReason } : {}),
       funds: this.funds,
       bandId: this.bandId,
       ready: this.ready,
@@ -89,8 +86,6 @@ export class PlayerViews {
         refreshPrice: free ? 0 : this.gd.refreshPrice,
         freeRefreshes: this.shop.freeRefreshes,
         frozen: this.shop.frozen,
-        // Empty slots carry no kind. The server knows whether each slot belongs to the operator
-        // or equipment column, so the shop can keep an unopened equipment slot on its own side.
         layout: { ...(this.shop.layout || this.gd.shopSlots(this.shop.level)) },
         slots,
         // `source` 'merge' = the promotion reward (晋升奖励); any other offer (a strategy, an item, a 特质) carries the

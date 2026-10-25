@@ -10,7 +10,7 @@
 // "“进入”的方式包括…部署时攻击范围碰撞到单位、单位部署在…攻击范围内…2技能攻击范围扩大时额外区域碰撞到的单位…3技能移动前发射的弹道
 // 的碰撞", "来自此天赋的护盾最高1层"; S1 备注 "仅判断目标是否持有对地规避"; S2 备注 "伤害与治疗溅射半径均为1.5，可对空；伤害为真实普
 // 通伤害", the enemy / ally target order and effect order; S3 备注: the operator choice, 【待投放】, the 3.5-speed 2.2-radius flight,
-// its 无敌 / 强制缴械 / 不可阻挡, the paused skill time, the landing facing); PRTS 战术锚点 ("常态持有无敌"); PRTS Stronghold-Protocol/帮助
+// its 无敌 / 强制缴械 / 不可阻挡, the paused skill time, the landing facing); PRTS 战术锚点 ("常态持有无敌"); PRTS 卫戍协议/帮助
 // (§战斗部署 placed summons, §作战阶段 auto redeploy "满足再部署条件时…自动部署至该位置"); gamedata_const ba.liftoff (起飞
 // "阻挡模式变为空中阻挡…阻挡半径变为0.8944"); PRTS 游戏数据基础 §阻挡半径 ("飞行阻挡半径 = 0.8944 × 阻挡半径倍率"); the client's battle
 // data: charpack char_1052_kalts2 (attack triggers `_ignoreHealFree` + `_mon3terId` token_10002_kalts_mon3tr; talent "1":
@@ -59,7 +59,7 @@
 //     the battle-start board deploys in one tick here, so its order — `deploySeq` — stands for the official one-by-one
 //     deployment times) — are withdrawn 0.6 s later into 【待投放】 (部署费用 ×0, 再部署时间 0, only inside her
 //     pre-move range): the automatic battle redeploys them at once on their tiles, free — a fresh deployment (full HP, initial
-//     SP) [ASSUMED: the 卫戍 auto redeploy of a 待投放 operator, PRTS Stronghold-Protocol/帮助 "满足再部署条件时…自动部署至该位置"];
+//     SP) [ASSUMED: the 卫戍 auto redeploy of a 待投放 operator, PRTS 卫戍协议/帮助 "满足再部署条件时…自动部署至该位置"];
 //   ② she leaves the field visually (hidden: 无敌, 缴械, 不可阻挡, no status) and flies from her tile to the anchor at 3.5
 //     tiles/s, her skill time paused; every operator within 2.2 of the flying point gets T2's entry (once per flight), and
 //     her range stays on her tile until she lands (the 待投放 operators redeployed there enter it);

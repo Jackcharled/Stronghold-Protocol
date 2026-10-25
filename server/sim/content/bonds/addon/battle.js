@@ -51,7 +51,7 @@
 //                      (retreat + free redeploy on the landing tile, full HP, `deploy` fires — 部署时 traits such as
 //                      史尔特尔, 突袭手雷, 卡西米尔, 叙拉古) with its SP / charges kept (engine redeploy tile + keepSp);
 //                      ATK/HP +(base + per·L) until it leaves the field; knocked out after a jump it lies where it fell
-//                      and comes back there (the engine's rest tile, Battle._layBody — PRTS Stronghold-Protocol/帮助 "原地留下一个
+//                      and comes back there (the engine's rest tile, Battle._layBody — PRTS 卫戍协议/帮助 "原地留下一个
 //                      “倒地干员”…自动部署至该位置"; its own home when it fell on another board piece's home);
 //                      L ≥ power_bond_stack_cnt: every operator ASPD +power_attack_speed.
 //                      Ordinary polls order candidates by remaining path distance, then id (the 0.2.3 rule). The one
@@ -571,7 +571,7 @@ export function install(battle) {
     });
   }
 
-  // 不屈 (PRTS Stronghold-Protocol：盟约 下半/PRTS盟约记录, its 修正: "地面干员被击倒、撤退、切换<替身>与<本体>时，有(18+0.4×层数)%概率立刻
+  // 不屈 (PRTS 卫戍协议：盟约 下半/PRTS盟约记录, its 修正: "地面干员被击倒、撤退、切换<替身>与<本体>时，有(18+0.4×层数)%概率立刻
   // 重新部署"; "※“立刻重新部署”的实现方式为：令受益者下次部署的再部署时间和费用归零"; owner's decision 2026-10-04 to follow it).
   // Rolls on a knock-out ('killed') and on a 撤退 ('retreat' — 史尔特尔's 余烬, 耀骑士临光 S2, 伊内丝 S3 … — and 行商's
   // 'merchant' withdrawal): a hit redeploys it at once, free, where it lies (engine rest tile, §22.15). Not on the 突袭

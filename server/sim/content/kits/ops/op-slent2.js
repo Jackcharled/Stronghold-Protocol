@@ -21,7 +21,7 @@
 //   BLS-X “难得清醒”: heal_scale 1 (100 %). BLS-Y “可控动量” "攻击对2个目标造成法术伤害，技能开启后改为治疗2个友方单位"
 //   (trait attack@max_target 2): two targets / two heals.
 //   Her skills are no heal skills for the 技能策略: a 辅助's basic strategy casts on an enemy she is about to attack (PRTS
-//   Stronghold-Protocol/帮助: only 医疗干员 attack the units needing a heal), so every skill keeps the data's DEFAULT.
+//   卫戍协议/帮助: only 医疗干员 attack the units needing a heal), so every skill keeps the data's DEFAULT.
 // - T1 无声砥柱 "使攻击范围内的友军获得10%的庇护…（低于30%生命时获得最大24%的庇护）": every ally of her range (herself
 //   included) holds 庇护 (ba.protect "受到的物理和法术伤害降低相应比例（同名效果取最高）"; the client's damage_resistance[inf],
 //   the 庇护 the other kits share as `protect` — battle.applyStrongest) of damage_resistance_base × (1 + resistance_scale × n),
@@ -45,7 +45,7 @@
 // - S2 俯瞰视界 (MANUAL, DEFAULT, 12 s): ASPD +attack_speed; heals; "技能期间可以使用一个辅助无人机…技能结束或淬羽赫默离场时
 //   销毁" (slent2_s_2: WithdrawTokens at its end, the token count recharged): her placed 夜灯 piece takes the field on its tile
 //   when the skill starts (content/tokens.js releaseSkillSummon; like every placed skill summon it also deploys once, free, at
-//   the battle start — PRTS Stronghold-Protocol/帮助) and is withdrawn when the skill ends (into its 5 s redeploy time, PRTS 备注) or when
+//   the battle start — PRTS 卫戍协议/帮助) and is withdrawn when the skill ends (into its 5 s redeploy time, PRTS 备注) or when
 //   she leaves the field; a piece already up when the skill starts serves as its drone [ASSUMED: the start deploy lasts until
 //   the first end]. 夜灯 (token kit below): untargetable ("不会受到攻击", data), no attack (ATK 0), blocks nothing; its passive
 //   "使周围八格友军享受2.1倍的淬羽赫默第一天赋效果": the allies of its x-4 (its own tile and the 8 around) hold her T1 庇护 ×

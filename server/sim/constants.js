@@ -173,7 +173,7 @@ export const FREEZE_RES_DOWN = 15;
 /** Default DP rules (DESIGN §5.5), overridable by Battle opts.flags. */
 export const DP_DEFAULTS = Object.freeze({ dpInit: 10, dpPerSec: 1, dpMax: 99 });
 /**
- * Cooldown of the automatic skill operations (PRTS Stronghold-Protocol/帮助 §作战阶段 技能操作: "自动操作具有3s冷却，在完成一次操作或作战
+ * Cooldown of the automatic skill operations (PRTS 卫戍协议/帮助 §作战阶段 技能操作: "自动操作具有3s冷却，在完成一次操作或作战
  * 开始时部署的单位将进入冷却"), in battle seconds [ASSUMED: the game clock, like every skill timer]: the engine auto-casts
  * a MANUAL skill no sooner than this after its previous cast and after the unit's battle-start deployment
  * (skills.js; Battle._deploy `initial` sets `opReadyAt` from `battle.flags.startOpCooldown`, default this value). Kits
@@ -189,7 +189,7 @@ export const AUTO_OP_COOLDOWN = 3;
 export const DOWN_STATE = Object.freeze({ COUNTING: 0, WAIT_DP: 1, WAIT_TILE: 2 });
 /**
  * Removal reason of an operator that enters a battle already knocked out: a 联防 helper's operator down at the end of
- * its own combat (PlayerBattleInput `carryState.down`; PRTS Stronghold-Protocol/帮助 §联防阶段 "上一阶段为退场状态的干员强制退场").
+ * its own combat (PlayerBattleInput `carryState.down`; PRTS 卫戍协议/帮助 §联防阶段 "上一阶段为退场状态的干员强制退场").
  * Battle.start deploys it with everyone, then withdraws it at once with HP 0 — down on its own tile like a knocked-out
  * operator (Battle.isDown, b.snap `down`), its redeploy timer running from then — without the knock-out hooks (`kill`,
  * `death` with reason 'killed'), which fired in its own combat. render/app.js mirrors the string (no fall, no death
@@ -255,7 +255,7 @@ export const BOSS_POOL_MIN_HP = 1;
 
 /**
  * How the percentage attribute bonuses (ATK / DEF / max HP "+X%") of the 卫戍 systems combine: 盟约, 策略, 装备, the
- * 机变 cards and the per-layer 特质 (garrisons' 每叠加N层 …+X%). Official: PRTS Stronghold-Protocol：盟约 下半/PRTS盟约记录 "盟约效果，
+ * 机变 cards and the per-layer 特质 (garrisons' 每叠加N层 …+X%). Official: PRTS 卫戍协议：盟约 下半/PRTS盟约记录 "盟约效果，
  * 策略效果，装备效果提供的属性加成均为直接乘算"; 直接乘算 is the modifier class whose values are SUMMED with every other
  * 直接乘算 — a skill's "攻击力+X%" included — before multiplying (PRTS 游戏数据基础 属性基本公式 "直接乘算结果 D_t = t₁ + t₂ +
  * … + tₙ", A = (A₀ + D_p)(1 + D_t); PRTS 作战机制 X₂ = X₁(1 + b₁% + b₂%)). 'add' = that rule: the engine's additive

@@ -1,7 +1,7 @@
 // server/match/unite.js — 联防 (Unite) planning and LP attribution (DESIGN §6.1, research 06 §5, research 08 §5).
 //
 // Trigger (co-op only): after the normal combats, ≥ 1 alive player leaked (a counted leak ⇒ not perfect) and
-// ≥ 1 alive player was perfect. Helpers (PRTS Stronghold-Protocol/帮助 §联防阶段): up to config.unite.maxHelpers (2) perfect
+// ≥ 1 alive player was perfect. Helpers (PRTS 卫戍协议/帮助 §联防阶段): up to config.unite.maxHelpers (2) perfect
 // players chosen by most units on the field (downed included) > has an active bond (存疑) > most undowned units, then
 // seat; with 2 helpers the one ranked first by most units > active bond > Σ active bond layers (存疑) > most undowned
 // units "率先迎敌" on the RIGHT-hand field (colOffset +8, where the escaped_multi routes enter), the other keeps the
@@ -79,13 +79,7 @@ export function planUnite(m, results) {
       leaked.push({ enemyKey: l.enemyKey, mods: l.mods ? { ...l.mods } : null, lpr: l.lpr ?? 1, sourcePlayerId: ps.playerId, tag: l.tag ?? null, bounty });
     }
   }
-  const plan = { helpers, leakers, leaked, notReentered };
-  // Expanded rooms with at least eight alive players may need a second relay field.
-  if (m.capacityExperiment && m._normalAliveCount >= 8 && alive.length >= 8) {
-    plan.uniteRound = 1;
-    plan.relayCandidates = perfects.filter((ps) => !helpers.includes(ps) && !results.get(ps.playerId)?.synthetic);
-  }
-  return plan;
+  return { helpers, leakers, leaked, notReentered };
 }
 
 /**
@@ -94,58 +88,6 @@ export function planUnite(m, results) {
  * pending gains, capped like bondsView / settle — PRTS 以其阵地当前的状态; the official "层数最高" tie-break is marked 存疑),
  * operators still standing at the end of the player's own combat.
  */
-/** Living, unused qualified helpers for a possible second relay. */
-export function uniteRelayHelpers(m, plan) {
-  if (plan.uniteRound !== 1 || !Array.isArray(plan.relayCandidates)) return [];
-  const perfects = plan.relayCandidates.filter((ps) => {
-    const r = m.lastResults.get(ps.playerId);
-    return m.players.get(ps.playerId) === ps && ps.alive && !ps.left && !plan.helpers.includes(ps)
-      && r && !r.synthetic && r.perfect !== false && !(r.leaked || []).some((l) => l && l.counted !== false);
-  });
-  return helperOrder(m, perfects, m.lastResults).slice(0, 2);
-}
-
-/** Only the first field's residual enemies may enter a relay; original leaks never re-enter twice. */
-export function planUniteRelay(m, plan, result, fieldSpawns = null) {
-  if (plan.uniteRound !== 1 || !result || result.synthetic) return null;
-  const helpers = uniteRelayHelpers(m, plan);
-  if (!helpers.length) return null;
-  const leaked = [];
-  const notReentered = new Map(plan.notReentered);
-  const sources = new Set(plan.leakers.map((ps) => ps.playerId));
-  const spawns = fieldSpawns || buildUniteWave(m.gd, plan.leaked, plan.helpers.length, m.wave?.timeLimit || 60).spawns;
-  const pending = [];
-  for (const s of spawns) for (let i = 0; i < Math.max(1, Math.trunc(s.count || 1)); i++) {
-    pending.push({ ...s, time: (Number(s.time) || 0) + i * Math.max(0, Number(s.interval) || 0) });
-  }
-  const takeUnspawned = (l) => {
-    const matches = (s) => s.enemyKey === l.enemyKey && s.sourcePlayerId === l.sourcePlayerId;
-    let i = Number.isFinite(l.time) ? pending.findIndex((s) => matches(s) && Math.abs(s.time - l.time) < 1e-6) : -1;
-    if (i < 0) i = pending.findIndex(matches);
-    return i < 0 ? null : pending.splice(i, 1)[0];
-  };
-  const add = (l, unspawned = false) => {
-    if (!l || l.counted === false || !sources.has(l.sourcePlayerId)) return;
-    if (!m.gd.enemy(l.enemyKey)) {
-      notReentered.set(l.sourcePlayerId, (notReentered.get(l.sourcePlayerId) || 0) + 1);
-      return;
-    }
-    const source = unspawned ? takeUnspawned(l) : null;
-    const mods = unspawned ? source?.mods : l.mods;
-    const bountyId = mods?.bountyId;
-    const ps = m.players.get(l.sourcePlayerId);
-    const card = bountyId ? ps?.bounties.find((x) => x.id === bountyId)?.card : null;
-    const coins = card && card.payout !== 'perfect' && card.enemyKey === l.enemyKey ? Math.trunc(Number(card.coin) || 0)
-      : !bountyId ? Math.trunc(Number(mods?.bountyCoins) || 0) : 0;
-    const bounty = source?.bounty || (coins > 0 ? { coins, ownerPlayerId: l.sourcePlayerId } : null);
-    leaked.push({ ...l, mods: mods ? { ...mods } : null, bounty, sourcePlayerId: l.sourcePlayerId });
-  };
-  for (const pp of Object.values(result.perPlayer || {})) for (const l of pp?.leaked || []) add(l);
-  for (const l of result.unspawned || []) add(l, true);
-  if (!leaked.length) return null;
-  return { helpers, leakers: plan.leakers, leaked, notReentered, uniteRound: 2 };
-}
-
 export function helperStats(m, ps, results) {
   const units = ps.deployCount;
   let active = false;

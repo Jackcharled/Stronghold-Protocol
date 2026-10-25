@@ -122,7 +122,7 @@ function bestCandidate(cands, phase, level, potRank = 0) {
 
 /**
  * Potential (潜能) is a per-player runtime input (0.2.2, the owner's decision of 2026-10-08: 「调配干员里自己设置吧，默认满潜
- * 满加成」; 0.2.1 baked full potential in, DESIGN §26.14). Official: 调度手册 「Stronghold-Protocol中干员潜能由自身已持有干员潜能决定」 —
+ * 满加成」; 0.2.1 baked full potential in, DESIGN §26.14). Official: 调度手册 「卫戍协议中干员潜能由自身已持有干员潜能决定」 —
  * the season's chess records (activity_table charChessDataDict `status`: evolvePhase, charLevel, skillLevel, favorPoint 0,
  * equipLevel) carry no potential field; a tournament video shows 刺玫 (chess_char_1_06_a) at ATK 435 and cost 15 (her
  * E1 Lv55 413 / 17 plus 攻击力+22 and two 部署费用-1: an account at full potential). Ranks count like character_table
@@ -249,14 +249,14 @@ const TRIGGER_RENAME = { ALWAYS: 'SP_FULL', CUSTOM_RANGE_SEARCH_ENEMY: 'CUSTOM_R
 
 /**
  * Official rows the engine plays as one of its own rules on an ally condition (`allies: true` — server/sim/skills.js: a
- * healable, injured ally on the trigger grid instead of an enemy): 黍 S3 离离枯荣's TRY_SEARCH_ALLY_SKILL, PRTS Stronghold-Protocol/帮助
+ * healable, injured ally on the trigger grid instead of an enemy): 黍 S3 离离枯荣's TRY_SEARCH_ALLY_SKILL, PRTS 卫戍协议/帮助
  * 特殊策略 "技能范围内存在可治疗的我方单位时释放技能" — SKILL_RANGE on the skill's own range (x-2), checked every tick.
  */
 const TRIGGER_ALLY_RULES = Object.freeze({ TRY_SEARCH_ALLY_SKILL: 'SKILL_RANGE' });
 
 /**
  * A skill whose rangeId is its new ATTACK range — "攻击范围扩大 / 改变 / 缩小 / 缩短", "攻击距离+1 / 加长 / 缩短", "攻击范围与
- * 溅射范围扩大" — and not a 技能范围 of its own (PRTS Stronghold-Protocol/帮助 技能操作: "拥有技能范围的技能（非攻击距离增加）").
+ * 溅射范围扩大" — and not a 技能范围 of its own (PRTS 卫戍协议/帮助 技能操作: "拥有技能范围的技能（非攻击距离增加）").
  * "攻击范围内…" (an effect on the attack range) does not match.
  */
 const ATTACK_RANGE_CHANGE = /攻击(?:范围|距离)(?:与溅射范围)?(?:扩大|增大|改变|改为|缩小|缩短|加长|增加|\+|(?:向前|往前)?延伸|朝[^，。；]{1,8}扩大)/;
@@ -339,7 +339,7 @@ function strictlyContains(a, b) {
 const ACTIVE_RANGE_OVER = new Set(['DEFAULT', 'SEARCH']);
 
 /**
- * Resolve the auto-cast rule of a skill record (PRTS Stronghold-Protocol/帮助 §作战阶段 技能操作 — the official skill strategies;
+ * Resolve the auto-cast rule of a skill record (PRTS 卫戍协议/帮助 §作战阶段 技能操作 — the official skill strategies;
  * DESIGN §5.6):
  * - charId rows first (exact skillIndex, or −1 = every skill of the operator);
  * - then the class rows, subProfession before profession. They name whole classes — PRTS "重装干员", "先锋-战术家、

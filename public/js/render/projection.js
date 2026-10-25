@@ -16,7 +16,7 @@
 // turn a Camera into the equivalent THREE.PerspectiveCamera (fov, aspect, position, up, look-at, view offset) —
 // test/render/projection.test.js projects every tile centre through both and requires identical pixels.
 //
-// Official framing (research 09 §2.1, fitted against official 1920×1080 screenshots; DESIGN §15): every Stronghold-Protocol
+// Official framing (research 09 §2.1, fitted against official 1920×1080 screenshots; DESIGN §15): every 卫戍协议
 // level's configBlackBoard carries camera params "(x,y,z,w)" (left_prepare / left_shop / left_battle / mid_battle /
 // *_boss_* / enemy). They are offsets of Arknights' standard battle camera: position = OFFICIAL.base + param in the
 // level's centred Unity frame (x = col − 10, y = row − 9, z = −height), pitched OFFICIAL.pitch = 30° with a vertical

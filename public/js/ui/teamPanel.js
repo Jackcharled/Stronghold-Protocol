@@ -27,7 +27,6 @@ import { STATUS_META, sortedPlayers, teamFrameIds } from './gameLogic.js';
 import { MissTag, uniteRemaining } from './hud.js';
 import { localAsset } from '../data.js';
 import { t } from '../../../shared/i18n.js';
-import { ReviveAction, RevivalNotice } from './revival.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -119,19 +118,12 @@ export function rowLpTip(lp, cap = 10) {
  */
 export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = false, observe = null, self: selfLive = null, cap = 10, uniteLocal = null, spMarks = null }) {
   const [openPid, setOpenPid] = useState(null);
-  const [rosterOpen, setRosterOpen] = useState(true);
   // the playerId whose avatar just called onWatch, so the other click of a double-click does not open the view again
   const askedAt = useRef(/** @type {{ id: string|null, at: number }} */ ({ id: null, at: 0 }));
   const phaseKey = `${pub?.phase}:${pub?.round}`;
   useEffect(() => { setOpenPid(null); }, [phaseKey, watching, observe?.observing]);
   const players = sortedPlayers(pub);
   if (!players.length) return null;
-  const poolGroups = Array.isArray(pub?.poolGroups) ? pub.poolGroups.filter((g) => g && Array.isArray(g.playerIds) && g.playerIds.length) : [];
-  const poolSummary = Number(pub?.playerCapacity) > 4 && poolGroups.length
-    ? poolGroups.every((g) => g.playerIds.length === 1)
-      ? t('独立卡池 · 每人 1 池')
-      : poolGroups.map((g) => `${t('池')}${g.id}(${g.playerIds.length})`).join(' · ')
-    : null;
   // a boss round: the viewer's pair framed in green from the round's start (item 51 — the official bg_team_border,
   // tinted like the official green; a plain green ring without the local art)
   const team = teamFrameIds(pub, myId);
@@ -163,17 +155,7 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
     noteAsked(p);
     onWatch(p);
   };
-  return html`<aside class=${cx('team', compact && 'team--compact', players.length > 4 && 'team--many', !rosterOpen && 'is-folded')} aria-label=${t('同盟成员')}>
-    ${players.length > 4 ? html`<div class="team__head">
-      <button type="button" class="team__toggle" aria-expanded=${String(rosterOpen)} aria-controls="team-roster"
-        onClick=${() => setRosterOpen((v) => !v)}>
-        <${Icon} name="users" /><span>${t('同盟成员')}</span><b class="num">${players.length}</b>
-        <${Icon} name="chevronRight" class="team__chev" />
-      </button>
-    </div>` : null}
-    ${poolSummary ? html`<div class="team__pool-summary" title=${poolSummary}><span>${t('卡池')}</span><b>${poolSummary}</b></div>` : null}
-    <div class="team__notice"><${RevivalNotice} pub=${pub} /></div>
-    <div class="team__players" id="team-roster" hidden=${!rosterOpen}>
+  return html`<aside class=${cx('team', compact && 'team--compact')} aria-label=${t('同盟成员')}>
     ${players.map((p) => {
       const self = p.playerId === myId;
       const status = p.alive === false ? 'dead' : p.status;
@@ -199,7 +181,6 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
         <div class="team__info">
           <span class="team__name">${p.name || t('博士')}</span>
           <div class="team__line">
-            ${Number(pub?.playerCapacity) > 4 ? html`<span class="team__pool" title=${t('卡池分组 {n}', { n: p.poolGroup || 1 })}>池${p.poolGroup || 1}</span>` : null}
             <${LpTower} value=${lp.lp} size="sm" tone=${Number.isFinite(lp.lp) && lp.lp - lp.pending <= 5 ? 'danger' : null} pending=${lp.pending}
               tip=${rowLpTip(lp, cap)} />
             ${lp.left != null ? html`<${MissTag} n=${lp.left} name=${self ? null : p.name || t('博士')} />` : null}
@@ -216,11 +197,9 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
             onClick=${() => { setOpenPid(null); onWatch(p); }}><span class="btn__label">${t('前往查看')}</span></button>` : null}
           ${back ? html`<button type="button" class="btn btn--secondary btn--sm team__back"
             onClick=${() => observe.onBack()}><span class="btn__label">${t('返回战场')}</span></button>` : null}
-          <${ReviveAction} pub=${pub} myId=${myId} target=${p} compact=${players.length > 4} />
         </div>
         ${bubble ? html`<${EmoteBubble} key=${bubble.seq} id=${bubble.id} class="team__bubble" />` : null}
       </div>`;
     })}
-    </div>
   </aside>`;
 }

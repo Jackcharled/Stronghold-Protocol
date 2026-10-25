@@ -438,25 +438,6 @@ button.bpop__harmony:hover { border-style: solid; color: #fff; }
 .spov__tw b { max-width: 2.4rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(.22 * var(--t)); font-weight: 700; color: #f2f5f4; }
 .spov__tw small { font-size: calc(.17 * var(--t)); font-weight: 400; color: #c2c8c6; }
 .spov__turn .countdown { padding-left: .22rem; border-left: 1px solid rgba(220, 228, 225, .22); }
-.spov__repeat { grid-column: 1 / -1; margin: 0; color: var(--gold-2); font-size: calc(.14 * var(--t)); line-height: 1.5; }
-.spov__order { display: flex; gap: .1rem; flex: none; overflow-x: auto; overscroll-behavior: contain; scrollbar-width: thin; padding-bottom: .04rem; }
-.spov__who { display: flex; align-items: center; gap: .08rem; flex: none; padding: .05rem .12rem .05rem .06rem; background: rgba(255, 255, 255, .03); border: 1px solid var(--line); }
-.spov__who.is-cur { border-color: var(--gold); background: rgba(255, 198, 0, .08); }
-.spov__who.is-done { border-color: var(--mint-800); }
-.spov__who.is-self .spov__wname { color: var(--mint-400); }
-.spov__idx { font-size: calc(.16 * var(--t)); color: var(--text-dim); width: .2rem; text-align: center; }
-.spov__wtext { display: flex; flex-direction: column; gap: .03rem; min-width: 0; max-width: 1.6rem; }
-.spov__wname { font-size: calc(.15 * var(--t)); max-width: 1.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.spov__wpick { font-size: calc(.13 * var(--t)); color: var(--mint-400); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.spov__wstate { display: grid; }
-.spov__who.is-done .spov__wstate { color: var(--mint-400); }
-.spov__who.is-cur .spov__wstate { color: var(--gold); }
-.spov--expanded .spov__head, .spov--expanded .spov__order { flex: none; }
-.spov--expanded .spov__order { overflow-x: auto; overscroll-behavior: contain; scrollbar-width: thin; padding-bottom: 4px; }
-.spov--expanded .spov__who { flex: none; }
-.spov--expanded .spov__grid { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: none; grid-auto-rows: minmax(180px, 2.6rem); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 2px; }
-.spov--expanded .spov__titles { min-width: 0; }
-.spov--expanded .spov__title { flex-wrap: wrap; }
 .spov__grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 1fr); gap: .2rem; }
 /* the shared draft (the official 悬赏决策, the event's video 9:59): the grid keeps clear of the right-hand HUD; the top bar
    stays (the round, the funds and the timer stay readable while the others pick) */

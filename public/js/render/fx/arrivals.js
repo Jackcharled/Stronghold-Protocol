@@ -16,7 +16,7 @@ export class FxArrivals {
   }
 
   /**
-   * Promotion (精锐晋升, a merge) at the elite's spot — the board tile of the consumed copy it replaced (PRTS Stronghold-Protocol/
+   * Promotion (精锐晋升, a merge) at the elite's spot — the board tile of the consumed copy it replaced (PRTS 卫戍协议/
    * 帮助 "若消耗已部署至作战区的干员，则发送至作战区对应位置") or its bench slot: a gold pillar with a white core, a shockwave
    * and a hex ring on the ground, rising motes; `from` = world points of the other consumed copies (gold streaks from
    * them to the elite). Counted in `promotions` (render/app.js setPrep; tests).

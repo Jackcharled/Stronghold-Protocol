@@ -102,7 +102,7 @@ const KIT_OWNED = [
 
 /**
  * Lines that only ever apply in another game mode — 集成战略 (ISW modules, e.g. 水月 ISW-A `attack_speed: 50`). This
- * mode is Stronghold-Protocol, and the rest of the repo already ignores their mode-gated halves (shared/loadoutRecord.js
+ * mode is 卫戍协议, and the rest of the repo already ignores their mode-gated halves (shared/loadoutRecord.js
  * `traitRangeExtend` skips 空弦 ISW-A for exactly this reason), so they are refused here too.
  */
 const MODE_SPECIFIC = [/在集成战略中/];

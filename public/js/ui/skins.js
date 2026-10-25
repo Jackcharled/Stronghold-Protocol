@@ -168,7 +168,6 @@ export function availableSkins(charId) {
       id: skinId,
       name: str(skin.name) || skinId,
       group: str(skin.group) || '',
-      type: str(skin.type) || '',
       playable,
       pictureOnly: playable && !hasModel,
       portrait,
@@ -188,15 +187,11 @@ export function availableSkins(charId) {
   // the top, exactly as it already does for a skin that ships only an illust. Never null while the record has any of
   // the three: an empty art box is the one thing this row must not draw.
   rows.unshift({
-    id: '', name: '', group: '', type: '', playable: true,
+    id: '', name: '', group: '', playable: true,
     portrait: ownIllust || ownPortrait, avatar: ownAvatar,
     illust: ownIllust || ownPortrait, fallbackArt: false, own: true,
   });
-  // Keep 精英二 directly after 默认, then the outfits in manifest order.
-  const own = rows.shift();
-  const e2 = rows.filter((r) => r.type === 'e2' || r.name === '精英二');
-  const rest = rows.filter((r) => r.type !== 'e2' && r.name !== '精英二');
-  return [own, ...e2, ...rest];
+  return rows;
 }
 
 /**

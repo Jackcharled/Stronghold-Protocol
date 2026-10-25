@@ -289,7 +289,7 @@ Every official skill, talent and module is implemented exactly as the game has i
 
 - Sources: the official tables (`.cache/gamedata/excel/*.json`, which `tools/build-data.mjs` downloads: character_table,
   skill_table, battle_equip_table / uniequip_table, activity_table → act2autochess) as built into `data/chess.json`;
-  PRTS (prts.wiki: the operator page, its 备注, Stronghold-Protocol pages) for mechanics the data does not carry — cite it.
+  PRTS (prts.wiki: the operator page, its 备注, 卫戍协议 pages) for mechanics the data does not carry — cite it.
 - Numbers come from the blackboards whenever a key exists; a number that only exists in the text is parsed from it
   (with a fallback) or a named constant with its source in the comment.
 - When the text and the blackboard seem to disagree, find out what the game does and say so in the comment (DESIGN

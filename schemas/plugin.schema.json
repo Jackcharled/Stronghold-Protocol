@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "plugin.json — the manifest of a plugin (manifest 2)",
-  "description": "A plugin of Stronghold-Protocol：盟约 (Stronghold Protocol: Alliance): plugins/<id>/plugin.json beside the files it names. docs/PLUGINS.md §3–§5 (the manifest, permissions, files), §9 (the asset overlay: overlay.schema.json). Accepted here = node tools/plugin.mjs check finds neither a problem nor a warning in the manifest itself; what only the check sees: the folder (the id is its name; the files exist, of the types the class carries, inside the folder), the running game's version against \"app\", a plugin both required and in conflict or both after and before, a setting's min ≤ max and its default within them, a theme naming a URL, the limits.",
+  "description": "A plugin of 卫戍协议：盟约 (Stronghold Protocol: Alliance): plugins/<id>/plugin.json beside the files it names. docs/PLUGINS.md §3–§5 (the manifest, permissions, files), §9 (the asset overlay: overlay.schema.json). Accepted here = node tools/plugin.mjs check finds neither a problem nor a warning in the manifest itself; what only the check sees: the folder (the id is its name; the files exist, of the types the class carries, inside the folder), the running game's version against \"app\", a plugin both required and in conflict or both after and before, a setting's min ≤ max and its default within them, a theme naming a URL, the limits.",
   "type": "object",
   "required": [
     "manifest",

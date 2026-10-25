@@ -3,7 +3,7 @@
 // Handlers validate → mutate → recompute bonds → mark the private view dirty. They never throw on bad input; they
 // return `{ ok: true }` or `{ error: ERR.*, detail? }`. Rules (research 00-INDEX §3–§4, 01 A1, 04 §2):
 //   * Hand: 10 slots filled right-to-left; temp: an expandable queue with five visible slots. A full hand refuses buys and reward picks —
-//     also one that would complete a merge at once (PRTS Stronghold-Protocol/帮助 §手牌区 "例如招募/购入等通常情况下会增加手牌的操作";
+//     also one that would complete a merge at once (PRTS 卫戍协议/帮助 §手牌区 "例如招募/购入等通常情况下会增加手牌的操作";
 //     GitHub #82) — and withdrawals, except one whose own summon stack frees a slot. Passive gains (merge results,
 //     grants, returned equipment) overflow into temp, and a free hand slot pulls them back in at once, right→left
 //     (_fillHandFromTemp at every recompute: "常规手牌区出现空位时自动移入"); temp blocks Ready ("直到溢出情况排除才可开始
@@ -29,7 +29,7 @@
 //     playtest #6 item 19; a short tier tops up from the tier below; the player's stocked 自选 of that tier joins,
 //     §30.23; pick 1, expires at prep end; an offer earned
 //     after the prep — SETTLE / Final Assault effects — is kept for the next prep). Where the elite goes (PRTS
-//     Stronghold-Protocol/帮助 "发送1名【精锐】状态的该干员至手牌区（若消耗已部署至作战区的干员，则发送至作战区对应位置）", user
+//     卫戍协议/帮助 "发送1名【精锐】状态的该干员至手牌区（若消耗已部署至作战区的干员，则发送至作战区对应位置）", user
 //     playtest #6 follow-up): when a consumed copy stood on the board, onto that copy's tile with its facing (of several,
 //     the one that deploys first — board.js mergeTile, [ASSUMED]); it replaces a deployed copy, so the deploy count
 //     never grows, and it gets its own summon stack (grantTokensFor). Otherwise to the hand, overflow temp — also
@@ -48,7 +48,7 @@
 //     2 identical normal items (hand/temp/equipped) merge into the golden item in the hand, items are never sold
 //     (destroy for 0). consume-on-equip items resolve through the effect registry and never take a slot — on a full
 //     carrier they still replace (destroy) the picked item first, leaving a free slot (PRTS 帮助, GitHub #263).
-//   * Tokens (PRTS Stronghold-Protocol/帮助 §战斗部署, user playtest #6): placing an owner with manually deployable summons
+//   * Tokens (PRTS 卫戍协议/帮助 §战斗部署, user playtest #6): placing an owner with manually deployable summons
 //     (tokens.json `placeable`: 赫默's 医疗探机 and 巫恋's 诅咒娃娃 with their S2, 凯瑟琳's 爬行号·防护单元, 海嗣 / 狼群 /
 //     流形) sends one stack (deployLimit copies — 凯瑟琳 2) to the hand, placed by hand like any piece (no deploy slot);
 //     withdrawing/selling/merging the owner removes its tokens (an elite that takes a merged copy's tile gets a fresh
@@ -240,10 +240,6 @@ export class PlayerState {
     this.eliminatedRound = null;
     this.creditedKills = 0;
     this.lpAtFinal = null;
-    /** experimental rescue: death is waiting for a teammate's payment, then finalizes at the window's end */
-    this.pendingDeath = false;
-    this.revived = false;
-    this.revivalUnavailableReason = null;
     /** last combat result for this player (unite carry state, bounties) */
     this.lastResult = null;
     this._deployMap = null;
@@ -255,12 +251,6 @@ export class PlayerState {
     this._botPrepToken = 0;
     this.bonds = computeBonds(this.gd, this);
   }
-
-  /** This seat's chess stock (Match.poolFor: shared for ordinary rooms). */
-  get pool() { return this.m.poolFor(this); }
-
-  /** This seat's equipment stock (Match.itemPoolFor). */
-  get itemPool() { return this.m.itemPoolFor(this); }
 }
 
 // the method modules, in this order (a name defined twice is an error, never a silent override)

@@ -16,7 +16,7 @@
 // gate — the settled lp stays until settlement, in red with a −min(lpCapPerRound, counted leaks) tick (GitHub #479: the
 // official keeps the current value until settlement), 联防中 while a 联防 may still save part of it (liveLp;
 // the leaks come from the local battle runner, else m.public players[].pendingLp). 联防 (user playtest #6 item 7; PRTS
-// Stronghold-Protocol/帮助 "防卫失败的玩家可通过上方信息栏确认自身所属敌人的剩余数量"): a leaker's phase capsule carries the official
+// 卫戍协议/帮助 "防卫失败的玩家可通过上方信息栏确认自身所属敌人的剩余数量"): a leaker's phase capsule carries the official
 // runner tag ×N (research 09 `tag_miss`; art ui/battle bg_miss_enemy [ASSUMED]) = its enemies still standing on the 联防
 // field, uncapped and live — falling as the helpers kill them, rising when one splits or summons (the local 联防
 // replica's runner state().uniteLeft, else m.public players[].uniteLeft); the LP tower marks lp with −min(lpCapPerRound, N).
@@ -29,13 +29,13 @@
 
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { PHASE } from '../../../shared/constants.js';
-import { html, Button, Icon, PingPill, Countdown, Tooltip, MicroLabel, DifficultyTag, Modal, useTicker, secondsLeft } from './components.js';
+import { html, Button, Icon, PingPill, Countdown, Tooltip, MicroLabel, DifficultyTag, Modal, useTicker } from './components.js';
 import { Sprite, LpTower, GIcon, LocalSprite } from './gameComponents.js';
 import { data, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
 import { reducedMotion } from './device.js';
 import { serverNow } from '../store.js';
-import { isCombatPhase, isBossPhase, prepCapsuleLabel, bossFrac, bossPctText, fmtNum, shopBlockReason, uniteBudgetInfo } from './gameLogic.js';
+import { isCombatPhase, isBossPhase, prepCapsuleLabel, bossFrac, bossPctText, fmtNum, shopBlockReason } from './gameLogic.js';
 import { overtimeState, overtimeDrainPerSec, remainAt } from './matchStatus.js';
 import { hotkeyLabelOf } from './settings.js';
 import { t, tParts, N_ } from '../../../shared/i18n.js';
@@ -479,27 +479,6 @@ export function PauseButton({ paused, busy = false, onToggle }) {
  *     `left` (a leaker in 联防): its enemies still standing — the capsule's ×N tag
  *   held: the HUD waits hidden under 协议启动！ — a phase change's capsule scene waits for it (useCapsuleFx)
  */
-/** Expanded-room 联防 budget above the top bar (reference UniteBudgetNote). */
-export function UniteBudgetNote({ pub }) {
-  const budget = uniteBudgetInfo(pub);
-  useTicker(pub?.deadline > 0 ? 250 : 0);
-  if (!budget) return null;
-  // Show the segment that is actually being played (150 for a relay segment), not the unused 300 total.
-  const segment = Number.isFinite(Number(pub?.unite?.timeLimit)) && Number(pub.unite.timeLimit) > 0
-    ? Number(pub.unite.timeLimit)
-    : budget.remaining;
-  const speed = Number(pub?.unite?.gameSpeed) > 0 ? Number(pub.unite.gameSpeed) : 2;
-  const segmentSeconds = Math.round((segment / speed) * 100) / 100;
-  const total = Number(pub?.unite?.totalBudget) || budget.total || 0;
-  const relay = total > segment && segment > 0;
-  const round = Math.max(1, Math.min(2, Number(pub?.unite?.round) || 1));
-  const realLeft = secondsLeft(pub?.deadline);
-  return html`<div class="gtop__budget" data-testid="unite-budget" data-total=${budget.total} data-remaining=${budget.remaining}>
-    <span>${relay ? t('联防第 {round}/2 段：{n} 秒', { round, n: segmentSeconds }) : t('联防时间：{n} 秒', { n: segmentSeconds })}</span>
-    <span>${realLeft == null ? t('倒计时：--') : t('倒计时：{n} 秒', { n: realLeft })}</span>
-  </div>`;
-}
-
 export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, onReady, readyBusy, readyCount, playerCount, pen = false, penAvail = false, onPen = () => {},
   config = null, frozenAt = null, pause = null, live = null, spectator = false,
   spectators = null, myId = null, isHost = false, onRemoveSpectator = null, room = null, held = false }) {
@@ -587,7 +566,6 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
       <${OvertimeWarning} ot=${ot} />
       ${showReady ? html`<${ReadyToggle} priv=${priv} onToggle=${onReady} busy=${readyBusy} readyCount=${readyCount} total=${playerCount} />` : null}
     </div>
-    <${UniteBudgetNote} pub=${pub} />
   </header>`;
 }
 

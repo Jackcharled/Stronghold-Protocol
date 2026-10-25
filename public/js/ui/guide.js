@@ -28,7 +28,7 @@ const cx = (...p) => p.flat().filter(Boolean).join(' ');
 /** Page catalogue in reading order (titles transcribed from the pages). */
 export const GUIDE_CHAPTERS = [
   { id: 'home', name: N_('基础规则'), micro: 'BASICS', pages: [
-    ['autochess_home_1', N_('Stronghold-Protocol已运行')], ['autochess_home_2', N_('攻防战')], ['autochess_home_3', N_('休整期 · 区域')],
+    ['autochess_home_1', N_('卫戍协议已运行')], ['autochess_home_2', N_('攻防战')], ['autochess_home_3', N_('休整期 · 区域')],
     ['autochess_home_4', N_('休整期 · 资金与调度')], ['autochess_home_5', N_('机变阶段')], ['autochess_home_6', N_('限时战斗')],
     ['autochess_home_7', N_('作战期')], ['autochess_home_8', N_('协同战斗')], ['autochess_home_9', N_('盟约')],
   ] },

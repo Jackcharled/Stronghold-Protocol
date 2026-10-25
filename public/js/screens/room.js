@@ -82,7 +82,7 @@ import { t, tc } from '../../../shared/i18n.js';
  * @returns {(null | {seat:number, playerId:any, name:string, isBot:boolean, ready:boolean, connected:boolean})[]}
  */
 export function normalizeSeats(room) {
-  const cap = room?.mode === 'solo' ? 1 : (Number(room?.capacity) || MAX_SEATS);
+  const cap = room?.mode === 'solo' ? 1 : MAX_SEATS;
   const src = Array.isArray(room?.seats) ? room.seats : [];
   const out = [];
   for (let i = 0; i < cap; i++) {
@@ -127,12 +127,7 @@ export function roomFacts(room, myId) {
     myContent: loadsContent ? (mine?.content || 'loading') : 'ready',
     // spectator seats (never players: not in `humans`, never counted for ready / start)
     spectators: Array.isArray(room?.spectators) ? room.spectators.filter((s) => s && typeof s === 'object') : [],
-    maxSpectators: Number(room?.maxSpectators) > 0 ? Number(room.maxSpectators) : 2,
-    spectating: isSpectating(room, myId) || (() => {
-      try {
-        return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
-      } catch { return false; }
-    })(),
+    spectating: isSpectating(room, myId),
   };
 }
 
@@ -394,106 +389,7 @@ function AiTakeoverToggle({ option, busy, onToggle }) {
  * ⚙ of the bottom pill (co-op): 同盟设置 — the 模拟难度 (opens 选择模拟协议: the host's 确认, the others' read-only view)
  * and the 「AI 队友最后选择」 switch. Closes on a click outside it or Esc.
  */
-/** Experimental room button (the host owns the options; every other seat sees them read-only). */
-function ExperimentalControl({ room, isHost, busy, onApply }) {
-  const [open, setOpen] = useState(false);
-  const [capacity, setCapacity] = useState(4);
-  const [capOpen, setCapOpen] = useState(false);
-  const [revival, setRevival] = useState(false);
-  const [independent, setIndependent] = useState(false);
-  const [noDuck, setNoDuck] = useState(false);
-  const [repeat, setRepeat] = useState(false);
-  if (room?.mode === 'solo') return null;
-  // The host alone may change the options regardless of account role; server-side
-  // experimentalOpen() is the separate gate for whether the node allows these rooms.
-  const canEdit = isHost;
-  const exp = room?.experimental || {};
-  const currentCap = Number(room?.capacity) || Number(exp.playerCapacity) || 4;
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    if (next) {
-      setCapacity(currentCap);
-      setCapOpen(false);
-      setRevival(exp.revivalEnabled === true);
-      setIndependent(exp.disableSharedPool === true);
-      setNoDuck(exp.disableDuckLord === true);
-      setRepeat(exp.allowRepeat === true);
-    }
-  };
-  const apply = () => {
-    if (!canEdit) return;
-    const experimental = {
-      revivalEnabled: revival,
-      disableSharedPool: independent,
-      ...(capacity > 4 ? { playerCapacity: capacity } : {}),
-      ...(capacity > 4 && noDuck ? { disableDuckLord: true } : {}),
-      ...(capacity > 4 && repeat ? { allowRepeat: true } : {}),
-    };
-    setOpen(false);
-    setCapOpen(false);
-    onApply(experimental);
-  };
-  return html`<div class="exp-wrap">
-    <button type="button" class=${`dpick__opt exp-btn${open ? ' is-active' : ''}`} disabled=${!!busy} onClick=${toggle}
-      title=${t('实验性选项')} aria-haspopup="dialog" aria-expanded=${open ? 'true' : 'false'}>
-      <${Icon} name="gear" />${t('实验性功能')}
-    </button>
-    ${open ? html`<div class="exp-backdrop" onClick=${() => setOpen(false)}></div>
-      <div class="exp-pop set-list" role="dialog" aria-label=${t('实验性选项')}>
-      <div class="exp-pop__stripe" aria-hidden="true"></div>
-      <div class="exp-pop__head"><${MicroLabel}>EXPERIMENTAL<//><strong>${t('实验性选项')}</strong>
-        <button type="button" class="exp-pop__x" aria-label=${t('关闭')} onClick=${() => setOpen(false)}>×</button>
-      </div>
-      <div class="set-row">
-        <span class="set-row__label">${t('同盟人数')}<${MicroLabel}>CAPACITY<//></span>
-        <div class="exp-cap">
-          <button type="button" class=${`exp-cap__btn${capOpen ? ' is-open' : ''}`} disabled=${!!busy || !canEdit}
-            aria-haspopup="listbox" aria-expanded=${capOpen ? 'true' : 'false'}
-            onClick=${() => canEdit && !busy && setCapOpen(!capOpen)}>
-            <span>${capacity}</span><${Icon} name="chevronRight" class="exp-cap__arrow" />
-          </button>
-          ${capOpen ? html`<div class="exp-cap__menu" role="listbox" aria-label=${t('同盟人数')}>
-            ${Array.from({ length: 17 }, (_, i) => i + 4).map((n) => html`<button key=${n} type="button" role="option"
-              aria-selected=${capacity === n ? 'true' : 'false'} class=${capacity === n ? 'is-selected' : ''}
-              onClick=${() => { setCapacity(n); setCapOpen(false); }}>${n}</button>`)}
-          </div>` : null}
-        </div>
-      </div>
-      <div class="set-row">
-        <span class="set-row__label">${t('队友复活')}<${MicroLabel}>REVIVAL<//></span>
-        <button type="button" class=${`set-toggle${revival ? ' is-on' : ''}`} role="switch"
-          aria-checked=${revival ? 'true' : 'false'} disabled=${!!busy || !canEdit}
-          onClick=${() => canEdit && setRevival(!revival)}><i></i><span>${revival ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
-      </div>
-      <div class="set-row">
-        <span class="set-row__label">${t('独立卡池')}<${MicroLabel}>CARD POOL<//></span>
-        <button type="button" class=${`set-toggle${independent ? ' is-on' : ''}`} role="switch"
-          aria-checked=${independent ? 'true' : 'false'} disabled=${!!busy || !canEdit}
-          onClick=${() => canEdit && setIndependent(!independent)}><i></i><span>${independent ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
-      </div>
-      <div class="set-row" hidden=${capacity <= 4}>
-        <span class="set-row__label">${t('禁用鸭爵策略')}<${MicroLabel}>NO DUCK LORD<//></span>
-        <button type="button" class=${`set-toggle${noDuck ? ' is-on' : ''}`} role="switch"
-          aria-checked=${noDuck ? 'true' : 'false'} disabled=${!!busy || !canEdit || capacity <= 4}
-          onClick=${() => canEdit && setNoDuck(!noDuck)}><i></i><span>${noDuck ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
-      </div>
-      <div class="set-row" hidden=${capacity <= 4}>
-        <span class="set-row__label">${t('允许重复选择策略')}<${MicroLabel}>REPEAT STRATEGIES<//></span>
-        <button type="button" class=${`set-toggle${repeat ? ' is-on' : ''}`} role="switch"
-          aria-checked=${repeat ? 'true' : 'false'} disabled=${!!busy || !canEdit || capacity <= 4}
-          onClick=${() => canEdit && setRepeat(!repeat)}><i></i><span>${repeat ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
-      </div>
-      ${canEdit ? html`<div class="exp-pop__foot">
-        <span class="t-dim">${t('开局后不可更改')}</span>
-        <button type="button" class="btn btn--primary btn--sm" disabled=${!!busy} onClick=${apply}>${t('应用')}</button>
-      </div>` : null}
-    </div>` : null}
-  </div>`;
-}
-
-
-function RoomOptions({ option, takeoverOption, onAiTakeover, soloOption = null, room, isHost, busy, onAiLast, onSoloUnlimited, onExperimental, onDifficulty, onClose, version = null }) {
+function RoomOptions({ option, takeoverOption, onAiTakeover, soloOption = null, room, isHost, busy, onAiLast, onSoloUnlimited, onDifficulty, onClose, version = null }) {
   const info = difficultyInfo(room.mode, room.difficulty);
   const title = soloOption ? t('模拟设置') : t('同盟设置');
   useEffect(() => {
@@ -528,7 +424,6 @@ function RoomOptions({ option, takeoverOption, onAiTakeover, soloOption = null, 
     ${soloOption
       ? html`<${SoloUnlimitedToggle} option=${soloOption} busy=${busy} onToggle=${onSoloUnlimited} />`
       : html`<${AiLastToggle} option=${option} busy=${busy} onToggle=${onAiLast} />`}
-    ${soloOption ? null : html`<${ExperimentalControl} room=${room} isHost=${isHost} busy=${busy} onApply=${onExperimental} />`}
   </div>`;
 }
 
@@ -650,7 +545,6 @@ export function RoomScreen() {
   const setDifficulty = (difficulty) => run('diff', () => net.request('room.setDifficulty', { difficulty }));
   const setAiTakeover = (on) => run('aihandover', () => net.request('room.setAiTakeover', { on }));
   const setAiLast = (on) => run('ailast', () => net.request('room.setAiPicksLast', { on }));
-  const setExperimental = (experimental) => run('experimental', () => net.request('room.setExperimental', { experimental }));
   // the room is the authority; the lobby card reads the same pref the next time this browser creates a solo room
   const setSoloUnlimited = async (on) => {
     const sent = await run('solofree', () => net.request('room.setSoloUnlimited', { on }));
@@ -798,7 +692,7 @@ export function RoomScreen() {
       </div>
     </header>
 
-    <main class=${`seats rs-seats${coop ? '' : ' seats--solo'}${facts.seats.length > 4 ? ' seats--expanded' : ''}`}>
+    <main class=${`seats rs-seats${coop ? '' : ' seats--solo'}`}>
       ${facts.seats.map((s, i) => {
         const op = seatOperator(s, cards, { myId: me.playerId, myCard });
         // the player's outfit for that operator (header "Outfits"); null = the default art
@@ -836,7 +730,7 @@ export function RoomScreen() {
           ${aiLast || soloOpt ? html`<button type="button" class=${`rs-pill__gear${opts ? ' is-on' : ''}`} onClick=${() => setOpts((v) => !v)} title=${aiLast ? t('同盟设置') : t('模拟设置')} aria-label=${aiLast ? t('同盟设置') : t('模拟设置')}
             aria-expanded=${opts ? 'true' : 'false'}><${GearGlyph} /></button>` : null}
           ${opts && (aiLast || soloOpt) ? html`<${RoomOptions} takeoverOption=${aiTakeoverOption(room, me.playerId)} onAiTakeover=${setAiTakeover} option=${aiLast} soloOption=${soloOpt} room=${room} isHost=${facts.isHost} busy=${busy} onAiLast=${setAiLast}
-            onSoloUnlimited=${setSoloUnlimited} onExperimental=${setExperimental} onDifficulty=${openProto} onClose=${() => setOpts(false)} version=${versionCtl} />` : null}
+            onSoloUnlimited=${setSoloUnlimited} onDifficulty=${openProto} onClose=${() => setOpts(false)} version=${versionCtl} />` : null}
         </div>
       </div>
       <div class="room-bar__right rs-foot__right">

@@ -17,7 +17,7 @@
 // range, blocker first); every blocker whose attack hits enemies — a ranged operator on a melee tile included — may
 // always target the enemies it blocks, in range or not, whatever its facing, and targets them first (acquireTargets,
 // Battle.blockedTargets; user playtest #6: "阻挡了就一定要能打到"); a heal attack keeps selecting injured allies while
-// its unit blocks (PRTS Stronghold-Protocol/帮助 "对于医疗干员（咒愈师分支除外），攻击目标为需要治疗的单位"). An ally target
+// its unit blocks (PRTS 卫戍协议/帮助 "对于医疗干员（咒愈师分支除外），攻击目标为需要治疗的单位"). An ally target
 // (Battle.setAllyTarget: 白铁's 铁钳号·原型机, an enemy-camp summon our operators attack, 嘲讽等级 −2) on the range comes after
 // every enemy (acquireTargets) and a ranged attack flies to it like to an enemy.
 // Every enemy attack strikes at its clip's damage frame after its swing starts (attackWindup; a stun before the frame
@@ -205,7 +205,7 @@ function setFortressMelee(prof, state, v) {
  */
 export function acquireTargets(b, u, prof, state = null) {
   // a heal attack (医师 / 群愈师 / 疗养师 / 链愈师 / 行医, a skill attack turned into a heal) selects injured allies only,
-  // never the enemies its unit blocks — a blocking healer keeps healing: PRTS Stronghold-Protocol/帮助 "对于医疗干员（咒愈师分支除外），
+  // never the enemies its unit blocks — a blocking healer keeps healing: PRTS 卫戍协议/帮助 "对于医疗干员（咒愈师分支除外），
   // 攻击目标为需要治疗的单位" (the blocked-first rule below is for attackers of enemies; community feedback after 0.1.0, E2)
   if (prof.heal && prof.dmgType === 'heal') {
     let cands = b.injuredAlliesInKeys(u.rangeKeys, u, !!prof.heal.elementHealRatio);

@@ -24,7 +24,7 @@
 // PRIO_REVIVE −100 and its running windows, held by one battle-level hook, at PRIO_UNDYING_HELD −99 — before a 傀儡师's
 // switch to its 替身 (professions.js, −100: PRTS 分支特性信息 傀儡师 "受到足以致命的伤害且未持有不死的情况下"), while the
 // lock itself still comes after that switch (as in 0.1.1). The 复活 — M3茧甲 here, 埃芒加德's band (bands/battle.js) —
-// act on the knock-out itself: PRTS Stronghold-Protocol：盟约 下半/PRTS盟约记录 备注 "“复活”的实现方式为：受益者因移动之外的原因退场时下
+// act on the knock-out itself: PRTS 卫戍协议：盟约 下半/PRTS盟约记录 备注 "“复活”的实现方式为：受益者因移动之外的原因退场时下
 // 次部署的再部署时间和费用归零" — the unit IS knocked out (its `death` hooks, every 被击倒时 effect, run) and its next
 // deployment, at once, free, where it lies, is a deployment like any other (部署时 effects, SP reset, a new lock): a
 // `death` hook at PRIO_RESPAWN 13, then 埃芒加德 12 (PRIO_BAND_REVIVE), ahead of 阿戈尔 5's first-knock-out revive (11)

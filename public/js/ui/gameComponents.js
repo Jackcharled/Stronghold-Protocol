@@ -14,11 +14,6 @@ import {
 } from './assetUrls.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
-const REMOTE_ASSET_RE = /^https?:\/\/assets\.luobomiao\.love\/assets\//i;
-/** Route raw manifest art through the same /assets-cdn/ URLs the import cache and game use. */
-const localAssetSrc = (src) => (typeof src === 'string' && REMOTE_ASSET_RE.test(src)
-  ? '/assets-cdn/' + src.replace(REMOTE_ASSET_RE, '')
-  : src);
 
 /** Data files the in-match screens use (`backups`: the 补位 stand-ins' bodies — cards, the board model, the detail card). */
 export const GAME_FILES = ['config', 'assets', 'chess', 'bonds', 'items', 'bands', 'enemies', 'bosses', 'stages', 'tokens',
@@ -71,11 +66,10 @@ export function makeLookups(ready = true) {
  * <img> that swaps to a fallback node when the URL is missing or fails.
  * @param {{ src?: string|null, class?: string, alt?: string, fallback?: any, style?: string }} props
  */
-export function Img({ src, class: cls, alt = '', fallback = null, style, loading = 'lazy' }) {
+export function Img({ src, class: cls, alt = '', fallback = null, style }) {
   const [bad, setBad] = useState(null);
-  const displaySrc = localAssetSrc(src);
-  if (!displaySrc || bad === src) return fallback;
-  return html`<img class=${cls} src=${displaySrc} alt=${alt} draggable=${false} loading=${loading} decoding="async" style=${style} onError=${(e) => { const el = e && (e.currentTarget || e.target); const s = String(displaySrc || ''); if (el && !el.dataset.retry && /^https?:\/\//i.test(s)) { el.dataset.retry = '1'; try { const u = new URL(s); u.searchParams.set('retry', '1'); el.src = u.href; return; } catch { /* ignore */ } } setBad(src); }} />`;
+  if (!src || bad === src) return fallback;
+  return html`<img class=${cls} src=${src} alt=${alt} draggable=${false} loading="lazy" style=${style} onError=${() => setBad(src)} />`;
 }
 
 /** Owner-aware operator pictures, with live selection / settings updates even on an already open card.
@@ -273,7 +267,7 @@ export function BondGlyph({ bondId, class: cls }) {
 export function BandIcon({ bandId, class: cls, size = 'md' }) {
   const b = data.lookup('bands', bandId);
   return html`<span class=${cx('bandicon', `bandicon--${size}`, cls)} title=${b?.name || ''}>
-    <${Img} src=${bandIconUrl(data.get('assets'), bandId)} loading="eager" fallback=${html`<span class="bandicon__txt">${[...(b?.name || '?')][0]}</span>`} />
+    <${Img} src=${bandIconUrl(data.get('assets'), bandId)} fallback=${html`<span class="bandicon__txt">${[...(b?.name || '?')][0]}</span>`} />
   </span>`;
 }
 

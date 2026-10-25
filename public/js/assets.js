@@ -291,7 +291,7 @@ export function hasBackSpine(m, id, skinId) {
 }
 
 export function validSpine(sp) {
-  return isObj(sp) && typeof sp.skel === 'string' && /^(?:\/|https?:\/\/)[^\s]*\.skel$/.test(sp.skel) && typeof sp.atlas === 'string' && isObj(sp.anims);
+  return isObj(sp) && typeof sp.skel === 'string' && /^\/[^\s]*\.skel$/.test(sp.skel) && typeof sp.atlas === 'string' && isObj(sp.anims);
 }
 
 /** Best 2D picture for a unit asset id (operator avatar, token avatar, enemy icon, item icon); `opts` reaches avatarUrl. */
@@ -771,32 +771,6 @@ export function unloadSpineData(entry, _value, keep) {
 
 /** Spine LRU memory budget: estimated bytes (`spineDataWeight`) of idle skeletons kept while a scene is shown. */
 export const SPINE_IDLE_BYTES = 48 * 1024 * 1024;
-/**
- * Spine downloads in flight. A 20-seat room loads roughly three files per operator; the original six
- * serialized those into many round trips. Desktop/high-core machines can safely run 10–12 at once,
- * while phones keep the original six (memory and mobile network).
- */
-export function defaultSpineConcurrency(nav = globalThis.navigator) {
-  const ua = String(nav?.userAgent || '');
-  if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) {
-    const conn = nav?.connection || nav?.mozConnection || nav?.webkitConnection;
-    if (conn?.saveData) return 2;
-    if (/(^|-)2g|(^|-)3g/i.test(String(conn?.effectiveType || ''))) return 3;
-    const mem = Number(nav?.deviceMemory) || 0;
-    return mem > 0 && mem <= 4 ? 3 : 4;
-  }
-  const cores = Number(nav?.hardwareConcurrency) || 4;
-  const mem = Number(nav?.deviceMemory) || 0;
-  if (mem > 0 && mem <= 4) return 8;
-  return Math.min(12, Math.max(8, Math.round(cores * 0.75)));
-}
-
-/** Phones keep a smaller idle Spine cache; reload-on-demand is cheaper than holding models until OOM. */
-export function defaultSpineIdleBytes(nav = globalThis.navigator) {
-  return /Android|iPhone|iPad|iPod|Mobile/i.test(String(nav?.userAgent || ''))
-    ? 32 * 1024 * 1024
-    : SPINE_IDLE_BYTES;
-}
 /** How long a released skeleton is safe from the weight budget (a prep ⇄ battle switch re-acquires within it). */
 export const SPINE_IDLE_GRACE_MS = 15000;
 /**
@@ -842,33 +816,15 @@ const transientFetch = (err) => {
  *           wait?: (ms: number) => Promise<void>, timers?: { set, clear },
  *           cosmetics?: ReturnType<typeof createCosmeticLayers> | null }} [opts]
  */
-const LOCAL_ASSET_PREFIX = '/assets-cdn/';
-const REMOTE_ASSET_RE = /^https?:\/\/assets\.luobomiao\.love\/assets\//;
-
-/** Route manifest art through this server's cached /assets-cdn/ proxy instead of the slow external host. */
-function localizeAssetUrls(value, seen = new Set()) {
-  if (typeof value === 'string') return REMOTE_ASSET_RE.test(value) ? LOCAL_ASSET_PREFIX + value.replace(REMOTE_ASSET_RE, '') : value;
-  if (!value || typeof value !== 'object' || seen.has(value)) return value;
-  seen.add(value);
-  if (Array.isArray(value)) {
-    const out = new Array(value.length);
-    for (let i = 0; i < value.length; i++) out[i] = localizeAssetUrls(value[i], seen);
-    return out;
-  }
-  const out = {};
-  for (const k of Object.keys(value)) out[k] = localizeAssetUrls(value[k], seen);
-  return out;
-}
-
 export function createAssets(options) {
   const opts = options && typeof options === 'object' ? options : {};
   const layers = opts.cosmetics && typeof opts.cosmetics.apply === 'function' ? opts.cosmetics : null;
   const url = opts.url || '/data/assets.json';
   const localUrl = opts.localUrl || '/data/local-assets.json';
-  let localPromise = isObj(opts.localManifest) ? Promise.resolve(localizeAssetUrls(opts.localManifest)) : null;
-  let localManifest = isObj(opts.localManifest) ? localizeAssetUrls(opts.localManifest) : null;
+  let localPromise = isObj(opts.localManifest) ? Promise.resolve(opts.localManifest) : null;
+  let localManifest = isObj(opts.localManifest) ? opts.localManifest : null;
   const doFetch = opts.fetch || ((...a) => globalThis.fetch(...a));
-  let manifest = isObj(opts.manifest) ? localizeAssetUrls(opts.manifest) : null;
+  let manifest = isObj(opts.manifest) ? opts.manifest : null;
   let readyPromise = manifest ? Promise.resolve(manifest) : null;
   const loadImage = opts.loadImage || loadImageElement;
   const images = new Map(); // url → { promise, value }
@@ -891,7 +847,7 @@ export function createAssets(options) {
   /** Adopt a manifest (fetched or seeded): resolves `ready()`, stops the background tries, tells the listeners. */
   function adopt(m) {
     if (manifest || !isObj(m)) return false;
-    manifest = localizeAssetUrls(m);
+    manifest = m;
     readyPromise = Promise.resolve(m);
     backoffN = 0;
     if (backoffTimer != null) { timers.clear(backoffTimer); backoffTimer = null; }
@@ -906,7 +862,7 @@ export function createAssets(options) {
     let json;
     try { json = await res.json(); } catch (err) { throw Object.assign(err instanceof Error ? err : new Error(String(err)), { badJson: true }); }
     if (!isObj(json)) throw Object.assign(new Error('not a manifest'), { badJson: true });
-    return localizeAssetUrls(json);
+    return json;
   }
 
   function scheduleBackoff() {
@@ -963,14 +919,14 @@ export function createAssets(options) {
       return (opts.unloadSpine || unloadSpineData)(e, value, keep);
     },
     max: opts.spineMax ?? 60,
-    timeout: opts.spineTimeout ?? 15000,
-    concurrency: opts.spineConcurrency ?? defaultSpineConcurrency(),
+    timeout: opts.spineTimeout ?? 20000,
+    concurrency: opts.spineConcurrency ?? 6,
     // memory budget (a parsed skeleton holds ~0.1–12 MB): idle skeletons beyond SPINE_IDLE_BYTES go, and all of
     // them once no scene has referenced or held any for SPINE_QUIET_DELAY_MS (lobby / room / result; a field view in
     // battle mode holds the cache — see the header), each after a grace that covers a prep ⇄ battle switch; evictions
     // run SPINE_EVICT_DELAY_MS after the release that allows them (a scene switch takes its models back first)
     weigh: opts.spineWeigh || ((key, value) => spineDataWeight(value)),
-    maxIdleWeight: opts.spineIdleBytes ?? defaultSpineIdleBytes(),
+    maxIdleWeight: opts.spineIdleBytes ?? SPINE_IDLE_BYTES,
     quietWeight: opts.spineQuietBytes ?? 0,
     idleGrace: opts.spineIdleGrace ?? SPINE_IDLE_GRACE_MS,
     quietDelay: opts.spineQuietDelay ?? SPINE_QUIET_DELAY_MS,
@@ -1010,7 +966,7 @@ export function createAssets(options) {
           const res = await doFetch(localUrl, { cache: 'no-cache' });
           if (!res || !res.ok) return localManifest;
           const json = await res.json();
-          if (!localManifest && isObj(json) && isObj(json.groups)) { localManifest = localizeAssetUrls(json); notify('local'); }
+          if (!localManifest && isObj(json) && isObj(json.groups)) { localManifest = json; notify('local'); }
         } catch { /* optional art: absent */ }
         return localManifest;
       })();
@@ -1032,8 +988,8 @@ export function createAssets(options) {
     /** The same for the optional local-client manifest (data.js 'local'; `{ groups }`), unless one is known. */
     seedLocal(lm) {
       if (localManifest || !isObj(lm) || !isObj(lm.groups)) return false;
-      localManifest = localizeAssetUrls(lm);
-      localPromise = Promise.resolve(localManifest);
+      localManifest = lm;
+      localPromise = Promise.resolve(lm);
       notify('local');
       return true;
     },
@@ -1082,19 +1038,12 @@ export function createAssets(options) {
      */
     async preload(urls, onProgress) {
       const list = [...new Set((Array.isArray(urls) ? urls : []).map(str).filter(Boolean))];
-      const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(String(globalThis.navigator?.userAgent || ''));
-      const limit = mobile ? 3 : 8;
-      let next = 0, done = 0, ok = 0;
-      const worker = async () => {
-        while (next < list.length) {
-          const u = list[next++];
-          const img = await image(u);
-          done++;
-          if (img) ok++;
-          try { onProgress?.(done, list.length, u); } catch { /* ignore */ }
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
+      let done = 0, ok = 0;
+      await Promise.all(list.map((u) => image(u).then((img) => {
+        done++;
+        if (img) ok++;
+        try { onProgress?.(done, list.length, u); } catch { /* ignore */ }
+      })));
       return { ok, failed: list.length - ok, total: list.length };
     },
     /**

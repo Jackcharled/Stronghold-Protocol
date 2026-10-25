@@ -7,7 +7,7 @@ import { num, talentBb, traitBb, installAura } from '../shared/tier1.js';
 export default {
   // ---------------------------------------------------------------------------------------------------------------
   // 2_02 赫默 医疗无人机 (AUTO, heal trigger): "获得一个医疗无人机 / 最多可库存1个无人机；无人机投入战场后治疗周围友军，
-  // 10秒后自动销毁" — the 医疗探机 is a hand piece the player places (user playtest #6; PRTS Stronghold-Protocol/帮助): each cast gives
+  // 10秒后自动销毁" — the 医疗探机 is a hand piece the player places (user playtest #6; PRTS 卫戍协议/帮助): each cast gives
   // one (stock ≤ cnt) and the placed piece takes the field on its own tile (tokens.js releaseSkillSummon: not at the
   // battle start — user playtest #4; not placed ⇒ no drone); it heals around itself and self-destructs after 10 s (token
   // kit). 强化注射: every 【医疗】 operator on the field ASPD +attack_speed. Elite module (PHY-Y): heals on ground units

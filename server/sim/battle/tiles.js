@@ -61,7 +61,7 @@ export class BattleTiles {
    * A tile no automatic placement may take (the 突袭 landing tile, tactical points, summon / device tiles): a living
    * unit stands on it, or it is the rest tile (restTile) of an ally piece that has not deployed yet or waits to
    * redeploy — the tile a knocked-out operator lies on ("倒地干员所在地块…所有我方单位在此处的部署行为将被阻止", PRTS
-   * Stronghold-Protocol/帮助 §作战阶段 单位部署), else its home tile (a token parked there would keep that unit off the field).
+   * 卫戍协议/帮助 §作战阶段 单位部署), else its home tile (a token parked there would keep that unit off the field).
    */
   isReservedTile(r, c) {
     if (!Number.isInteger(r) || !Number.isInteger(c) || r < 0 || r >= ROWS || c < 0 || c >= COLS) return true;
@@ -76,7 +76,7 @@ export class BattleTiles {
   }
 
   /**
-   * The knocked-out operator (isDown) lying on (r, c), other than `except`, or null. Official (PRTS Stronghold-Protocol/帮助 §作战阶段
+   * The knocked-out operator (isDown) lying on (r, c), other than `except`, or null. Official (PRTS 卫戍协议/帮助 §作战阶段
    * 单位部署): "干员退场后…原地留下一个“倒地干员”…满足再部署条件时，移除场上的该倒地干员并自动部署至该位置" and "倒地干员所在
    * 地块视为可部署，但所有我方单位在此处的部署行为将被阻止" — its tile (`body`, _layBody) takes no other ally: `_deploy`
    * (initial deploys, redeploys, the 突袭 landing, summons), `spawnDevice` and `relocate` refuse it.
@@ -100,7 +100,7 @@ export class BattleTiles {
 
   /**
    * Where a knocked-out operator lies (it redeploys there): the tile it fell on, except — "若干员被击倒的位置为其他干员或
-   * 召唤物的初始位置，则在被击倒后，尝试返回其自身的初始位置" (PRTS Stronghold-Protocol/帮助) — a tile that is another board piece's
+   * 召唤物的初始位置，则在被击倒后，尝试返回其自身的初始位置" (PRTS 卫戍协议/帮助) — a tile that is another board piece's
    * home (a piece with a board uid: the 初始位置 is the prep placement — whether that piece is on the field, waiting or
    * gone: a summon only leaves its home free once it has expired or been killed, so a removed one must count too), where
    * it goes back to its own home tile when that is in the rect and free (isReservedTile: no living unit, no other body,
@@ -182,7 +182,7 @@ export class BattleTiles {
 
   /**
    * An operator lying on the field, waiting to redeploy on that tile (DESIGN §5.5: after its respawn time, when the tile
-   * is free and DP ≥ cost; _layBody, downOn). PRTS Stronghold-Protocol/帮助 §作战阶段 单位部署: "干员退场后，将返回隐藏的待部署区，并原地
+   * is free and DP ≥ cost; _layBody, downOn). PRTS 卫戍协议/帮助 §作战阶段 单位部署: "干员退场后，将返回隐藏的待部署区，并原地
    * 留下一个“倒地干员”以供查看信息，满足再部署条件时，移除场上的该倒地干员并自动部署至该位置。" — every 退场 (GitHub #60, the owner's
    * decision of 2026-10-04): knocked out ('killed'), entering the battle knocked out (FORCED_EXIT, 联防) and forced out
    * by its own effects ('retreat': 史尔特尔's 余烬, 耀骑士临光 S2, 骑士戒律 + 竞技旗, 伊内丝 S3; 'merchant': a 商人 that cannot

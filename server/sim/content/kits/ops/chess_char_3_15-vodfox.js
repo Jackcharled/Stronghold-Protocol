@@ -6,7 +6,7 @@ import { num, defOf, talentBb, aura } from '../shared/tier3.js';
 
 export default {
   // ---- 3_15 巫恋 · 削弱者 (hidden) — S2 诅咒娃娃 "获得一个诅咒娃娃（最多可库存1个）": the doll is a hand piece the player
-  //      places (user playtest #6; PRTS Stronghold-Protocol/帮助); each cast gives one and the placed piece takes the field on its
+  //      places (user playtest #6; PRTS 卫戍协议/帮助); each cast gives one and the placed piece takes the field on its
   //      own tile (tokens.js releaseSkillSummon: not at the battle start; not placed ⇒ no doll); its token kit keeps the
   //      3×3 ATK/DEF aura (the token skill's bb) for 15 s; 溃败暗示: low-HP enemies fragile
   chess_char_3_15_a: (bb, chess, def) => {

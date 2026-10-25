@@ -24,28 +24,19 @@ export function ConnectionBanner() {
   const entered = useStore((s) => s.session.entered);
   const restoring = useStore((s) => s.ui.restoring);
   const buildStale = useStore((s) => !!s.ui.buildStale);
-  // Hidden admin watch is not the player's page: a new build must not offer/force a 刷新状态 there.
-  const adminWatch = (() => {
-    try {
-      const qs = new URLSearchParams(location.search);
-      return qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || !!qs.get('watchToken')
-        || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code');
-    } catch { return false; }
-  })();
-  const stale = buildStale && !adminWatch;
   useTicker(conn.status === 'reconnecting' ? 500 : 0);
-  useDocClass('sp-conn', bannerVisible(conn, entered, restoring, stale));
+  useDocClass('sp-conn', bannerVisible(conn, entered, restoring, buildStale));
   if (!entered) return null;
-  if (conn.status === 'online' && !restoring && !stale) return null;
+  if (conn.status === 'online' && !restoring && !buildStale) return null;
   if (conn.status === 'online' && restoring) {
     return html`<div class="conn-banner" role="status"><${Icon} name="refresh" /><span>${t('正在同步同盟状态…')}</span></div>`;
   }
-  if (conn.status === 'online' && stale) {
+  if (conn.status === 'online' && buildStale) {
     // the server has a newer build than this page: the guard reloads by itself once the match is over, the button is
     // for a player who would rather do it now
     return html`<div class="conn-banner" role="alert">
       <${Icon} name="refresh" />
-      <span>${t('服务器已更新，请刷新页面')}</span>
+      <span>${t('服务器已更新，本局结束后刷新')}</span>
       <${Button} size="sm" variant="secondary" icon="refresh" onClick=${() => location.reload()}>${t('刷新页面')}<//>
     </div>`;
   }

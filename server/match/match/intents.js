@@ -11,46 +11,7 @@ import { OK, fail } from './common.js';
 import { onHumanEmote } from '../botEmotes.js';
 
 export class MatchIntents {
-  /** 消极游戏检测：连续 2 回合花钱（买/刷新/升级）但一次都没部署干员 → 踢出。 */
-  _trackActivity(ps, msg) {
-    if (!ps || ps.isBot) return;
-    const round = Number(this.round) || 0;
-    // 只在第 4 回合前判定（含第 4 回合）
-    if (round > 4) { if (ps._act) { ps._act.strikes = 0; ps._act.idleStrikes = 0; } return; }
-    let st = ps._act;
-    if (!st || st.round !== round) {
-      // 规则一：连续 2 回合花钱但不部署 → 消极游戏
-      if (st && st.spend > 0 && st.place === 0) {
-        st.strikes = (st.strikes || 0) + 1;
-        if (st.strikes >= 2) {
-          try { this.toast?.(ps, 'warn', '检测到连续 2 回合购买/刷新但未部署干员，你已被移出同盟（消极游戏）'); } catch { /* ignore */ }
-          try { this.onIdleKick?.(ps.playerId, 'idle'); } catch { /* ignore */ }
-        }
-      } else if (st) {
-        st.strikes = 0;
-      }
-      // 规则二：连续 3 回合既不购买也不部署（只点准备）→ 消极游戏
-      if (st) {
-        if (st.spend === 0 && st.place === 0) {
-          st.idleStrikes = (st.idleStrikes || 0) + 1;
-          if (st.idleStrikes >= 2) {
-            try { this.toast?.(ps, 'warn', '检测到连续 2 回合未购买、未部署干员，你已被移出同盟（消极游戏）'); } catch { /* ignore */ }
-            try { this.onIdleKick?.(ps.playerId, 'idle'); } catch { /* ignore */ }
-            st.idleStrikes = 0;
-          }
-        } else {
-          st.idleStrikes = 0;
-        }
-      }
-      st = ps._act = { round, spend: 0, place: 0, strikes: st ? (st.strikes || 0) : 0, idleStrikes: (st && st.idleStrikes) || 0 };
-    }
-    const t = msg && msg.t;
-    if (t === 'g.buy' || t === 'g.refresh' || t === 'g.levelUp') st.spend++;
-    if (t === 'g.place' || t === 'g.move' || t === 'g.deploy' || t === 'g.swap') st.place++;
-  }
-
   _handle(ps, msg) {
-    try { this._trackActivity(ps, msg); } catch { /* ignore */ }
     switch (msg.t) {
       case 'g.infoReady':
         if (this.phase !== PHASE.INFO_CHECK) return fail(ERR.WRONG_PHASE);
@@ -85,7 +46,6 @@ export class MatchIntents {
       case 'g.ready': return ps.setReady(!!msg.ready);
       case 'g.emote': return this.emote(ps, msg.id);
       // playerId: the player tapped (a shared field names two) — the watch preference (item 56)
-      case 'g.revive': return this.revive(ps, msg);
       case 'g.watch': return this.watch(ps, msg.fieldId, msg.playerId ?? null);
       case 'g.autoplay': return this.setAutoplay(ps, !!msg.on);
       case 'g.pause': return this.setPause(ps, !!msg.on);
