@@ -227,6 +227,26 @@
 //     练度 and 自选 (keyed by charId) are checked again against the version's data (seatSettings); a setting checked for
 //     another content keeps only the ids whose operator (charId) is the same in both data sets.
 
+/** 匹配队友最长搜索时间（默认 2 分钟；测试可用 SP_MATCHMAKING_TIMEOUT_MS 缩短）。 */
+const MATCHMAKING_TIMEOUT_MS = Math.max(1000, Number(process.env.SP_MATCHMAKING_TIMEOUT_MS) || 2 * 60 * 1000);
+
+function currentNodeNumber() {
+  return Number((String(process.env.SP_NODE_DIR || '').match(/node-(\d+)/i) || [])[1])
+    || (Number(process.env.PORT) > 3000 ? Number(process.env.PORT) - 3000 : 0);
+}
+
+/** 房间开始/解散时把房间从 matchmaker 的整队队列里移除。 */
+function notifyPartyLeave(room) {
+  try {
+    const node = currentNodeNumber();
+    if (!node || !room || !room.code) return;
+    fetch('http://127.0.0.1:3090/api/party/leave', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomCode: room.code, node }),
+    }).catch(() => {});
+  } catch { /* 匹配器通知失败不能影响房间 */ }
+}
+
 import { aiTakeover, resetAiTakeover, reconcileAiTakeover } from './aiTakeover.js';
 import { randomBytes, randomInt } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -794,16 +814,44 @@ export class Lobby {
    * @param {any} msg
    * @returns {{ ok: true } | { error: string, detail?: string } | Promise<{ ok: true } | { error: string, detail?: string }>}
    */
-  /** 每 20 秒扫描：创建后超过 15 分钟仍未开始对局的房间解散。 */
+  /** 每 20 秒扫描：创建后超过 15 分钟仍未开始对局的房间解散；匹配超过 2 分钟强制开局。 */
   sweepOldRooms() {
     const now = this.now();
     for (const room of [...this.rooms.values()]) {
-      if (!room || room.disposed || room.match || room.noExpire) continue;
+      if (!room || room.disposed || room.match) continue;
+      if (room.matchmaking) {
+        const started = Number(room.matchmakingAt) || now;
+        if (now - started >= MATCHMAKING_TIMEOUT_MS) {
+          try { this.forceStartMatchmaking(room); } catch (e) { this.log?.warn?.('[lobby] 匹配超时开局失败 ' + (e && e.message)); }
+        }
+        continue;
+      }
+      if (room.noExpire) continue;
       const base = Math.max(Number(room.createdAt) || now, Number(room.lastMatchEndAt) || 0);
       if (now - base < (room.ttlMs || roomTtlMs())) continue;
       this.log?.info?.('[lobby] ' + room.code + ' expired (15 min without a match)');
       try { this.disposeRoom(room, 'expired'); } catch { /* ignore */ }
     }
+  }
+
+  /** 匹配队友 2 分钟没凑满：按当前人数直接开局，并通知匹配器移出队列。 */
+  forceStartMatchmaking(room) {
+    if (!room || room.match) return;
+    const humans = room.activeHumans();
+    if (!humans.length || !humans.some((s) => s.connected)) { this.disposeRoom(room, 'empty'); return; }
+    for (const s of humans) {
+      s.ready = true;
+      if (room.modded) s.content = 'ready';
+    }
+    room.matchmaking = false;
+    room.matchmakingAt = 0;
+    room.matchmakingStartedAt = 0;
+    notifyPartyLeave(room);
+    const host = room.seatOf(room.hostId);
+    const hostSession = host && this.registry?.byId ? this.registry.byId(host.playerId) : null;
+    const key = hostSession ? hostSession.limitKey : null;
+    this.log?.info?.(`[lobby] ${room.code} 匹配超时，按当前 ${humans.length} 人开局`);
+    this.startMatch(room, key);
   }
 
   onMessage(session, msg) {
@@ -2166,6 +2214,12 @@ export class Lobby {
 
   /** @param {Room} room @param {string | null} [key] per-network limit key of the starter */
   startMatch(room, key = null) {
+    if (room.matchmaking) {
+      room.matchmaking = false;
+      room.matchmakingAt = 0;
+      room.matchmakingStartedAt = 0;
+      notifyPartyLeave(room);
+    }
     if (room.test && !this.testEnabled) return fail(ERR.TEST_DISABLED);
     // another official version's match runs in that version's match host — never here, where every module singleton
     // holds 第二期下半's data (header "Official versions"); a test that gave its own MatchClass runs it in place
