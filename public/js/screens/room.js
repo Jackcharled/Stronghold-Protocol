@@ -435,23 +435,23 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
     onApply(experimental);
   };
   return html`<div class="exp-wrap">
-    <button type="button" class=${`dpick__opt exp-btn${open ? ' is-active' : ''}`} disabled=${!!busy} onClick=${toggle}
-      title=${t('实验性选项')} aria-haspopup="dialog" aria-expanded=${open ? 'true' : 'false'}>
-      <${Icon} name="gear" />${t('实验性功能')}
-    </button>
+    <${Tooltip} text=${t('调整同盟人数与特殊规则：队友复活、独立卡池、禁用鸭爵策略、允许重复选择策略')}>
+      <button type="button" class=${`dpick__opt exp-btn${open ? ' is-active' : ''}`} disabled=${!!busy} onClick=${toggle}
+        title=${t('实验性选项')} aria-haspopup="dialog" aria-expanded=${open ? 'true' : 'false'}>
+        <${Icon} name="gear" class=${open ? 'is-on' : ''} />${t('实验性功能')}
+      </button>
+    <//>
     ${open ? html`<div class="exp-backdrop" onClick=${() => setOpen(false)}></div>
-      <div class="exp-pop set-list" role="dialog" aria-label=${t('实验性选项')}>
-      <div class="exp-pop__stripe" aria-hidden="true"></div>
-      <div class="exp-pop__head"><${MicroLabel}>EXPERIMENTAL<//><strong>${t('实验性选项')}</strong>
-        <button type="button" class="exp-pop__x" aria-label=${t('关闭')} onClick=${() => setOpen(false)}>×</button>
-      </div>
-      <div class="set-row">
-        <span class="set-row__label">${t('同盟人数')}<${MicroLabel}>CAPACITY<//></span>
+      <div class="exp-pop rs-opts" role="dialog" aria-label=${t('实验性选项')}>
+      <h4>${t('实验性选项')}</h4>
+      <div class="rs-opts__row">
+        <span class="rs-opts__k">${t('同盟人数')}</span>
         <div class="exp-cap">
-          <button type="button" class=${`exp-cap__btn${capOpen ? ' is-open' : ''}`} disabled=${!!busy || !canEdit}
+          <button type="button" class=${`rs-opts__diff exp-cap__btn${capOpen ? ' is-open' : ''}`} disabled=${!!busy || !canEdit}
             aria-haspopup="listbox" aria-expanded=${capOpen ? 'true' : 'false'}
             onClick=${() => canEdit && !busy && setCapOpen(!capOpen)}>
-            <span>${capacity}</span><${Icon} name="chevronRight" class="exp-cap__arrow" />
+            <span class="num">${capacity}</span>
+            <svg class="exp-cap__arrow" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" /></svg>
           </button>
           ${capOpen ? html`<div class="exp-cap__menu" role="listbox" aria-label=${t('同盟人数')}>
             ${Array.from({ length: 17 }, (_, i) => i + 4).map((n) => html`<button key=${n} type="button" role="option"
@@ -459,35 +459,40 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
               onClick=${() => { setCapacity(n); setCapOpen(false); }}>${n}</button>`)}
           </div>` : null}
         </div>
+        <span class="t-dim">${t('每队人数上限')}</span>
       </div>
-      <div class="set-row">
-        <span class="set-row__label">${t('队友复活')}<${MicroLabel}>REVIVAL<//></span>
-        <button type="button" class=${`set-toggle${revival ? ' is-on' : ''}`} role="switch"
-          aria-checked=${revival ? 'true' : 'false'} disabled=${!!busy || !canEdit}
-          onClick=${() => canEdit && setRevival(!revival)}><i></i><span>${revival ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
-      </div>
-      <div class="set-row">
-        <span class="set-row__label">${t('独立卡池')}<${MicroLabel}>CARD POOL<//></span>
-        <button type="button" class=${`set-toggle${independent ? ' is-on' : ''}`} role="switch"
-          aria-checked=${independent ? 'true' : 'false'} disabled=${!!busy || !canEdit}
-          onClick=${() => canEdit && setIndependent(!independent)}><i></i><span>${independent ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
-      </div>
-      <div class="set-row" hidden=${capacity <= 4}>
-        <span class="set-row__label">${t('禁用鸭爵策略')}<${MicroLabel}>NO DUCK LORD<//></span>
-        <button type="button" class=${`set-toggle${noDuck ? ' is-on' : ''}`} role="switch"
-          aria-checked=${noDuck ? 'true' : 'false'} disabled=${!!busy || !canEdit || capacity <= 4}
-          onClick=${() => canEdit && setNoDuck(!noDuck)}><i></i><span>${noDuck ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
-      </div>
-      <div class="set-row" hidden=${capacity <= 4}>
-        <span class="set-row__label">${t('允许重复选择策略')}<${MicroLabel}>REPEAT STRATEGIES<//></span>
-        <button type="button" class=${`set-toggle${repeat ? ' is-on' : ''}`} role="switch"
-          aria-checked=${repeat ? 'true' : 'false'} disabled=${!!busy || !canEdit || capacity <= 4}
-          onClick=${() => canEdit && setRepeat(!repeat)}><i></i><span>${repeat ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
-      </div>
+      <${Tooltip} text=${t('被淘汰的博士可以在队友存活时复活')}>
+        <button type="button" role="switch" aria-checked=${revival ? 'true' : 'false'} data-testid="exp-revival"
+            class=${`dpick__opt ailast__opt${revival ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
+            onClick=${() => canEdit && setRevival(!revival)}>
+          <${Icon} name="check" class=${revival ? 'is-on' : ''} />${t('队友复活')}
+        </button>
+      <//>
+      <${Tooltip} text=${t('每名博士使用自己的卡池，不与他人共享')}>
+        <button type="button" role="switch" aria-checked=${independent ? 'true' : 'false'} data-testid="exp-independent"
+            class=${`dpick__opt ailast__opt${independent ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
+            onClick=${() => canEdit && setIndependent(!independent)}>
+          <${Icon} name="check" class=${independent ? 'is-on' : ''} />${t('独立卡池')}
+        </button>
+      <//>
+      ${capacity > 4 ? html`<${Tooltip} text=${t('多人大厅里不出现鸭爵策略')}>
+        <button type="button" role="switch" aria-checked=${noDuck ? 'true' : 'false'} data-testid="exp-no-duck"
+            class=${`dpick__opt ailast__opt${noDuck ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
+            onClick=${() => canEdit && setNoDuck(!noDuck)}>
+          <${Icon} name="check" class=${noDuck ? 'is-on' : ''} />${t('禁用鸭爵策略')}
+        </button>
+      <//>` : null}
+      ${capacity > 4 ? html`<${Tooltip} text=${t('允许同一队伍中重复出现同一种策略')}>
+        <button type="button" role="switch" aria-checked=${repeat ? 'true' : 'false'} data-testid="exp-repeat"
+            class=${`dpick__opt ailast__opt${repeat ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
+            onClick=${() => canEdit && setRepeat(!repeat)}>
+          <${Icon} name="check" class=${repeat ? 'is-on' : ''} />${t('允许重复选择策略')}
+        </button>
+      <//>` : null}
       ${canEdit ? html`<div class="exp-pop__foot">
         <span class="t-dim">${t('开局后不可更改')}</span>
-        <button type="button" class="btn btn--primary btn--sm" disabled=${!!busy} onClick=${apply}>${t('应用')}</button>
-      </div>` : null}
+        <${Button} variant="primary" size="sm" disabled=${!!busy} onClick=${apply}>${t('应用')}<//>
+      </div>` : html`<div class="exp-pop__foot"><span class="t-dim">${t('由创建者设置')}</span></div>`}
     </div>` : null}
   </div>`;
 }

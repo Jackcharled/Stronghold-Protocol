@@ -755,7 +755,11 @@ export class Network {
       session.tag = account.tag || session.tag;
     }
     session.guest = msg.guest === true;
-    session.admin = verifyAdminToken(msg.adminToken);
+    // 管理员/服主身份：adminToken 是后台下发的能力令牌；accountToken 里同样带有由同一把
+    // 密钥签名的 role。移动端冷启动、令牌过期或页面不经过后台登录时只有 accountToken，
+    // 若只认 adminToken，管理员会被维护开关误拦。两者任一表明 owner/admin 即可。
+    session.admin = verifyAdminToken(msg.adminToken)
+      || (account != null && (account.role === 'owner' || account.role === 'admin'));
     session.name = name;
     session.lastSeen = now;
     session.addr = conn.ip;

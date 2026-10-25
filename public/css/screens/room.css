@@ -179,6 +179,22 @@
   animation: rseat-in 480ms cubic-bezier(.16, .84, .3, 1) backwards;
   animation-delay: calc(150ms + var(--i) * 70ms);
 }
+/* 实验房 5–20 人（.seats--expanded）：座位不再按人数均分宽度，立绘与信息保持 4 人房的大小，
+   超出的座位横向滚动查看。宽度取「4 人时」的公式值，即 var(--n) 固定按 4 计算。 */
+.rs-seats.seats--expanded .rseat {
+  --w: min(18vw, 3.4rem, calc((100vw - 1.6rem) / 4 - .3rem));
+}
+.rs-seats.seats--expanded {
+  justify-content: flex-start;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(94, 224, 185, .55) transparent;
+}
+.rs-seats.seats--expanded::-webkit-scrollbar { height: 8px; }
+.rs-seats.seats--expanded::-webkit-scrollbar-track { background: rgba(255, 255, 255, .05); }
+.rs-seats.seats--expanded::-webkit-scrollbar-thumb { background: rgba(94, 224, 185, .55); border-radius: 0; }
+.rs-seats.seats--expanded::-webkit-scrollbar-thumb:hover { background: rgba(94, 224, 185, .8); }
 /* 转场 (PR #643): the room comes up from black, card by card — each lights up as it lands. [ASSUMED] The motion and its
    timings are the community PR #643 design, not a recording of the event. */
 @keyframes rseat-in { from { opacity: 0; transform: translateY(.16rem) scale(1.03); filter: brightness(1.9) saturate(.3); } 55% { filter: none; } }
@@ -818,3 +834,36 @@
   .rs .vervote .vervote__text { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
   .rs .vervote .vervote__actions { flex: none; }
 }
+
+/* ---- 实验性功能（本服）：外观与 同盟设置 的 .rs-opts 面板一致 ------------------------------- */
+.exp-wrap { position: relative; display: inline-flex; }
+.exp-wrap .exp-btn { --d-color: var(--mint-400); }
+.exp-wrap .exp-btn.is-active { border-color: var(--mint-500); background: rgba(78, 216, 175, .1); color: var(--mint-300); }
+.exp-wrap .exp-btn .icon { width: 1.1em; height: 1.1em; }
+.exp-backdrop { position: fixed; inset: 0; z-index: 39; background: transparent; }
+/* 复用 .rs-opts 的面板外观，只调位置与宽度 */
+.exp-pop.rs-opts {
+  left: 0; transform: none; z-index: 40;
+  width: 6.4rem; max-width: min(92vw, 6.4rem);
+  bottom: calc(100% + .12rem);
+}
+.exp-pop .rs-opts__row { gap: .1rem; }
+.exp-cap { position: relative; display: inline-flex; }
+.exp-cap__btn { min-width: 1.5rem; justify-content: space-between; }
+.exp-cap__arrow { width: .14rem; height: .14rem; transform: rotate(90deg); transition: transform var(--t-fast); }
+.exp-cap__btn.is-open .exp-cap__arrow { transform: rotate(-90deg); }
+.exp-cap__menu {
+  position: absolute; left: 0; top: calc(100% + .06rem); z-index: 41;
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: .04rem;
+  width: 3.2rem; max-height: 3rem; overflow: auto; padding: .08rem;
+  background: rgba(10, 13, 12, .98); border: 1px solid var(--line-2);
+  box-shadow: 0 .1rem .3rem rgba(0, 0, 0, .6);
+}
+.exp-cap__menu button {
+  height: .3rem; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .35);
+  color: var(--text-md); font: inherit; font-size: calc(.14 * var(--t)); cursor: pointer;
+}
+.exp-cap__menu button:hover { background: rgba(78, 216, 175, .1); color: var(--text-hi); }
+.exp-cap__menu button.is-selected { background: rgba(78, 216, 175, .18); color: var(--mint-200); }
+.exp-pop__foot { display: flex; align-items: center; justify-content: space-between; gap: .12rem; padding-top: .1rem; border-top: 1px solid rgba(255, 255, 255, .08); }
+.exp-pop__foot .btn { min-width: 1.2rem; }
