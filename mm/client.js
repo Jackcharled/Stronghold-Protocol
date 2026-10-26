@@ -159,7 +159,8 @@ const JOIN_COOKIE = (() => {
     try {
       const u = new URL(location.href);
       const keepName = !(window.__SP__ && window.__SP__.store && window.__SP__.store.get().session.entered);
-      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'c', 'pmid', 'pcid', 'pd', 'mm', 'spectate'].forEach((k) => {
+      // boot/retry 是启动失败重试用的，成功进入后没有意义，留在地址栏只会难看
+      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'c', 'pmid', 'pcid', 'pd', 'mm', 'spectate', 'boot', 'retry'].forEach((k) => {
         if (k === 'name' && keepName) return;   // 还没进入大厅前保留名字，进房后再清
         u.searchParams.delete(k);
       });
@@ -375,6 +376,10 @@ const JOIN_COOKIE = (() => {
     // 隐身观战保留完整 URL：手机刷新后仍能重新进入 hidden spectator。
     if (ROOM && !ADMIN_WATCH) cleanUrl();
     else if (PIN_NODE && !IS_HOST && !ADMIN_WATCH) cleanUrl();
+    // 地址栏兜底清理：匹配/组队参数（?mm=1&mid=…&t=…&tk=…&d=…&c=…）本来要等建房成功才清，
+    // 但玩家没进入大厅（未登录 / 只是在看首页）时那条路径不会跑到，参数就一直挂在域名后面。
+    // 这些值已经读进常量了，立刻抹掉不影响后续流程。
+    else if (!ADMIN_WATCH && (IS_HOST || PMID || q.get('mm') === '1' || MID || TICKET)) cleanUrl();
 
     if (NAME && !store.get().session.entered) {
       try { store.set((s) => ({ ...s, me: { ...s.me, name: NAME }, session: { ...s.session, entered: true } })); } catch (e) { /* ignore */ }
