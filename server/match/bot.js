@@ -194,6 +194,11 @@ export function botPickBand(m, ps) {
   const ids = gd.bandIds();
   if (!ids.length) return gd.defaultBandId;
   const lateFunds = (id) => /暂存/.test(String(gd.band(id)?.desc || ''));
+  // 5–20 人房的「允许重复选择策略」(allowRepeat) 同样作用于 AI：
+  // 打开后 AI 不再软避让队友已选的盟约（SOFT_BAND_RESERVE 降到 1），
+  // 和玩家一样可以选到重复的策略 —— 这个开关控制的是整支队伍的选策略逻辑，不只是玩家。
+  // 关闭时保持原样（1/4 权重软预留，可被抽到但概率低）。
+  const reserve = m.allowRepeat === true ? 1 : SOFT_BAND_RESERVE;
   const reserved = new Set(ps && typeof m.alivePlayers === 'function'
     ? m.alivePlayers().filter((p) => p !== ps).flatMap((p) => gd.bandBondIds(p.bandId))
     : []);
@@ -201,7 +206,7 @@ export function botPickBand(m, ps) {
   const pairs = ids.map((id) => {
     if (inactive(id)) return [id, 0];
     const w = Math.max(1, (gd.startLp(id) - 18) ** 2) * (m.isSolo && lateFunds(id) ? 0.02 : 1);
-    return [id, gd.bandBondIds(id).some((b) => reserved.has(b)) ? w * SOFT_BAND_RESERVE : w];
+    return [id, gd.bandBondIds(id).some((b) => reserved.has(b)) ? w * reserve : w];
   });
   let total = 0;
   for (const [, w] of pairs) total += w;
