@@ -336,7 +336,7 @@ function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot,
 function SpectatorBar({ facts, myId, busy, onRemove, onSit }) {
   if (!facts.spectators.length) return null;
   return html`<section class="specbar" aria-label=${t('观战席')}>
-    <span class="specbar__label"><${Icon} name="eye" />${t('观战席')}<b class="num">${facts.spectators.length}</b><span class="num t-dim">/${MAX_SPECTATORS}</span></span>
+    <span class="specbar__label"><${Icon} name="eye" />${t('观战席')}<b class="num">${facts.spectators.length}</b><span class="num t-dim">/${facts.maxSpectators}</span></span>
     ${facts.spectators.map((s) => html`<span key=${s.playerId} class=${`specbar__who${s.playerId === myId ? ' is-me' : ''}${s.connected === false ? ' is-offline' : ''}`}>
       ${s.connected === false ? html`<${Icon} name="wifiOff" />` : null}${s.name || t('博士')}${s.playerId === myId ? html`<span class="seat__you">${t('你')}</span>` : null}
       ${facts.isHost ? html`<${Button} variant="ghost" size="sm" square=${true} icon="close" loading=${busy === `rs${s.playerId}`}
@@ -403,6 +403,16 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
   const [independent, setIndependent] = useState(false);
   const [noDuck, setNoDuck] = useState(false);
   const [repeat, setRepeat] = useState(false);
+  const wrapRef = useRef(null);
+  // 实验性弹窗是挂在 .rs-opts 里的 position: fixed 整屏遮罩，而 .rs-opts 带 translateX(-50%)，
+  // 会成为固定后代的包含块：弹窗于是相对那个小面板定位，被推到屏幕外，「应用」点不到。
+  // 打开时给 .rs-opts 加 .has-exp-modal（CSS 去掉它的 transform），关闭时移除。
+  useEffect(() => {
+    const opts = wrapRef.current?.closest('.rs-opts');
+    if (!opts) return undefined;
+    opts.classList.toggle('has-exp-modal', open);
+    return () => opts.classList.remove('has-exp-modal');
+  }, [open]);
   if (room?.mode === 'solo') return null;
   // The host alone may change the options regardless of account role; server-side
   // experimentalOpen() is the separate gate for whether the node allows these rooms.
@@ -434,16 +444,17 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
     setCapOpen(false);
     onApply(experimental);
   };
-  return html`<div class="exp-wrap">
+  return html`<div class="exp-wrap" ref=${wrapRef}>
     <${Tooltip} text=${t('调整同盟人数与特殊规则：队友复活、独立卡池、禁用鸭爵策略、允许重复选择策略')}>
       <button type="button" class=${`dpick__opt exp-btn${open ? ' is-active' : ''}`} disabled=${!!busy} onClick=${toggle}
         title=${t('实验性选项')} aria-haspopup="dialog" aria-expanded=${open ? 'true' : 'false'}>
         <${Icon} name="gear" class=${open ? 'is-on' : ''} />${t('实验性功能')}
       </button>
     <//>
-    ${open ? html`<div class="exp-backdrop" onClick=${() => setOpen(false)}></div>
-      <div class="exp-pop rs-opts" role="dialog" aria-label=${t('实验性选项')}>
+    ${open ? html`<div class="modal exp-modal" role="dialog" aria-modal="true" aria-label=${t('实验性选项')} onClick=${() => setOpen(false)}>
+      <div class="modal__box exp-modal__box" onClick=${(e) => e.stopPropagation()}>
       <h4>${t('实验性选项')}</h4>
+      <div class="exp-modal__body">
       <div class="rs-opts__row">
         <span class="rs-opts__k">${t('同盟人数')}</span>
         <div class="exp-cap">
@@ -461,38 +472,42 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
         </div>
         <span class="t-dim">${t('每队人数上限')}</span>
       </div>
+      <div class="exp-modal__switches">
       <${Tooltip} text=${t('被淘汰的博士可以在队友存活时复活')}>
         <button type="button" role="switch" aria-checked=${revival ? 'true' : 'false'} data-testid="exp-revival"
             class=${`dpick__opt ailast__opt${revival ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
-            onClick=${() => canEdit && setRevival(!revival)}>
+            onClick=${() => { setCapOpen(false); canEdit && setRevival(!revival); }}>
           <${Icon} name="check" class=${revival ? 'is-on' : ''} />${t('队友复活')}
         </button>
       <//>
       <${Tooltip} text=${t('每名博士使用自己的卡池，不与他人共享')}>
         <button type="button" role="switch" aria-checked=${independent ? 'true' : 'false'} data-testid="exp-independent"
             class=${`dpick__opt ailast__opt${independent ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
-            onClick=${() => canEdit && setIndependent(!independent)}>
+            onClick=${() => { setCapOpen(false); canEdit && setIndependent(!independent); }}>
           <${Icon} name="check" class=${independent ? 'is-on' : ''} />${t('独立卡池')}
         </button>
       <//>
       ${capacity > 4 ? html`<${Tooltip} text=${t('多人大厅里不出现鸭爵策略')}>
         <button type="button" role="switch" aria-checked=${noDuck ? 'true' : 'false'} data-testid="exp-no-duck"
             class=${`dpick__opt ailast__opt${noDuck ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
-            onClick=${() => canEdit && setNoDuck(!noDuck)}>
+            onClick=${() => { setCapOpen(false); canEdit && setNoDuck(!noDuck); }}>
           <${Icon} name="check" class=${noDuck ? 'is-on' : ''} />${t('禁用鸭爵策略')}
         </button>
       <//>` : null}
       ${capacity > 4 ? html`<${Tooltip} text=${t('允许同一队伍中重复出现同一种策略')}>
         <button type="button" role="switch" aria-checked=${repeat ? 'true' : 'false'} data-testid="exp-repeat"
             class=${`dpick__opt ailast__opt${repeat ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
-            onClick=${() => canEdit && setRepeat(!repeat)}>
+            onClick=${() => { setCapOpen(false); canEdit && setRepeat(!repeat); }}>
           <${Icon} name="check" class=${repeat ? 'is-on' : ''} />${t('允许重复选择策略')}
         </button>
       <//>` : null}
+      </div>
+      </div>
       ${canEdit ? html`<div class="exp-pop__foot">
         <span class="t-dim">${t('开局后不可更改')}</span>
         <${Button} variant="primary" size="sm" disabled=${!!busy} onClick=${apply}>${t('应用')}<//>
       </div>` : html`<div class="exp-pop__foot"><span class="t-dim">${t('由创建者设置')}</span></div>`}
+      </div>
     </div>` : null}
   </div>`;
 }
@@ -638,12 +653,20 @@ export function RoomScreen() {
     const timer = setInterval(load, 15000);
     return () => { stop = true; clearInterval(timer); };
   }, []);
-  const isAdminUser = (() => {
-    try {
-      const role = window.__SP_ACCOUNT_ROLE;
-      return !!role && role !== 'player';
-    } catch { return false; }
-  })();
+  // window.__SP_ACCOUNT_ROLE 由账号接口异步写入，可能晚于本组件首帧。
+  // 一次性读取会把「令牌还没到」误判成普通玩家，之后「开始模拟」永远置灰，
+  // 管理员在维护期间就没法自测。这里跟着变化刷新。
+  const [accountRole, setAccountRole] = useState(() => {
+    try { return window.__SP_ACCOUNT_ROLE || null; } catch { return null; }
+  });
+  useEffect(() => {
+    const sync = () => { try { setAccountRole(window.__SP_ACCOUNT_ROLE || null); } catch { /* ignore */ } };
+    sync();
+    window.addEventListener('sp:account-changed', sync);
+    const t = setInterval(sync, 2000);
+    return () => { window.removeEventListener('sp:account-changed', sync); clearInterval(t); };
+  }, []);
+  const isAdminUser = !!accountRole && accountRole !== 'player';
   const startLocked = !isAdminUser && !startGateOpen;
 
   if (!room) return null;

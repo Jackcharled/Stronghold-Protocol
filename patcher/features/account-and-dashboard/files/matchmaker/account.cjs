@@ -481,7 +481,12 @@ async function handle(req, res, pathname) {
   if (method === 'GET' && pathname === '/api/account/room') {
     const u = await currentUser(req);
     if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    // 主判据是账号 ID：昵称会重名、会改，用昵称匹配会把玩家送去别人的对局。
+    const uid = u.id != null ? String(u.id) : null;
+    // 兼容旧数据：早期座位没有 accountId，只能退回昵称匹配。
+    // 只在「该房间没有任何人带 accountId」时才用，避免抢到别人的房间。
     const names = new Set([u.nickname, u.name].filter(Boolean).map(String));
+    let nameFallback = null;
     try {
       const r = await fetch('http://127.0.0.1:3080/api/status', { cache: 'no-store' });
       if (r.ok) {
@@ -491,13 +496,23 @@ async function handle(req, res, pathname) {
             // Only a live player match can be restored. A finished match's room may still
             // exist with its players in the lobby, and spectators are never restorable.
             if (room.started !== true) continue;
-            if ((room.players || []).some((p) => p && names.has(String(p.name)))) {
-              return sendJson(res, 200, { ok: true, room: { code: room.code, node: Number(n.n) || null } });
+            const players = (room.players || []).filter(Boolean);
+            // 1) 账号 ID 精确命中：这是唯一可信的判据
+            if (uid && players.some((p) => p && p.accountId != null && String(p.accountId) === uid)) {
+              return sendJson(res, 200, { ok: true, room: { code: room.code, node: Number(n.n) || null }, by: 'account' });
+            }
+            // 2) 昵称兜底：只在该房间所有座位都没有 accountId（纯旧数据）时记录，稍后再决定
+            if (!nameFallback) {
+              const anyHasAccount = players.some((p) => p && p.accountId != null);
+              if (!anyHasAccount && players.some((p) => p && names.has(String(p.name)))) {
+                nameFallback = { code: room.code, node: Number(n.n) || null };
+              }
             }
           }
         }
       }
     } catch { /* fall through: no room */ }
+    if (nameFallback) return sendJson(res, 200, { ok: true, room: nameFallback, by: 'name-legacy' });
     return sendJson(res, 200, { ok: true, room: null });
   }
 

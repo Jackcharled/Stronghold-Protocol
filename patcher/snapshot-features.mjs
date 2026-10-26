@@ -1,11 +1,28 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = 'D:/Stronghold-Protocol';
+// 路径全部相对本脚本推导，不再硬编码 D:\Stronghold-Protocol。
+// 原因：Git 仓库在 D:\Stronghold-Protocol\repo-sync，而线上运行目录是
+// D:\Stronghold-Protocol\node-1。以前 OUT 写死在 <root>/patcher/features，
+// 于是快照总是落在「不在仓库里」的那份目录，仓库里那份会越来越旧
+// （实测出现过 232 vs 207 两份、缺 client-emote-danmaku 整个功能）。
+//
+//   SP_RUNTIME  线上运行目录（读 node-1 的源码）     默认 <root>
+//   SP_REPO     仓库工作区（写 patcher/features）     默认 <root>/repo-sync
+//
+// 从仓库里的 patcher/snapshot-features.mjs 运行时，__dirname 是 repo-sync/patcher，
+// 于是 REPO 自动等于 repo-sync，RUNTIME 自动等于上一层的 D:\Stronghold-Protocol。
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO = process.env.SP_REPO || path.dirname(HERE);
+const RUNTIME = process.env.SP_RUNTIME
+  || (path.basename(REPO) === 'repo-sync' ? path.dirname(REPO) : REPO);
+
+const ROOT = RUNTIME;
 const SRC = `${ROOT}/node-1`;
-const BASE = `${ROOT}/_ref-ann1/Stronghold-Protocol-master`;
-const FEATURES = `${ROOT}/patcher/features.json`;
-const OUT = `${ROOT}/patcher/features`;
+const BASE = process.env.SP_BASE_REF || `${ROOT}/_ref-ann1/Stronghold-Protocol-master`;
+const FEATURES = `${REPO}/patcher/features.json`;
+const OUT = `${REPO}/patcher/features`;
 
 const skipDir = new Set(['node_modules', 'logs', 'state', '.cache', 'bundles', '.git']);
 const skipRel = /^(public\/assets|data\/runtime)\//;

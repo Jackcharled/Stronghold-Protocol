@@ -7,12 +7,12 @@
       {
         "path": "server/lobby.js",
         "baseExists": true,
-        "customBytes": 135908
+        "customBytes": 180311
       },
       {
         "path": "server/http/config.js",
         "baseExists": true,
-        "customBytes": 6557
+        "customBytes": 14232
       }
     ]
   },
@@ -24,7 +24,22 @@
       {
         "path": "server/lobby.js",
         "baseExists": true,
-        "customBytes": 135908
+        "customBytes": 180311
+      },
+      {
+        "path": "server/match/aiDigest.js",
+        "baseExists": false,
+        "customBytes": 9456
+      },
+      {
+        "path": "server/match/aiEconomy.js",
+        "baseExists": false,
+        "customBytes": 4180
+      },
+      {
+        "path": "server/match/aiPlan.js",
+        "baseExists": false,
+        "customBytes": 4977
       },
       {
         "path": "server/match/audit.js",
@@ -44,7 +59,12 @@
       {
         "path": "server/match/bot.js",
         "baseExists": true,
-        "customBytes": 107828
+        "customBytes": 144451
+      },
+      {
+        "path": "server/match/botAdaptive.js",
+        "baseExists": false,
+        "customBytes": 1025
       },
       {
         "path": "server/match/botEmotes.js",
@@ -52,9 +72,39 @@
         "customBytes": 3450
       },
       {
+        "path": "server/match/botFormationCandidates.js",
+        "baseExists": false,
+        "customBytes": 4580
+      },
+      {
+        "path": "server/match/botIoleta.js",
+        "baseExists": false,
+        "customBytes": 1710
+      },
+      {
+        "path": "server/match/botIoletaPolicy.js",
+        "baseExists": false,
+        "customBytes": 13143
+      },
+      {
+        "path": "server/match/botPrep.js",
+        "baseExists": false,
+        "customBytes": 2909
+      },
+      {
+        "path": "server/match/botStrategies.js",
+        "baseExists": false,
+        "customBytes": 1660
+      },
+      {
+        "path": "server/match/botStrategyContract.js",
+        "baseExists": false,
+        "customBytes": 3083
+      },
+      {
         "path": "server/match/builtinMeta.js",
         "baseExists": true,
-        "customBytes": 20201
+        "customBytes": 21667
       },
       {
         "path": "server/match/choices.js",
@@ -69,7 +119,17 @@
       {
         "path": "server/match/effectsMeta.js",
         "baseExists": true,
-        "customBytes": 42434
+        "customBytes": 43033
+      },
+      {
+        "path": "server/match/externalAI.js",
+        "baseExists": false,
+        "customBytes": 14758
+      },
+      {
+        "path": "server/match/externalConfig.js",
+        "baseExists": false,
+        "customBytes": 3359
       },
       {
         "path": "server/match/fields.js",
@@ -79,7 +139,7 @@
       {
         "path": "server/match/finalAssault.js",
         "baseExists": true,
-        "customBytes": 10193
+        "customBytes": 10569
       },
       {
         "path": "server/match/gamedata.js",
@@ -92,9 +152,19 @@
         "customBytes": 16245
       },
       {
+        "path": "server/match/llmGate.js",
+        "baseExists": false,
+        "customBytes": 3498
+      },
+      {
+        "path": "server/match/llmRelease.js",
+        "baseExists": false,
+        "customBytes": 2975
+      },
+      {
         "path": "server/match/Match.js",
         "baseExists": true,
-        "customBytes": 47669
+        "customBytes": 50097
       },
       {
         "path": "server/match/operatorTraits.js",
@@ -114,12 +184,12 @@
       {
         "path": "server/match/preview.js",
         "baseExists": true,
-        "customBytes": 3289
+        "customBytes": 3302
       },
       {
         "path": "server/match/results.js",
         "baseExists": true,
-        "customBytes": 8155
+        "customBytes": 8773
       },
       {
         "path": "server/match/scheduler.js",
@@ -139,12 +209,12 @@
       {
         "path": "server/match/testReplay.js",
         "baseExists": true,
-        "customBytes": 3127
+        "customBytes": 4191
       },
       {
         "path": "server/match/testTrace.js",
         "baseExists": true,
-        "customBytes": 6173
+        "customBytes": 6316
       },
       {
         "path": "server/match/unite.js",
@@ -166,7 +236,7 @@
       {
         "path": "matchmaker/account.cjs",
         "baseExists": false,
-        "customBytes": 82341
+        "customBytes": 83429
       },
       {
         "path": "matchmaker/package-lock.json",
@@ -181,17 +251,17 @@
       {
         "path": "matchmaker/public/account-title.js",
         "baseExists": false,
-        "customBytes": 40945
+        "customBytes": 41975
       },
       {
         "path": "matchmaker/public/admin.html",
         "baseExists": false,
-        "customBytes": 63960
+        "customBytes": 65009
       },
       {
         "path": "matchmaker/public/client.js",
         "baseExists": false,
-        "customBytes": 137317
+        "customBytes": 183568
       },
       {
         "path": "matchmaker/public/index.html",
@@ -221,7 +291,7 @@
       {
         "path": "matchmaker/server.js",
         "baseExists": false,
-        "customBytes": 38081
+        "customBytes": 41190
       },
       {
         "path": "mm/client.js",
@@ -231,7 +301,7 @@
       {
         "path": "server/lobby.js",
         "baseExists": true,
-        "customBytes": 135908
+        "customBytes": 180311
       }
     ]
   },
@@ -243,7 +313,7 @@
       {
         "path": "server/lobby.js",
         "baseExists": true,
-        "customBytes": 135908
+        "customBytes": 180311
       },
       {
         "path": "shared/playerCapacity.js",
@@ -258,19 +328,29 @@
       {
         "path": "shared/protocol.js",
         "baseExists": true,
-        "customBytes": 48124
+        "customBytes": 51821
+      },
+      {
+        "path": "public/css/screens/room.css",
+        "baseExists": true,
+        "customBytes": 56609
+      },
+      {
+        "path": "public/js/screens/room.js",
+        "baseExists": true,
+        "customBytes": 66942
       }
     ]
   },
   {
     "id": "client-announcement",
-    "name": "公告自动弹出与未读黄点",
-    "status": "pending-port",
+    "name": "公告弹窗 + 官方Q群入口（标题/大厅/同盟房间）",
+    "status": "ported-main",
     "files": [
       {
         "path": "matchmaker/public/client.js",
         "baseExists": false,
-        "customBytes": 137317
+        "customBytes": 183568
       },
       {
         "path": "mm/client.js",
@@ -287,7 +367,7 @@
       {
         "path": "public/js/main.js",
         "baseExists": true,
-        "customBytes": 32140
+        "customBytes": 34948
       },
       {
         "path": "public/js/ui/buildGuard.js",
@@ -304,12 +384,12 @@
       {
         "path": "public/js/screens/lobby.js",
         "baseExists": true,
-        "customBytes": 25619
+        "customBytes": 55762
       },
       {
         "path": "server/lobby.js",
         "baseExists": true,
-        "customBytes": 135908
+        "customBytes": 180311
       }
     ]
   },
@@ -321,12 +401,44 @@
       {
         "path": "public/js/screens/room.js",
         "baseExists": true,
-        "customBytes": 33444
+        "customBytes": 66942
+      },
+      {
+        "path": "public/js/screens/game.js",
+        "baseExists": true,
+        "customBytes": 136703
       },
       {
         "path": "server/lobby.js",
         "baseExists": true,
-        "customBytes": 135908
+        "customBytes": 180311
+      }
+    ]
+  },
+  {
+    "id": "client-emote-danmaku",
+    "name": "表情弹幕（5–20 人房 / 手机 / 花名册折起时）",
+    "status": "ported-ui",
+    "files": [
+      {
+        "path": "public/js/ui/danmaku.js",
+        "baseExists": true,
+        "customBytes": 7040
+      },
+      {
+        "path": "public/js/ui/teamLayout.js",
+        "baseExists": true,
+        "customBytes": 3881
+      },
+      {
+        "path": "public/js/ui/teamPanel.js",
+        "baseExists": true,
+        "customBytes": 16991
+      },
+      {
+        "path": "public/js/screens/game.js",
+        "baseExists": true,
+        "customBytes": 136703
       }
     ]
   },
@@ -338,7 +450,7 @@
       {
         "path": "public/js/assetCache.js",
         "baseExists": true,
-        "customBytes": 11588
+        "customBytes": 12330
       },
       {
         "path": "public/js/assetPack.js",
@@ -365,12 +477,12 @@
       {
         "path": "public/js/ui/shopBar.js",
         "baseExists": true,
-        "customBytes": 30742
+        "customBytes": 30757
       },
       {
         "path": "server/match/player/views.js",
         "baseExists": true,
-        "customBytes": 8189
+        "customBytes": 8289
       },
       {
         "path": "public/js/render/app/host.js",
@@ -385,7 +497,7 @@
       {
         "path": "public/js/render/units.js",
         "baseExists": true,
-        "customBytes": 151928
+        "customBytes": 166908
       }
     ]
   },
@@ -397,7 +509,7 @@
       {
         "path": "matchmaker/account.cjs",
         "baseExists": false,
-        "customBytes": 82341
+        "customBytes": 83429
       },
       {
         "path": "dashboard/announce.png",
@@ -557,12 +669,12 @@
       {
         "path": "dashboard/public/app.js",
         "baseExists": false,
-        "customBytes": 36071
+        "customBytes": 37092
       },
       {
         "path": "dashboard/public/index.html",
         "baseExists": false,
-        "customBytes": 21749
+        "customBytes": 22051
       },
       {
         "path": "dashboard/public/style.css",
@@ -622,7 +734,7 @@
       {
         "path": "public/js/ui/accountObserver.js",
         "baseExists": false,
-        "customBytes": 11120
+        "customBytes": 15387
       }
     ]
   },
@@ -659,7 +771,7 @@
       {
         "path": "nginx/conf/nginx.conf",
         "baseExists": false,
-        "customBytes": 13306
+        "customBytes": 14655
       },
       {
         "path": "nginx/conf/nginx.conf.bak-before-node4-test",
@@ -819,7 +931,7 @@
       {
         "path": "ecosystem.config.cjs",
         "baseExists": false,
-        "customBytes": 4816
+        "customBytes": 5229
       },
       {
         "path": "start-all.bat",
@@ -834,7 +946,24 @@
       {
         "path": "deploy/server-watchdog.ps1",
         "baseExists": false,
-        "customBytes": 2001
+        "customBytes": 3057
+      }
+    ]
+  },
+  {
+    "id": "client-skin-io",
+    "name": "皮肤设置导入/导出",
+    "status": "ported-main",
+    "files": [
+      {
+        "path": "public/js/ui/skinIO.js",
+        "baseExists": false,
+        "customBytes": 4878
+      },
+      {
+        "path": "public/js/screens/loadout.js",
+        "baseExists": true,
+        "customBytes": 85945
       }
     ]
   }

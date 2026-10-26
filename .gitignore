@@ -100,3 +100,6 @@ patcher/features/*/**/ssl/
 patcher/features/*/**/deploy/
 patcher/features/*/**/*.ps1
 patcher/features/*/**/*.bat
+
+# patcher/merge-features.py 的合并输出（每次重新生成，不入库）
+staging/

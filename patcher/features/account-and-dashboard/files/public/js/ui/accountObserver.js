@@ -178,7 +178,38 @@ export function installAccountObserver() {
   net.on('status', (snap) => {
     if (snap && snap.status === 'online') { log('status-online'); setTimeout(tryAuto, 500); maybeAutoResumeOnReload(); }
   });
-  window.addEventListener('sp-account-token', () => { log('token-event'); setTimeout(tryAuto, 800); maybeAutoResumeOnReload(); });
+  // 账号令牌（含管理员/服主角色）通常晚于 WebSocket 就绪到达。首帧 hello 里
+  // 没有令牌时，服务端的 session.admin 会一直是 false：管理员建房就不再有
+  // 「不自动销毁」，维护开关也会把管理员一起拦住。所以令牌一到就重新握手，
+  // 把身份补给服务端（服务端接受同一连接上的重复 hello 并重新同步）。
+  // 重要：只在「身份材料真的变了」时重发 hello。
+  // account-title.js 的 render() 会反复派发 sp:account-changed，而每次 hello 都会让服务端回一个
+  // welcome，welcome 又会触发所有设置（调配/持有/自选/名片/皮肤）重发一遍 —— 结果是界面没改任何东西
+  // 也在持续上传。这里用签名去重：令牌 + 角色都没变化就跳过。
+  let lastHandshakeSig = null;
+  const rehandshakeForAccount = (force = false) => {
+    let tok = '';
+    let role = '';
+    try {
+      tok = typeof window.__SP_ACCOUNT_TOKEN === 'string' ? window.__SP_ACCOUNT_TOKEN : '';
+      role = window.__SP_ACCOUNT_ROLE || '';
+      const adm = typeof window.__SP_ADMIN_TOKEN === 'string' ? window.__SP_ADMIN_TOKEN : '';
+      const sig = `${role}|${tok ? tok.length + ':' + tok.slice(-16) : ''}|${adm ? adm.length : 0}`;
+      if (!force && sig === lastHandshakeSig) return;   // 身份没变：不重发
+      lastHandshakeSig = sig;
+    } catch { /* 隐私模式：照常发一次 */ }
+    try {
+      const sent = net.rehandshake();
+      log('rehandshake', { sent, role: role || null });
+    } catch { /* ignore */ }
+  };
+  window.addEventListener('sp-account-token', () => { log('token-event'); rehandshakeForAccount(); setTimeout(tryAuto, 800); maybeAutoResumeOnReload(); });
+  // 角色变量可能比令牌事件更晚写（account-title.js 在 render() 里才赋值）。
+  // 监听派发事件 + 首帧后再补两次，覆盖「令牌早到、角色晚到」和「令牌晚到」两种顺序。
+  // 这三次都可能因签名相同而被跳过，只有真正拿到新身份才会握手。
+  window.addEventListener('sp:account-changed', () => rehandshakeForAccount());
+  setTimeout(() => rehandshakeForAccount(), 1000);
+  setTimeout(() => rehandshakeForAccount(), 3000);
   // The status/welcome events can fire before this listener when the page is restored from bfcache;
   // a couple of delayed attempts make the target page deterministic.
   if (autoResume) { setTimeout(tryAuto, 1200); setTimeout(tryAuto, 3500); }
@@ -193,11 +224,40 @@ export function installAccountObserver() {
     } catch { return false; }
   })();
   let bootProbe = false;
+  // 换网络 / 换设备打开页面时，浏览器这次导航并不是 reload（是普通导航），
+  // 之前这里用 `!reloadNav` 直接 return，导致「切网络后没有回到对局」。
+  // 现在：刷新、普通打开（输网址/点书签/换设备）都要探测一次账号所在的对局；
+  // 只有「浏览器前进/后退」不探测，免得从对局退出来按后退又被弹回去。
+  // 防循环仍靠下面的三道闸 + accountRoomCode 只认 started===true 的房间。
+  const isHistoryNav = (() => {
+    try {
+      const nav = performance.getEntriesByType?.('navigation')?.[0];
+      if (nav) return nav.type === 'back_forward';
+      return performance.navigation?.type === 2;
+    } catch { return false; }
+  })();
   async function maybeAutoResumeOnReload() {
-    if (autoResume || bootProbe || !reloadNav || !window.__SP_ACCOUNT_TOKEN) return;
+    if (autoResume || bootProbe || isHistoryNav || !window.__SP_ACCOUNT_TOKEN) return;
     if (watchExitRecent()) { clearResumeFlags(); return; }
     try { if (new URLSearchParams(location.search).get('adminWatch') === '1') return; } catch { /* ignore */ }
     bootProbe = true;
+    // 防循环：这个函数会把人送回对局。如果玩家是从对局里主动退出、
+    // 而账号查询仍然命中那个未清理的房间，就会「退出 → 刷新 → 又被送回 → 再退出」无限循环。
+    // 因此加三道闸：
+    //   1) 短时间内已经跳转过一次，就不再跳（沿用 tryAuto 的 sp.accountResumeHopAt 时间戳）；
+    //   2) 玩家刚主动离开对局（sp.matchExitAt），一段时间内一律不自动恢复；
+    //   3) 玩家刚在对局里点过「离开」，sp.matchExitAt 在 sessionStorage 里跨标签页不同步，
+    //      所以再用 localStorage 里的一份做兜底（见 markMatchExit 的写入端）。
+    try {
+      const lastHop = Number(sessionStorage.getItem(RESUME_HOP_KEY) || 0);
+      if (lastHop && Date.now() - lastHop < 60000) return;      // 60 秒内只跳一次
+    } catch { /* ignore */ }
+    try {
+      const exitAt = Number(sessionStorage.getItem('sp.matchExitAt') || 0);
+      if (exitAt && Date.now() - exitAt < 120000) return;        // 主动退出后 2 分钟内不自动回房
+      const exitAtShared = Number(localStorage.getItem('sp.matchExitAtShared') || 0);
+      if (exitAtShared && Date.now() - exitAtShared < 120000) return;
+    } catch { /* ignore */ }
     const code = await accountRoomCode();
     if (!code) return;
     let current = '';
@@ -213,6 +273,7 @@ export function installAccountObserver() {
       tryAuto();
       return;
     }
+    try { sessionStorage.setItem(RESUME_HOP_KEY, String(Date.now())); } catch { /* ignore */ }
     try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
     try { sessionStorage.setItem('sp.accountResumeSilent', '1'); } catch { /* ignore */ }
     location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');

@@ -446,6 +446,15 @@
     window.__SP_ACCOUNT_USER = state.user ? state.user.name : null;
     window.__SP_ACCOUNT_TAG = state.user && state.user.tag ? String(state.user.tag) : null;
     window.__SP_ACCOUNT_ROLE = state.user && state.user.role ? String(state.user.role) : null;
+    // 角色是判定「管理员 / 服主」的唯一前端依据（房间免销毁、维护开关放行都用它）。
+    // 它可能比 sp-account-token 更晚写入，所以单独派发一次，让游戏侧重握手补身份。
+    // render() 会被反复调用，只在角色真的变化时派发，避免触发无意义的重复握手。
+    try {
+      if (window.__SP_LAST_DISPATCHED_ROLE !== window.__SP_ACCOUNT_ROLE) {
+        window.__SP_LAST_DISPATCHED_ROLE = window.__SP_ACCOUNT_ROLE;
+        window.dispatchEvent(new Event('sp:account-changed'));
+      }
+    } catch { /* ignore */ }
     ensureSyncHint();
     renderSyncHint();
     try {
@@ -563,6 +572,11 @@
     stats: 'sp.pref.stats',
     annSeen: 'mm.annDismissed',
     identity: 'sp.name',
+    // 名片干员（ui/seatArt.js 的 CARD_PREF 'room.card'）：玩家选的那张立绘。
+    // 以前不在云同步里，只存在浏览器本地 —— 换设备/清缓存就丢，玩家反馈要保存在账号里。
+    // 注意：store.js 的 loadPref/savePref 会自动加 'sp.pref.' 前缀，
+    // 所以真实的 localStorage 键是 'sp.pref.room.card'，这里必须写全名。
+    card: 'sp.pref.room.card',
   };
   const KEY_DOMAIN = Object.fromEntries(Object.entries(PREF_MAP).map(([d, k]) => [k, d]));
   const prefVersions = {};

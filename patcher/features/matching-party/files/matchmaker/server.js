@@ -423,11 +423,16 @@ async function roomInfo(code, node) {
       .filter((s) => s && !s.isBot)
       .map((s, i) => ({
         name: String(s.name || ''),
+        // 账号 ID：恢复对局按「账号」而不是「昵称」精确匹配（昵称可以重名、可以改，
+        // 用昵称匹配会把玩家送去别人的对局）。guest 座位的 accountId 为 null。
+        accountId: s.accountId ? String(s.accountId) : null,
         seat: Number.isInteger(s.seat) ? s.seat + 1 : i + 1,
         ready: !!s.ready,
         connected: s.connected !== false,
         host: !!doc.hostId && doc.hostId === s.playerId,
         guest: !s.accountId,
+        // 管理员/服主：控制台把标签显示成「管理员」而不是「玩家」（仅展示用）
+        admin: s.admin === true,
       }));
     const spectatorPlayers = (Array.isArray(doc.spectators) ? doc.spectators : [])
       .filter((s) => s && typeof s === 'object')
@@ -802,6 +807,26 @@ const roomDir = new Map(); // node -> { codes: string[], at: number }
           parties: queuedParties.length,
           partyWaiting: queuedParties.reduce((n, p) => n + p.size, 0),
           matches: [...matches.values()].filter((m) => m.difficulty === difficulty).length,
+          // 本服：按游戏版本细分（匹配已按版本隔离，后台/控制台要能看出来）
+          byVersion: (() => {
+            const vers = [...new Set([
+              ...[...queued].map((t) => normVersion(t.version)),
+              ...[...queuedParties].map((p) => normVersion(p.version)),
+              ...[...matches.values()].filter((m) => m.difficulty === difficulty).map((m) => normVersion(m.version)),
+            ])];
+            vers.sort();
+            return vers.map((v) => {
+              const q = queued.filter((t) => normVersion(t.version) === v);
+              const qp = queuedParties.filter((p) => normVersion(p.version) === v);
+              return {
+                version: v,
+                waiting: q.length,
+                parties: qp.length,
+                partyWaiting: qp.reduce((n, p) => n + p.size, 0),
+                matches: [...matches.values()].filter((m) => m.difficulty === difficulty && normVersion(m.version) === v).length,
+              };
+            });
+          })(),
           byCapacity: capacities.map((capacity) => ({
             capacity,
             waiting: queued.filter((t) => t.capacity === capacity).length,
