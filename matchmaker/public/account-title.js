@@ -741,17 +741,12 @@
       }
     }, true);
 
-    // 旧缓存自检：若拿到的大厅脚本还是旧版（不含 accountTag），强制刷新一次
-    try {
-      const probe = await fetch('/js/screens/lobby.js', { cache: 'no-store' });
-      const txt = await probe.text();
-      if (!txt.includes('accountTag') && !sessionStorage.getItem('mm.reload1')) {
-        sessionStorage.setItem('mm.reload1', '1');
-        location.reload();
-        return;
-      }
-      sessionStorage.removeItem('mm.reload1');
-    } catch { /* 忽略 */ }
+    // 旧缓存自检已移除（2026-10-26）：它检查 /js/screens/lobby.js 里是否含 'accountTag'，
+    // 但整个项目从来没有写入过这个标记，于是**每次进入页面都判定「脚本是旧版」并强制
+    // location.reload() 一次**。后果不只是多刷一次：
+    //   第 1 次加载读走 sessionStorage 里的 mm.pendingRoom（跨节点加入/观战的目标房间）并删除，
+    //   第 2 次加载读不到它 —— 玩家在「加入同盟 / 观战」跨节点后必须再输一次房间号。
+    // 页面本身已有 buildGuard 负责「服务端换版后刷新」，不需要这层失效的自检。
 
     try {
       const r = await api('/api/auth/me');
