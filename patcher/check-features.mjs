@@ -125,6 +125,19 @@ const CHECKS = [
     ],
   },
   {
+    id: 'client-unite-real-seconds',
+    name: '联防时间提示统一用真实秒',
+    rules: [
+      // 以前 HUD 写「联防时间：75 秒（150 游戏秒）」、跑马灯写「本段 150 游戏秒」，
+      // 两个数摆在一起互相矛盾（其实 150 游戏秒 ÷ 2 倍速 = 75 真实秒）。
+      ['server/match/match/unitePhase.js', /_uniteRealSecs\(plan\.timeLimit\)/, '★ 跑马灯用换算后的秒数'],
+      ['server/match/match/unitePhase.js', /gameSeconds \/ speed/, '★ 换算按 gameSpeed'],
+      // 玩家可见文案里不应再出现「游戏秒」这个内部单位
+      ['public/js/ui/hud.js', /t\('联防时间：\{n\} 秒'/, '★ HUD 不再带「游戏秒」后缀'],
+      ['public/js/ui/hud.js', /t\('联防第 \{round\}\/2 段：\{n\} 秒'/, '★ HUD 分段文案同理'],
+    ],
+  },
+  {
     id: 'client-mobile-quality',
     name: '手机「画面质量」真正生效',
     rules: [

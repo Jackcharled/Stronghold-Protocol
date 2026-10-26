@@ -28,7 +28,7 @@ export class MatchUnite {
     this._defaultWatch();
     this.markPublic();
     this.tickerText(msg('联防阶段：{names} 迎战突破防线的敌人{extra}', { names: plan.helpers.map((p) => p.name).join('、'),
-      extra: plan.totalBudget ? `（本段 ${plan.timeLimit} 游戏秒）` : '' }), FLOW_TICKER_PRIORITY);
+      extra: plan.totalBudget ? `（本段 ${this._uniteRealSecs(plan.timeLimit)} 秒）` : '' }), FLOW_TICKER_PRIORITY);
     onStartUnite(this, plan); // an AI helper says "合作愉快" once on the open of a 联防 (enabled by default; SP_BOT_EMOTES=0 silences it)
     this._uniteLeftKey = null;
     this.runner = new FieldRunner(this, this.fields, {
@@ -39,6 +39,15 @@ export class MatchUnite {
       },
     });
     this.runner.start();
+  }
+
+  /**
+   * 内部预算是「游戏秒」，但玩家看到的提示一律用**真实秒**（gameSpeed 2 倍速下 300 游戏秒 = 150 秒）。
+   * 以前跑马灯写「本段 300 游戏秒」、HUD 写「联防时间：150 秒」，两个数看着互相矛盾。
+   */
+  _uniteRealSecs(gameSeconds) {
+    const speed = Number.isFinite(this.gameSpeed) && this.gameSpeed > 0 ? this.gameSpeed : 1;
+    return Math.round((gameSeconds / speed) * 100) / 100;
   }
 
   /** Expanded rooms get a 300-game-second budget; a viable relay splits it into 150 + 150. */
@@ -160,7 +169,7 @@ export class MatchUnite {
     }
     this.markPublic();
     this.tickerText(msg('联防阶段：{names} 迎战突破防线的敌人{extra}', { names: plan.helpers.map((p) => p.name).join('、'),
-      extra: plan.totalBudget ? `（本段 ${plan.timeLimit} 游戏秒）` : '' }), FLOW_TICKER_PRIORITY);
+      extra: plan.totalBudget ? `（本段 ${this._uniteRealSecs(plan.timeLimit)} 秒）` : '' }), FLOW_TICKER_PRIORITY);
   }
 
   _finishUniteClient() {

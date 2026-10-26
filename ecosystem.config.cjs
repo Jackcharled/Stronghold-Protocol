@@ -104,7 +104,7 @@ const matchmaker = {
   env: {
     MM_PORT: '3090',
     MM_HOST: '127.0.0.1',
-    MM_DISABLED_NODES: '10,11,12,13,16,18,19,20,23,28,29',
+    MM_DISABLED_NODES: '1,3,9,10,11,12,13,14,16,18,19,20,23,28,29',
   },
   autorestart: true,
   max_restarts: 20,
