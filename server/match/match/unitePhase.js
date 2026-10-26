@@ -58,8 +58,8 @@ export class MatchUnite {
       // 判断「有没有可能接力」时看 plan.relayCandidates，**不能**用 uniteRelayHelpers()：
       // 后者依赖 m.lastResults（上一轮每个人的战果），而这里是在**本段开始之前**分配预算的，
       // 那时 lastResults 还没更新，于是它恒返回 []，8 人房也永远拿不到 150+150 的分段。
-      // relayCandidates 已经由 planUnite() 按本轮 results 筛过（≥8 人 + 未被选为 helper + 完美），
-      // 正是「有没有富余的完美玩家可以再来一波」的正确判据。
+      // relayCandidates 已经由 planUnite() 按本轮 results 筛过（完美玩家 ≥ maxHelpers+1，
+      // 即第一波之后至少还剩 1 个人能顶上），正是「有没有富余的完美玩家可以再来一波」的正确判据。
       const relayPossible = plan.uniteRound === 1
         && Array.isArray(plan.relayCandidates) && plan.relayCandidates.length > 0;
       this._uniteBudget = {
