@@ -361,8 +361,11 @@ const JOIN_COOKIE = (() => {
           }
         } catch { /* ignore */ }
       } else if (IS_HOST && MID && TICKET && SECRET && DIFF) hostFlow(sp);
-      else if (JOIN_COOKIE) resolveRoomNode(JOIN_COOKIE, () => joinFlow(sp, JOIN_COOKIE, false));
+      // 手输密钥/点「加入同盟」跨节点跳转时，目标房间记在 mm.pendingRoom 里。
+      // 它必须**排在 JOIN_COOKIE 之前**：刷新后 sp_join 里可能还留着上一次的邀请码，
+      // 若先走 JOIN_COOKIE 就会去解析旧码（甚至再跳一次节点），玩家就得多输一次密钥。
       else if (PENDING_JOIN) joinFlow(sp, PENDING_JOIN.code, PENDING_JOIN.spectate);
+      else if (JOIN_COOKIE) resolveRoomNode(JOIN_COOKIE, () => joinFlow(sp, JOIN_COOKIE, false));
       else if (ROOM && ROOM_PINNED) joinFlow(sp, ROOM, SPECTATE);
       else if (ROOM) resolveRoomNode(ROOM, () => joinFlow(sp, ROOM, SPECTATE));
       roomUi(sp);
@@ -373,7 +376,6 @@ const JOIN_COOKIE = (() => {
     installNodeBadge();
     installAdminEntry();
     /* @sp-strip-icp:start */
-    installIcpBadge();
     /* @sp-strip-icp:end */
   installQQGroup();
   setInterval(cleanTopExtras, 1200);
@@ -1653,75 +1655,6 @@ const JOIN_COOKIE = (() => {
 
 
   /* @sp-strip-icp:start */
-  // ---------------------------------------------------------------- ICP 备案号（页脚）
-
-  function installIcpBadge() {
-    const ICP = '鲁ICP备2026010707号-1';
-    let busy = false;
-
-    const findLeaf = () => {
-      let best = null;
-      for (const el of document.querySelectorAll('div,span,p')) {
-        if (el.childElementCount !== 0) continue;
-        const txt = (el.textContent || '').trim();
-        if (!/非官方同人/.test(txt)) continue;
-        if (txt.length > 80) continue;
-        if (!best || txt.length < best.txt.length) best = { el, txt };
-      }
-      return best;
-    };
-
-    const apply = () => {
-      if (busy) return;
-      const leaf = findLeaf();
-      if (!leaf) return;
-      busy = true;
-      try {
-        const { el, txt } = leaf;
-        // 原地定位，不搬动元素，字体继承关系保持不变
-        el.style.position = 'fixed';
-        el.style.left = '50%';
-        el.style.bottom = '22px';
-        el.style.transform = 'translateX(-50%)';
-        el.style.zIndex = '60';
-        el.style.whiteSpace = 'nowrap';
-        el.style.textAlign = 'center';
-        el.style.pointerEvents = 'auto';
-        // mm-align-right：与右下角「项目仓库」那一行保持同一水平高度
-        try {
-          const rightEl = [...document.querySelectorAll('div,span,p')]
-            .find((n) => n.childElementCount === 0 && /WEB SIMULATION/i.test((n.textContent || '').trim()));
-          if (rightEl) {
-            const r = rightEl.getBoundingClientRect();
-            const myH = el.getBoundingClientRect().height || 16;
-            const bottom = Math.max(6, Math.round(window.innerHeight - (r.top + r.height / 2) - myH / 2));
-            el.style.bottom = bottom + 'px';
-          }
-        } catch { /* ignore */ }
-        if (!el.querySelector('.mm-icp')) {
-          const a = document.createElement('a');
-          a.className = 'mm-icp';
-          a.href = 'https://beian.miit.gov.cn/';
-          a.target = '_blank';
-          a.rel = 'noreferrer noopener';
-          a.textContent = ICP;
-          a.style.cssText = 'color:inherit;text-decoration:none';
-          el.textContent = '· ' + txt;
-          el.insertBefore(a, el.firstChild);
-        }
-      } finally { busy = false; }
-    };
-
-    apply();
-    try { new MutationObserver(apply).observe(document.body, { childList: true, subtree: true }); } catch { /* ignore */ }
-  }
-  /* @sp-strip-icp:end */
-
-
-
-
-
-
   // ---------------------------------------------------------------- 官方 QQ 群（右上角）
 
   // 顶部按钮助手：克隆「统计」按钮的样式与图标位，替换图标路径与文字
@@ -3415,7 +3348,11 @@ const JOIN_COOKIE = (() => {
       if (adminWatchActive() || watchExitRecent()) { joined = true; return; }
       const s = store.get();
       if (joined || inFlight || !s.session.entered || net.status !== 'online') return;
-      if (s.room) { joined = true; return; }
+      // 已经在**目标房间**里才算加入完成。以前这里只判 `if (s.room)`：
+      // 玩家手输密钥 → 跨节点刷新 → store 里还留着刷新前的房间（或另一个房间），
+      // 于是立刻 joined = true，room.join 根本没发出去，表现为「要输第二次密钥才能进」。
+      const sameRoom = s.room && String(s.room.code).toUpperCase() === String(code).toUpperCase();
+      if (sameRoom) { joined = true; cleanUrl(); return; }
       inFlight = true;
       net.request(spectate ? 'room.spectate' : 'room.join', { code })
         .then(() => { joined = true; cleanUrl(); })
