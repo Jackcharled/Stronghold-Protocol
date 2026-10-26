@@ -9,6 +9,43 @@
 
 这些改动在磁盘上都已就位，只是进程还在跑旧代码，**必须重启才生效**。
 
+### 0. 5–20 人房对所有玩家开放 + 匹配支持任意人数
+
+**现状问题**：
+- 前端建房时**只有 owner/admin** 能开多人大厅（`experimentalForCreator` 里
+  `if (!role || role === 'player') return null`），普通玩家建房永远是 4 人
+- `SP_EXPERIMENTAL` 只在 **node-4** 打开
+- 结果：全服只有一台机器能开多人大厅，匹配池里几乎见不到 5 人以上的局
+
+**改了什么**：
+
+| 文件 | 改动 | 生效方式 |
+|---|---|---|
+| `public/js/screens/lobby.js` | 去掉角色限制；同盟选择页加「同盟人数」下拉（4/5/6…20）；记住上次选择 | 刷新即生效 |
+| `public/css/screens/lobby.css` | 下拉样式 | 刷新即生效 |
+| `server/persist/lobbyState.js` | ★ 房间文档补存 `capacity` | 需重启 |
+| `matchmaker/server.js` | ★ 容量解析兜底读 `experimental.playerCapacity` | 需重启 matchmaker |
+| `ecosystem.config.cjs` | ★ `SP_EXPERIMENTAL: '1'` 给所有节点 | 需重启 |
+
+**为什么 `lobbyState.js` 那条是必须的（重要）**：
+
+匹配端 `roomInfo()` 读的是 `doc.capacity`，但房间文档里**从来没存过这个字段**，
+只存了 `experimental`（其中虽有 `playerCapacity`，但 matchmaker 不认）。
+于是所有房间在匹配池里都被当成 **4 人**——
+
+实测复现：同时开 4/5/8/12/16/20 人房进池，日志显示
+`房间 XXXXX@1 开始匹配 · 1/4 人`，六个不同人数的房**全被配进同一个 4 人局**。
+
+修好后各人数独立成池，只有相同人数才会匹配到一起。
+
+**验证**：
+```
+node test\e2e-capacity-match.mjs 3001
+```
+（重启前跑会看到「6 个房被误配」的失败，这是预期的——重启后应全过）
+
+---
+
 ### 1. 对局结束 / 中途退出后不能建房
 
 **玩家反馈**：对局结束或中途退出后，建房按钮点了没反应 / 提示不能创建。

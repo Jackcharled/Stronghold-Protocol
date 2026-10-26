@@ -758,6 +758,26 @@
   .create-box__test em { font-size: 14px; }
 }
 .proto-hint { display: flex; align-items: center; gap: .08rem; min-height: .24rem; margin: 0; font-size: calc(.14 * var(--t)); color: #858b89; }
+
+/* 同盟人数选择（4–20）：建 5–20 人房用，匹配池按人数分组 */
+.create-box__cap {
+  display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: .04rem .1rem;
+  color: #9fe8d2; font-size: calc(.16 * var(--t)); font-style: normal;
+}
+.create-box__cap select {
+  min-width: .8rem; min-height: .22rem; padding: 0 .06rem;
+  border: 1px solid rgba(78, 216, 175, .45); border-radius: .04rem;
+  background: #0b1a16; color: #dff0ea; font: inherit; cursor: pointer;
+}
+.create-box__cap select:disabled { opacity: .55; cursor: not-allowed; }
+.create-box__cap em { flex-basis: 100%; font-style: normal; font-size: calc(.12 * var(--t)); line-height: 1.5; }
+/* 同盟选择页里的那一处：卡片下方，窄屏也要能点 */
+.ally-cap { margin-top: .06rem; }
+@media (max-width: 720px) {
+  .create-box__cap { font-size: 16px; }
+  .create-box__cap select { min-height: 36px; font-size: 16px; }
+  .create-box__cap em { font-size: 13px; }
+}
 .proto-hint .icon { flex: none; width: 1.1em; height: 1.1em; }
 .proto-hint--ro { min-height: max(.64rem, 32px, calc(38px * var(--sp-ui, 1))); font-size: calc(.18 * var(--t)); color: #b9bfbd; }
 .proto-start {

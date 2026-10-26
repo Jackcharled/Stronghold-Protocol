@@ -314,7 +314,13 @@ function wireNet() {
     toastError(err);
   });
   net.on('replaced', () => toast(t('该身份已在其他页面登录，本页已断开'), 'warn', { ttl: 6000 }));
-  net.on('unhandledError', (err) => toastError(err));
+  // 这些错误码由具体流程自己处理并给出更具体的提示（例如 mm/client.js 的 joinFlow 会显示
+  // 「加入失败：未找到该同盟密钥对应的房间」）。若这里再弹一次，玩家会同时看到两条几乎相同的红条。
+  const QUIET_CODES = new Set(['ROOM_NOT_FOUND', 'ROOM_STARTED', 'ROOM_FULL', 'NOT_IN_ROOM']);
+  net.on('unhandledError', (err) => {
+    if (err && QUIET_CODES.has(err.code)) return;   // 流程内已提示，避免重复弹窗
+    toastError(err);
+  });
   net.on('room.state', onRoomState);
   net.on('room.closed', (msg) => {
     clearPendingJoin();
@@ -572,6 +578,11 @@ async function boot() {
     splash.classList.add('is-done');
     setTimeout(() => splash.remove(), 300);
   }
+  // 启动成功：通知 boot.js 清掉「首屏加载失败重试计数」。
+  // 那个计数只该在连续失败时累加，成功一次就该归零，否则玩家网络抖过一次后，
+  // 之后每次刷新都会被直接判到错误页（表现为「一直刷新都不能好」）。
+  try { document.dispatchEvent(new Event('sp-boot-ok')); } catch { /* ignore */ }
+  try { sessionStorage.removeItem('sp_boot_retry'); } catch { /* ignore */ }
   globalThis.__SP__ = { store, net, data, version: 1 };
   // A page keeps the modules it imported at load time for its whole lifetime, so a deploy cannot reach an open tab
   // (ui/buildGuard.js): watch `/healthz.build`. Never reload on our own: show the banner and let the player press

@@ -38,6 +38,7 @@ import { TestMark } from '../ui/testConsole.js';
 import { ResumeMatchButton } from '../ui/resumeMatch.js';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
 import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, modeIdFor, ERR } from '../../../shared/constants.js';
+import { PLAYER_CAPACITIES } from '../../../shared/playerCapacity.js';
 import { html, confirmDialog, Button, Icon, MicroLabel, Modal, PingPill, Spinner, DifficultyIcon, TextField } from '../ui/components.js';
 import { Sprite, Img } from '../ui/gameComponents.js';
 import { uiUrl } from '../ui/assetUrls.js';
@@ -618,7 +619,8 @@ export function ProtocolSelect({ roomMode, difficulty, onDifficulty, onClose, on
  * in a 1024 px window — it ended in an ellipsis there).
  */
 export function AllianceSelect({ onClose, onCreate, difficulty = 'FUNNY', code, onCode, codeOk, online, busy, onJoin, onSpectate, recent, marks, focusKey,
-  testMode = false, asTest = false, onTest = () => {}, short = false, createLocked = false }) {
+  testMode = false, asTest = false, onTest = () => {}, short = false, createLocked = false,
+  capacity = 4, onCapacity = null }) {
   const diffName = DIFFICULTY_NAMES[difficulty] ? t(DIFFICULTY_NAMES[difficulty]) : '';
   return html`<${Modal} open=${true} onClose=${onClose} class="ally" veilClass="proto-veil">
     <div class="ally__body">
@@ -642,6 +644,16 @@ export function AllianceSelect({ onClose, onCreate, difficulty = 'FUNNY', code, 
             <span class="ally-card__bar"><span class="ally-card__icon">${busy === 'create' ? html`<${Spinner} size="sm" />` : html`<${Icon} name="plus" />`}</span><span class="ally-card__name">${t('创建同盟')}</span>
               <small>${!online ? t('正在连接服务器…') : createLocked ? t('服务器暂时关闭了创建房间，请稍后再试') : t('难度：{name}（可在同盟内更改）', { name: diffName })}</small></span>
           </button>
+          ${onCapacity ? html`<label class="create-box__cap ally-cap" data-testid="create-capacity">
+            <span>${t('同盟人数')}</span>
+            <select value=${String(capacity)} disabled=${!online || busy === 'create' || createLocked}
+                onChange=${(e) => onCapacity(Number(e.target.value))}>
+              ${PLAYER_CAPACITIES.map((n) => html`<option key=${n} value=${String(n)}>${n} 人</option>`)}
+            </select>
+            <em class="t-dim">${capacity > 4
+              ? t('可从「匹配队友」与他人组队；只有相同人数的房间会匹配到一起。')
+              : t('4 人为默认人数；想开 5–20 人房请在上方选择。')}</em>
+          </label>` : null}
           ${testMode ? html`<label class="create-box__test ally-test" data-testid="create-test">
             <input type="checkbox" checked=${asTest} onChange=${(e) => onTest(e.target.checked)} />
             <span>${t('测试房间')}</span>
@@ -697,6 +709,20 @@ export function LobbyScreen() {
   const [achOpen, setAchOpen] = useState(false);
   const [coarse] = useState(() => detectFeatures().coarse);
   const shortScreen = useMediaQuery(SHORT_SCREEN_QUERY);
+  // 同盟人数：4（默认）或 5–20。建房时带进 experimental.playerCapacity，
+  // 匹配池按人数分组，所以只有同人数的房才会被配到一起。
+  // 记住上次的选择，下次建房沿用。
+  const [coopCapacity, setCoopCapacity] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem('sp.roomCapacity'));
+      return Number.isInteger(v) && v >= 4 && v <= 20 ? v : 4;
+    } catch { return 4; }
+  });
+  const pickCapacity = (n) => {
+    const v = Number.isInteger(n) && n >= 4 && n <= 20 ? n : 4;
+    setCoopCapacity(v);
+    try { localStorage.setItem('sp.roomCapacity', String(v)); } catch { /* ignore */ }
+  };
   const alive = useRef(true);
   const inFlight = useRef(false); // synchronous guard against double clicks (state updates are async)
   useEffect(() => () => { alive.current = false; }, []);
@@ -765,19 +791,26 @@ export function LobbyScreen() {
     }
   };
   const guest = !(window.__SP_ACCOUNT_USER || window.__SP_ACCOUNT_TOKEN);
-  // 实验房：仅 owner/admin 通过 URL 参数显式开启。
+  // 5–20 人房：所有已登录玩家都可以建，不再只限 owner/admin。
+  // 以前这里要求 window.__SP_ACCOUNT_ROLE 是非 player 角色，等于只有服主能开多人大厅，
+  // 普通玩家建房永远是 4 人，匹配池里也就永远只有 4 人局。
+  // 人数优先级：URL ?capacity=N（或 ?exp=N）> 玩家上次在大厅选过的值 > 4。
+  // 房间建好后房主还能在房间内用「实验性功能」继续调整，并直接点「匹配队友」。
   const experimentalForCreator = () => {
     try {
-      const role = window.__SP_ACCOUNT_ROLE;
-      if (!role || role === 'player') return null;
       const q = new URLSearchParams(location.search);
-      const capacity = Number(q.get('capacity') || q.get('exp') || 0);
-      if (!(Number.isInteger(capacity) && capacity >= 4 && capacity <= 20)) return null;
+      let capacity = Number(q.get('capacity') || q.get('exp') || 0);
+      if (!(Number.isInteger(capacity) && capacity >= 4 && capacity <= 20)) {
+        // 记住上次选的人数（大厅的人数选择器写入），下次建房默认沿用
+        const saved = Number((() => { try { return localStorage.getItem('sp.roomCapacity'); } catch { return null; } })());
+        capacity = Number.isInteger(saved) && saved >= 4 && saved <= 20 ? saved : 4;
+      }
+      if (capacity <= 4) return null;   // 4 人是默认房间，不带实验选项，保持原来的协议
       return {
         revivalEnabled: q.get('revive') === '1',
         disableSharedPool: q.get('pool') === '1',
         playerCapacity: capacity,
-        ...(capacity > 4 && q.get('duck') === '1' ? { disableDuckLord: true } : {}),
+        ...(q.get('duck') === '1' ? { disableDuckLord: true } : {}),
       };
     } catch { return null; }
   };
@@ -874,7 +907,8 @@ export function LobbyScreen() {
     ${allyOpen ? html`<${AllianceSelect} onClose=${() => setAllyOpen(false)} onCreate=${() => create('coop')} difficulty=${shownCoop}
       code=${code} onCode=${(v) => setCode(normalizeCode(v))} codeOk=${codeOk} online=${online} busy=${busy}
       onJoin=${join} onSpectate=${spectate} recent=${recent} marks=${marks} focusKey=${!coarse}
-      testMode=${testMode} asTest=${asTest} onTest=${setAsTest} short=${shortScreen} createLocked=${!createOpen} />` : null}    ${soloOpen ? html`<${ProtocolSelect} roomMode="solo" difficulty=${shownSolo} onDifficulty=${pickDifficulty}
+      testMode=${testMode} asTest=${asTest} onTest=${setAsTest} short=${shortScreen} createLocked=${!createOpen}
+      capacity=${coopCapacity} onCapacity=${pickCapacity} />` : null}    ${soloOpen ? html`<${ProtocolSelect} roomMode="solo" difficulty=${shownSolo} onDifficulty=${pickDifficulty}
       onClose=${() => setSoloOpen(false)} onCreate=${() => create('solo')} busy=${busy} online=${online}
       testMode=${testMode} asTest=${asTest} onTest=${setAsTest} difficulties=${solo} loading=${versionLoading} failed=${versionFailed}
       soloTime=${soloTimed === true ? { on: soloFree, onToggle: setSoloFreePref } : null} createLocked=${!createOpen} />` : null}

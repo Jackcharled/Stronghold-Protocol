@@ -74,6 +74,10 @@ export function roomDoc(room, matchRef, sessionOf) {
   };
   return {
     code: room.code, mode: room.mode, difficulty: room.difficulty, aiPicksLast: !!room.aiPicksLast, hostId: room.hostId,
+    // 房间容量必须单独存一份：匹配端 roomInfo() 读的是 doc.capacity，
+    // 以前这里只有 experimental（里面虽有 playerCapacity，但 matchmaker 不认这个字段），
+    // 于是所有房间在匹配池里都被当成默认 4 人 —— 5–20 人房会混进 4 人局一起被配走。
+    capacity: room.capacity,
     experimental: room.experimental, source: room.source, ownerKey: room.ownerKey, ownerKeys: room.ownerKeys ? [...room.ownerKeys] : null,
     matchKey: room.matchKey, matchKeys: room.matchKeys ? [...room.matchKeys] : null, matchCount: room.matchCount | 0, createdAt: room.createdAt,
     ttlMs: room.ttlMs, noExpire: room.noExpire === true, adminCreated: room.adminCreated === true,
