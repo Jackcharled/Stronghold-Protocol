@@ -136,6 +136,20 @@ const CHECKS = [
     ],
   },
   {
+    id: 'client-enemy-local-model',
+    name: '只有本地素材的敌人模型能加载',
+    rules: [
+      // assets.json 声明 spineLocal，但 local-assets.json 没有对应 group → 解析成 null → 画灰块。
+      // 这 6 个敌人没有 web 模型，全靠本地素材，清单漏登记就必然缺失。
+      ['data/local-assets.json', /"spine\/enemy\/enemy_1201_sfzhi"/, '★ enemy_1201_sfzhi 的 group'],
+      ['data/local-assets.json', /"spine\/enemy\/enemy_1249_lysdb"/, '★ enemy_1249_lysdb 的 group'],
+      ['data/local-assets.json', /"spine\/enemy\/enemy_1254_lypa"/, '★ enemy_1254_lypa 的 group'],
+      ['data/local-assets.json', /"spine\/enemy\/enemy_1275_dwlock"/, '★ enemy_1275_dwlock 的 group'],
+      ['data/local-assets.json', /"spine\/enemy\/enemy_1373_ltnhor_2"/, '★ enemy_1373_ltnhor_2 的 group'],
+      ['data/local-assets.json', /"spine\/enemy\/enemy_1376_ltndru"/, '★ enemy_1376_ltndru 的 group'],
+    ],
+  },
+  {
     id: 'admin-room-version',
     name: '后台/控制台显示房间版本',
     rules: [

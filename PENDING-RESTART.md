@@ -256,6 +256,55 @@ node test\e2e-mobile-quality-dpr.cjs    DPR3 + 触屏模拟下 high=2 / medium=1
 
 ---
 
+### 1f. 部分敌人没有模型加载出来（显示成灰块）
+
+**现象**：玩家截图里右上角的镰刀幽灵、右下角的黑影只渲染成灰色方块/黑块。
+
+**病根**：`data/assets.json` 给这 6 个敌人声明了 `spineLocal`（本地素材），
+但 `data/local-assets.json`（负责把文件名映射成 URL 的清单）**没有收录对应的 group**。
+`localSpineEntry()` 拿不到 URL 就返回 `null`，`spineEntry()` 于是也返回 `null`。
+
+而这 6 个敌人**恰好没有 web 模型**（`spine: null`，也没有 `spineAliasOf`），
+所以本地素材是它们唯一的模型来源 —— 清单漏一条，就必然画灰块。
+
+| 敌人 | web 模型 | spineLocal | 清单 group |
+|---|---|---|---|
+| enemy_1201_sfzhi | 无 | 有 | 缺 → 已补 |
+| enemy_1249_lysdb | 无 | 有 | 缺 → 已补 |
+| enemy_1254_lypa | 无 | 有 | 缺 → 已补 |
+| enemy_1275_dwlock | 无 | 有 | 缺 → 已补 |
+| enemy_1373_ltnhor_2 | 无 | 有 | 缺 → 已补 |
+| enemy_1376_ltndru | 无 | 有 | 缺 → 已补 |
+| enemy_9016_acstmr | 无 | **无** | 无（素材本身就没有，属正常缺） |
+
+素材文件一直在 CDN 上（`HEAD` 全部 200），磁盘 `shared/assets/local/spine/enemy/<id>/`
+里也齐全，纯粹是清单漏登记。
+
+**改了什么**：给 `data/local-assets.json` 补了这 6 个 group（76 → 82）。
+新增 `tools/fix-local-enemy-groups.mjs`（幂等，支持 `--check`）。
+
+> ⚠️ **升级上游后必须重跑一次**
+> `data/local-assets.json` 在 `.gitignore` 里（它由本机 `tools/local-extract` 生成，不进仓库），
+> 所以这个修复**不会随 git 走**。合并上游后执行：
+> ```
+> node tools\fix-local-enemy-groups.mjs --check   # 看有没有缺
+> node tools\fix-local-enemy-groups.mjs           # 补上
+> node test\asset-manifest-gaps.mjs               # 确认全部可解析
+> ```
+
+**验证**：
+```
+node test\asset-manifest-gaps.mjs        全部通过（新增）
+node test\e2e-enemy-model-load.cjs       6/6 可解析、模型文件全部 200（新增）
+```
+线上 `data/local-assets.json` 已确认 82 个 group、6/6 到位。
+
+`patcher\check-features.mjs` 新增 `client-enemy-local-model`（6 条断言）。
+注意这条检查的是 `data/local-assets.json`（被 gitignore），
+所以它只在**本机运行时有意义** —— 上游合并后先跑修复工具再跑校验器。
+
+---
+
 ### 2. 隐身观战加载不出来
 
 **病根**：`Lobby.sendToPlayer()` 只认 `seatOf()` / `spectatorOf()`，
