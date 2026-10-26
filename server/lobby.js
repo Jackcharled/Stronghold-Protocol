@@ -881,6 +881,8 @@ export class Lobby {
     // live socket) answers the requester alone, so hello spam cannot amplify into room-wide traffic.
     let changed = !seat.connected;
     seat.connected = true;
+    // 有人回来了：卡死对局的回收计时作废（房间重新有活人，sweepOldRooms 不会再碰它）
+    if (room.lastHumanLeftAt) room.lastHumanLeftAt = 0;
     if (!room.match && seat.name !== session.name) { seat.name = session.name; changed = true; }
     if (!room.hostId) { this.migrateHost(room); changed = true; }
     if (changed) this.broadcastState(room);
@@ -900,7 +902,26 @@ export class Lobby {
   sweepOldRooms() {
     const now = this.now();
     for (const room of [...this.rooms.values()]) {
-      if (!room || room.disposed || room.match) continue;
+      if (!room || room.disposed) continue;
+      // 对局进行中的房间：正常情况下不碰它（玩家在打，绝不能因为计时器被解散）。
+      // 但必须能回收「卡死的对局」——以前这里直接 `continue`，于是只要 room.match 还在，
+      // 房间就永远不会过期。node-19 的 DTTW 就是这样卡了 5 个半小时：
+      // 房主 08:20 断线再没回来，对局停在 BAND_DRAFT（liveRound=0）永远推不动，
+      // 而 sweepOldRooms 看到 room.match 就跳过，15 分钟 TTL 形同虚设。
+      //
+      // 判据只有一条：房间里的真人都已经断线（没有在线玩家）。这时对局不可能再推进，
+      // 保留它只会占着房间、挡住建房、让后台显示一个假「对局中」。
+      // 只要还有任何一个真人连着，就照旧跳过 —— 不影响正常对局。
+      if (room.match) {
+        if (room.noExpire) continue;
+        if (room.activeHumans().some((s) => s && s.connected)) continue;
+        // 从「最后一个人断线」的时刻起算宽限期，避免对局刚开的瞬间被误判
+        const since = Number(room.lastHumanLeftAt) || Number(room.createdAt) || now;
+        if (now - since < (room.ttlMs || roomTtlMs())) continue;
+        this.log?.info?.(`[lobby] ${room.code} 对局已无人在线超过 ${Math.round((room.ttlMs || roomTtlMs()) / 60000)} 分钟，回收卡死房间`);
+        try { this.disposeRoom(room, 'expired'); } catch { /* ignore */ }
+        continue;
+      }
       if (room.matchmaking) {
         const started = Number(room.matchmakingAt) || now;
         if (now - started >= MATCHMAKING_TIMEOUT_MS) {
@@ -1064,6 +1085,9 @@ export class Lobby {
     if (player && room.versionVote?.voters.includes(session.playerId)) this.voidVersionVote(room, 'members');
     // a spectator's seat is kept like a player's (nothing to tell the match: it plays no field)
     if (room.match) {
+      // 记下「最后一个真人断线」的时刻：sweepOldRooms 用它来回收卡死的对局房间
+      // （以前对局中的房间一律跳过，导致房主断线后对局永远卡着、房间永不过期）。
+      if (!room.activeHumans().some((s) => s && s.connected)) room.lastHumanLeftAt = this.now();
       if (player) {
         // a match in a match host hears it in order with the room's messages (header "Gameplay plugins") — not at
         // all when the player is back by then (the resync after the reconnect tells it onReconnect)

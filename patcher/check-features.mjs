@@ -108,6 +108,17 @@ const CHECKS = [
     ],
   },
   {
+    id: 'server-stuck-match-reap',
+    name: '卡死对局房间回收（不影响正常对局）',
+    rules: [
+      // 以前 sweepOldRooms 见到 room.match 就 continue，房主断线后对局永远卡着、房间永不过期
+      ['server/lobby.js', /if \(room\.match\) \{\s*\n\s*if \(room\.noExpire\) continue;/, '★ 对局中的房间也要过一遍过期判定'],
+      ['server/lobby.js', /room\.activeHumans\(\)\.some\(\(s\) => s && s\.connected\)\) continue;/, '★ 有真人在线就绝不回收'],
+      ['server/lobby.js', /room\.lastHumanLeftAt = this\.now\(\)/, '★ 记录最后一人断线时刻'],
+      ['server/lobby.js', /if \(room\.lastHumanLeftAt\) room\.lastHumanLeftAt = 0;/, '★ 有人回来就作废回收计时'],
+    ],
+  },
+  {
     id: 'admin-room-version',
     name: '后台/控制台显示房间版本',
     rules: [

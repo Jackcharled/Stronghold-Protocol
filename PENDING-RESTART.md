@@ -125,6 +125,54 @@ matchmaker 的 `roomInfo()` 读的是 `doc.version`（`sp:nN:lobby:rooms` 这个
 
 ---
 
+### 1c. 卡死的对局房间永远不会回收（node-19 的 DTTW）
+
+**现象**：node-19 上有个房间 `DTTW`（单人 / 终极 / 1 人），玩家「月城苍」**08:20 就断线了，
+再没回来**，但房间一直挂到 13:55 —— 挂了 **5 个半小时**，而房间 TTL 只有 15 分钟。
+`sockets=0` 但 `rooms=1 matches=1`，`livePhase` 停在 `BAND_DRAFT`、`liveRound=0`。
+
+**病根**：`Lobby.sweepOldRooms()` 第一行就是
+
+```js
+if (!room || room.disposed || room.match) continue;   // ← 有对局就整间跳过
+```
+
+对局进行中跳过是对的（不能因为计时器打断玩家对局），但**它没有「对局卡死」这个出口**：
+只要 `room.match` 还在，房间就永远不会过期。房主断线后对局推不动，
+`onMatchEnd` 永远不触发 → `lastMatchEndAt` 不更新 → 这个房间既不会结束也不会过期。
+
+`sweepIdle` 也救不了它：它判的是 `session.connected`，断线的人直接 `continue`。
+
+**改了什么**（`server/lobby.js`）：
+
+1. `sweepOldRooms()` 不再无条件跳过对局房间，改成：
+   - `room.noExpire`（管理员房）→ 照旧跳过；
+   - **房间里只要还有一个真人在线 → 跳过**（正常对局完全不受影响）；
+   - 真人都断线了，就从 `lastHumanLeftAt` 起算 TTL，超时才回收。
+2. `onDisconnect()` 里，对局中最后一个真人断线时记下 `room.lastHumanLeftAt`。
+3. 重连时把 `lastHumanLeftAt` 清零（人回来了，回收计时作废）。
+
+**为什么用 `lastHumanLeftAt` 而不是 `createdAt`**：对局可能已经跑了半小时，
+用建房时间算会一断线就立刻回收，玩家重连回来房间已经没了。从「最后一个人断开」起算，
+玩家有完整的 15 分钟窗口回来续上。
+
+**验证**：
+```
+node test\stuck-match-room.mjs    7/7 通过（新增）
+```
+覆盖：卡死对局被回收 / **在线对局不被打断** / 断线 5 分钟保留、16 分钟回收 /
+管理员房不回收 / 多人房只要 1 人在线就保留 / 回收后给断线玩家留 notice。
+
+`patcher\check-features.mjs`（`server-stuck-match-reap`）已加 4 条断言，
+把 `continue` 改回去会同时让单测和校验器变红（破坏性测试已验证）。
+
+**顺带修**：`test\room-limit-three.mjs` 的「刷新页面后建房」用例一直失败，但**不是线上问题** ——
+它只标了 `session.connected=false`，没标**座位** `seat.connected=false`，
+而真实的 `onDisconnect` 两者都会标。`dropStaleAccountSeats` 按设计
+（座位还标着「连接中」就不清理）拒绝清理，所以用例永远红。改成正确模拟后通过。
+
+---
+
 ### 2. 隐身观战加载不出来
 **病根**：`Lobby.sendToPlayer()` 只认 `seatOf()` / `spectatorOf()`，
 而隐身观战者只存在于 `hiddenSpectators`，两者都查不到，
