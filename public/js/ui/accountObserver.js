@@ -148,13 +148,18 @@ export function installAccountObserver() {
       // /?room=CODE forever (the old tab/device can still be reclaiming the seat).
       if (!autoRedirected && !silentResume) {
         const code = await accountRoomCode();
+        // 只有「确实能拿到房间码、且当前页不是那个房间」才值得跳一次。
+        // 如果已经在 /r/CODE 上还失败，说明问题不在节点路由（多半是这个节点重启过，
+        // 内存里的会话没了 —— registry.byAccount 只查本节点），再跳只会原地打转。
         if (code && !location.pathname.endsWith('/r/' + code)) {
           let lastHop = 0;
           try { lastHop = Number(sessionStorage.getItem(RESUME_HOP_KEY) || 0); } catch { /* ignore */ }
           if (Date.now() - lastHop < 15000) {
             autoWanted = false;
             try { window.__SP_ACCOUNT_RESUME_PENDING = false; } catch { /* ignore */ }
-            toast(t('恢复对局失败：请关闭其他设备/标签页中的同一账号后重试'), 'warn', { ttl: 6000 });
+            // 「请关闭其他设备」这句话会误导：绝大多数失败并不是因为别的设备占着座位，
+            // 而是这个节点重启过 / 对局已结束 / 会话过期。据实说明，并提示接下来怎么办。
+            toast(t('恢复对局失败：本局所在节点可能刚重启过，或对局已结束。可回到大厅重新开始'), 'warn', { ttl: 8000 });
             return;
           }
           autoRedirected = true;
@@ -170,7 +175,7 @@ export function installAccountObserver() {
       else {
         autoWanted = false;
         try { window.__SP_ACCOUNT_RESUME_PENDING = false; } catch { /* ignore */ }
-        // A local refresh is silent: never tell the player to close their other device for their own reload.
+        // A local refresh is silent: never tell the player something is wrong for their own reload.
         if (!silentResume) toast(t('当前节点没有可恢复的账号对局'), 'warn');
       }
     });

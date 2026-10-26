@@ -34,7 +34,7 @@
 //   * Disconnect in LOBBY: the seat shows connected=false and is freed after `lobbyGraceMs` (60 s); a
 //     session that comes back after that gets `room.closed {reason:'timeout'}`.
 //     Disconnect in a match: the seat is kept and match.onDisconnect(playerId) is called.
-//   * Reconnect: `hello` with a known token (reconnect window, 15 min — aligned with the room TTL, see net.js) rebinds the session;
+//   * Reconnect: `hello` with a known token (reconnect window, 10 min, see net.js) rebinds the session;
 //     the lobby then broadcasts room.state and, in a match, calls match.onReconnect(playerId).
 //     Solo runs (下半: "休整期及机变阶段没有时间限制…24小时内随时返回", research 01 §1 / 06 §17): a session that drops
 //     while its solo room's match runs stays resumable for the official `config.constants.singleReconnectTime`
@@ -942,10 +942,16 @@ export class Lobby {
       // 普通房间：从建房 / 上一局结束算起。
       // 管理员房（noExpire 但人已离线）：从「管理员离线」算起 —— 他人在的时候房间一直保留，
       // 人一走才开始走 15 分钟倒计时，回来续上。
+      const ttl = room.ttlMs || roomTtlMs();
+      // 刚恢复的房间至少给满一个 TTL 的宽限：管理员房没存下 adminLeftAt（老存档）时，
+      // base 会回退到 createdAt，一个建了半天的房间重启后会被立刻判过期 ——
+      // 玩家点「返回同盟」就得到「未找到该同盟密钥对应的房间」。恢复时刻记在 restoredAt。
+      const restoredAt = Number(room.restoredAt) || 0;
+      if (restoredAt && now - restoredAt < ttl) continue;
       const base = room.noExpire === true
         ? Math.max(Number(room.adminLeftAt) || Number(room.createdAt) || now)
         : Math.max(Number(room.createdAt) || now, Number(room.lastMatchEndAt) || 0);
-      if (now - base < (room.ttlMs || roomTtlMs())) continue;
+      if (now - base < ttl) continue;
       this.log?.info?.(`[lobby] ${room.code} expired (${room.noExpire === true ? '管理员离线，' : ''}15 min without a match)`);
       try { this.disposeRoom(room, 'expired'); } catch { /* ignore */ }
     }
@@ -1225,7 +1231,7 @@ export class Lobby {
       conflict = this.accountRoomConflict(session);
     }
     if (conflict && conflict.room !== this.roomOf(session)) {
-      return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
+      return fail(ERR.SESSION_IN_USE, '该账号已在其他房间中，请先离开原房间');
     }
     // A test room exists only when the process switch allowed it. The check runs before the room is built.
     if (test === true && this.testEnabled !== true) return fail(ERR.TEST_DISABLED);
@@ -1323,7 +1329,7 @@ export class Lobby {
       this.dropStaleAccountSeats(session);
       conflict = this.accountRoomConflict(session);
     }
-    if (conflict) return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
+    if (conflict) return fail(ERR.SESSION_IN_USE, '该账号已在其他房间中，请先离开原房间');
     if (room.match) return fail(ERR.ROOM_STARTED);
     if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
     const idx = room.freeSeat();
@@ -1378,7 +1384,7 @@ export class Lobby {
         this.dropStaleAccountSeats(session);
         conflict = this.accountRoomConflict(session);
       }
-      if (conflict) return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
+      if (conflict) return fail(ERR.SESSION_IN_USE, '该账号已在其他房间中，请先离开原房间');
     }
     if (!wantHidden && room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
     if (!wantHidden && room.spectators.length >= room.spectatorLimit()) return fail(ERR.ROOM_FULL, 'no free spectator seat');
