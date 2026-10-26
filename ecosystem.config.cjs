@@ -91,6 +91,9 @@ const dashboard = {
 };
 
 // 全局匹配服务：http://<主机>:81/mm/ 排队，凑满 4 人后把玩家钉到同一节点并进房
+// MM_DISABLED_NODES：这些节点上还有未结束的对局，暂不接收新对局（不能重启）。
+// 等在打的局自然结束后，从列表里移除并重启匹配器即可恢复正常调度。
+// 详见 PENDING-RESTART.md。
 const matchmaker = {
   name: 'matchmaker',
   cwd: `${BASE}\\matchmaker`,
@@ -98,7 +101,11 @@ const matchmaker = {
   interpreter: 'node',
   exec_mode: 'fork',
   instances: 1,
-  env: { MM_PORT: '3090', MM_HOST: '127.0.0.1' },
+  env: {
+    MM_PORT: '3090',
+    MM_HOST: '127.0.0.1',
+    MM_DISABLED_NODES: '10,11,12,13,16,18,19,20,23,28,29',
+  },
   autorestart: true,
   max_restarts: 20,
   min_uptime: '10s',

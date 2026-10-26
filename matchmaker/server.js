@@ -40,6 +40,17 @@ const DIFFICULTIES = ['FUNNY', 'NORMAL', 'HARD', 'ABYSS'];
 const DIFF_NAMES = { FUNNY: '标准模拟', NORMAL: '险境模拟', HARD: '绝境模拟', ABYSS: '终极模拟' };
 const TICKET_TTL_MS = 15 * 60 * 1000;
 const MATCH_TTL_MS = 5 * 60 * 1000;
+/**
+ * 停止对外接收新对局的节点（逗号分隔节点号）。
+ * 用途：这些节点上还有未结束的对局，不能重启；先让它们不再被调度，
+ * 等在打的局自然结束后再重启。已被分配过去的玩家不受影响。
+ */
+const DISABLED_NODES = new Set(
+  String(process.env.MM_DISABLED_NODES || '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n >= 1 && n <= NODES),
+);
 const CODE_RE = /^[A-Za-z0-9]{4,8}$/;
 
 /**
@@ -84,7 +95,7 @@ async function refreshNodes() {
 
 /** 选人最少、其次房间最少的节点；并列随机，避免总是压同一个。 */
 function pickNode() {
-  const alive = [...nodeLoad.entries()].filter(([, v]) => v.ok);
+  const alive = [...nodeLoad.entries()].filter(([n, v]) => v.ok && !DISABLED_NODES.has(n));
   if (!alive.length) return null;
   const shuffled = alive.map(([n, v]) => ({ n, v, r: Math.random() })).sort((a, b) => a.r - b.r);
   shuffled.sort((a, b) => a.v.humans - b.v.humans || a.v.rooms - b.v.rooms);
@@ -96,7 +107,7 @@ const EXPERIMENTAL_NODE = Number(process.env.MM_EXPERIMENTAL_NODE || 4);
 function pickNodeFor(capacity) {
   if (capacity > SEATS) {
     const v = nodeLoad.get(EXPERIMENTAL_NODE);
-    if (v?.ok) return EXPERIMENTAL_NODE;
+    if (v?.ok && !DISABLED_NODES.has(EXPERIMENTAL_NODE)) return EXPERIMENTAL_NODE;
   }
   return pickNode();
 }
@@ -803,9 +814,13 @@ const roomDir = new Map(); // node -> { codes: string[], at: number }
       byDifficulty: Object.fromEntries(DIFFICULTIES.map((difficulty) => {
         const queued = [...tickets.values()].filter((t) => !t.matchId && t.difficulty === difficulty);
         const queuedParties = [...parties.values()].filter((p) => !p.matchId && p.difficulty === difficulty);
+        // 本服：按容量细分。★ capacities 必须把「正在排队的组队」也算进来，
+        // 否则只有 4 人房（SEATS）会被列出，5–20 人房的组队排队在后台/控制台看不见。
+        const partyCapacity = (p) => (isSeatCount(p.capacity) ? p.capacity : SEATS);
         const capacities = [...new Set([
           SEATS,
           ...[...tickets.values()].filter((t) => t.difficulty === difficulty).map((t) => t.capacity),
+          ...queuedParties.map(partyCapacity),
           ...[...matches.values()].filter((m) => m.difficulty === difficulty).map((m) => m.capacity == null ? SEATS : m.capacity),
         ])].sort((a, b) => a - b);
         return [difficulty, {
@@ -833,16 +848,22 @@ const roomDir = new Map(); // node -> { codes: string[], at: number }
               };
             });
           })(),
-          byCapacity: capacities.map((capacity) => ({
-            capacity,
-            waiting: queued.filter((t) => t.capacity === capacity).length,
-            parties: capacity === SEATS ? queuedParties.length : 0,
-            partyWaiting: capacity === SEATS ? queuedParties.reduce((n, p) => n + p.size, 0) : 0,
-            matches: [...matches.values()].filter((m) => m.difficulty === difficulty && (m.capacity == null ? SEATS : m.capacity) === capacity).length,
-          })),
+          // ★ 每个容量都统计组队排队。以前这里是 `capacity === SEATS ? … : 0`，
+          //   只有 4 人房有数据，5–20 人房永远显示 0 人排队 ——
+          //   后台与节点控制台的「匹配队列」对多人大厅完全失明。
+          byCapacity: capacities.map((capacity) => {
+            const qp = queuedParties.filter((p) => partyCapacity(p) === capacity);
+            return {
+              capacity,
+              waiting: queued.filter((t) => t.capacity === capacity).length,
+              parties: qp.length,
+              partyWaiting: qp.reduce((n, p) => n + p.size, 0),
+              matches: [...matches.values()].filter((m) => m.difficulty === difficulty && (m.capacity == null ? SEATS : m.capacity) === capacity).length,
+            };
+          }),
         }];
       })),
-      nodes: [...nodeLoad.entries()].map(([n, v]) => ({ n, ...v })),
+      nodes: [...nodeLoad.entries()].map(([n, v]) => ({ n, ...v, disabled: DISABLED_NODES.has(n) })),
     });
   }
 
@@ -876,7 +897,12 @@ account.ensureSchema()
   .then(() => console.log('[mm] account schema ready'))
   .catch((e) => console.warn('[mm] account schema init failed:', e && e.message));
 
-server.listen(PORT, HOST, () => console.log(`[mm] matchmaking on http://${HOST}:${PORT}/`));
+server.listen(PORT, HOST, () => {
+  console.log(`[mm] matchmaking on http://${HOST}:${PORT}/`);
+  if (DISABLED_NODES.size) {
+    console.log(`[mm] 暂停接收新对局的节点: ${[...DISABLED_NODES].sort((a, b) => a - b).join(',')}`);
+  }
+});
 
 
 // ---------------------------------------------------------------- 账号接口
