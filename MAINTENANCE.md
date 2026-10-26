@@ -484,7 +484,48 @@ $h = Invoke-RestMethod http://127.0.0.1:3001/healthz
 
 现成脚本：`tools\_restart-stale.ps1`（只重启 `matches=0` 的旧代码节点）。
 
-### 9.5 重启纪律（线上 30 节点）
+### 9.5 改完 `server/` 要分发到 30 个节点（2026-10-27 踩过一次）
+
+`public/css|vendor|assets|i18n|icons`、`data` 是 **junction → `shared/`**，改一处全 30 个节点生效。
+但 **`server/`、`public/js/`、`public/dev/`、`public/studio/`、`tools/` 是每个节点各一份，不是 junction**。
+
+```powershell
+cd D:\Stronghold-Protocol
+node deploy\sync-nodes.cjs --apply   # 分发到 node-2…node-30
+node deploy\sync-nodes.cjs           # 复检，必须输出「0 处差异」
+```
+
+> **事故经过**：`deploy/_sync-nodes.cjs` 的 `DIRS` 曾刻意排除 `server/`，注释理由是
+> 「server 改动要重启节点，不在这里做」。但它其实是唯一的多节点分发手段，于是形成一个陷阱：
+> **`server/` 代码永远不会被复制到 2–30 号节点**，那些节点一直跑建服当天（10-25）的版本，
+> 重启也拿不到新功能。鸭爵叠加上线时才暴露：node-1 已更新并验证通过，其余 29 个节点
+> 连 `meta.js` 都是旧版。已修复（`bf9a7c58`，`DIRS` 加入 `'server'`），脚本入库为
+> `deploy/sync-nodes.cjs`，部署根目录改读 `SP_ROOT`。
+
+**注意两个坑**：
+
+1. **`Copy-Item` 会保留源文件的 mtime**。手动复制到各节点后，时间戳看起来还是旧的，
+   用「进程启动时间 vs 文件 mtime」判断会误判。用 `deploy/sync-nodes.cjs` 的差异报告
+   或内容哈希核对，不要只看时间戳。
+2. **`healthz.build` 不能证明服务端已更新**（见 9.4）。前端 `room.js` 之类的改动会立刻下发，
+   但服务端逻辑要重启，两层要**分别验收**。
+
+### 9.6 新增功能要登记（不要让功能"半丢"）
+
+每加一个本服独有功能，**同一个提交里**必须做两件事：
+
+1. 改动文件归档进 `patcher/features/<feature>/files/` —— `node patcher/check-coverage.mjs` 会检查
+2. **在 [patcher/README.md](patcher/README.md) 的「本服新增功能登记表」加一行**：
+   功能名、涉及文件、所属补丁、生效方式
+
+**第 2 条没有任何脚本能自动检查。** `check-coverage.mjs` 只能保证「文件进了补丁」，
+不能保证「升级时有人记得验收它」。漏登记的功能在升级后变成「代码还在，但没人知道它存在、
+也没人验收」——等于半丢。
+
+补丁 README 里还维护着一份「⚠ 已知陷阱」清单（同步漏 `server/`、`build` 字段不覆盖
+`server/`、`Copy-Item` 保留 mtime、前后端两层要分别验收），改动相关代码时一并更新。
+
+### 9.7 重启纪律（线上 30 节点）
 
 **硬约束：正在对局的节点一律不动。**
 
@@ -502,7 +543,7 @@ $h = Invoke-RestMethod http://127.0.0.1:3001/healthz
 **绝不能**因为节点不在开放列表就把 `sp_route` cookie 改派走——那会让正在对局的玩家断线重连后
 回不到原节点，表现为「回不到对局」。`sp_route` 必须无条件尊重，开放列表只管没有 cookie 的新访客。
 
-### 9.6 提交前最终检查
+### 9.8 提交前最终检查
 
 ```powershell
 cd D:\Stronghold-Protocol\repo-sync

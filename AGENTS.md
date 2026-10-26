@@ -108,12 +108,38 @@ node patcher/check-coverage.mjs
 |---|---|
 | `public/js`、`public/css`、`shared/`、`data/`、`mm/client.js` | 玩家刷新页面即可 |
 | `server/**`（含 `server/net.js`、`server/match/**`） | **必须重启节点** |
+| `matchmaker/**`（`account.cjs`、`server.js`） | **必须重启 matchmaker**（`pm2 restart matchmaker`，不影响对局） |
 
 `healthz` 的 `build` 字段**只覆盖** `public/index.html`、`public/js`、`public/css`、`server/sim`、
 `shared`、`data`——**不包含 `server/net.js`、`server/lobby.js`、`server/match/**`**。
 所以「所有节点 build 相同」**不能**证明服务端代码已更新，要用进程启动时间对比文件 mtime。
 
 线上重启有硬约束：**正在对局的节点一律不动**（见 MAINTENANCE.md「重启纪律」）。
+
+### 4.5 改完 server/ 一定要分发（踩过一次）
+
+`server/` **不是** junction，每个节点各有一份。改完必须跑：
+
+```bash
+node deploy/sync-nodes.cjs --apply   # 分发到 node-2…node-30
+node deploy/sync-nodes.cjs           # 复检，必须输出「0 处差异」
+```
+
+> ⚠ 2026-10-27 之前这个脚本**刻意排除了 `server/`**，导致 29 个节点一直跑建服当天
+> （10-25）的服务端代码，重启也拿不到新功能。已修复（提交 `bf9a7c58`），但**每次仍要复检**。
+> 另外 `Copy-Item` 会保留源文件 mtime，各节点时间戳看起来一样**不代表内容一致**，要看差异报告。
+
+### 4.6 新增功能要登记进补丁 README
+
+**每加一个本服独有功能，同一个提交里必须做两件事**，否则上游升级时会忘：
+
+1. 把改动文件归档进 `patcher/features/<feature>/files/`（`check-coverage.mjs` 会检查这一条）
+2. **在 [patcher/README.md](patcher/README.md) 的「本服新增功能登记表」加一行**：
+   功能名、涉及文件、所属补丁、生效方式
+
+第 2 条没有任何脚本能自动检查——`check-coverage.mjs` 只能保证「文件进了补丁」，
+**不能**保证「下次升级时有人记得验收它」。漏登记的功能在升级后会变成
+「代码还在，但没人知道它存在、也没人验收」，等于半丢。
 
 ### 5. 提交前
 

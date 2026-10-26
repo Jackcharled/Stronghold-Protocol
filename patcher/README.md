@@ -61,6 +61,85 @@ patcher\
 | `client-*` 系列 | 公告、观战、游客建房、表情弹幕、资源缓存、商店布局、皮肤导入 |
 | `deployment` | nginx、PM2、watchdog |
 
+## 本服新增功能登记表（改代码后请对照更新）
+
+> **这是防止「下次又忘记」的核心表。** 每加一个本服独有功能，就在下面加一行，
+> 写清它动到的文件与所属补丁 —— 上游升级后按这张表逐项验收，缺哪个补哪个。
+>
+> 维护规则：**改了表里任何一行的文件，同一提交里把这张表对应的说明也更新掉。**
+> 新增功能漏登记时，`check-coverage.mjs` 只能保证「文件进了补丁」，
+> 但**不能**保证「下次升级时有人记得验收它」—— 这一步只能靠这张表。
+
+### 玩法与对局
+
+| 功能 | 涉及文件 | 所属补丁 | 生效方式 |
+|---|---|---|---|
+| 5–20 人同盟（容量实验） | `server/match/Match.js`、`server/match/match/phases.js`、`shared/playerCapacity.js`、`shared/experimental.js`、`public/js/screens/room.js` | `server-player-capacity` | 重启节点 |
+| 并发草稿（仅 allowRepeat 时） | `server/match/Match.js:concurrentDraft()`、`server/match/match/phases.js` | `game-core-match` | 重启节点 |
+| 悬赏决策公共计时 | `server/match/match/spDraft.js:_concurrentSpStep()` | `game-core-match` | 重启节点 |
+| 跳过按钮（仅非 allowRepeat） | `public/js/match/matchChrome.js:StepHeader`、`server/match/match/phases.js` | `game-core-match` | 刷新页面 + 重启节点 |
+| **鸭爵策略可叠加**（实验开关） | `server/sim/content/bands/meta.js:duckGlobal`、`server/match/Match.js`、`server/match/gamedata.js`、`server/match/snapshot.js`、`shared/experimental.js`、`public/js/screens/room.js` | `game-core-server` / `server-snapshot-checkpoint` / `server-player-capacity` | **重启节点** |
+| 禁用鸭爵策略（5–20 人） | `server/match/gamedata.js`、`shared/experimental.js`、`public/js/screens/bandDraft.js` | `server-player-capacity` | 刷新页面 + 重启节点 |
+| 挂机踢人 / 同 IP 限制 | `server/match/match/intents.js` | `server-idle-guard` | 重启节点 |
+| 房间/对局快照与 Redis 检查点 | `server/match/snapshot.js`、`server/persist/*` | `server-snapshot-checkpoint` | 重启节点 |
+
+### 连接、恢复与账号
+
+| 功能 | 涉及文件 | 所属补丁 | 生效方式 |
+|---|---|---|---|
+| 重连窗口 15 分钟（上游 10） | `server/net.js:NET_DEFAULTS.reconnectWindowMs`、`data/room-ttl.json` | `game-core-server` | 重启节点 |
+| 掉线恢复：对局中不判终态 | `matchmaker/public/client.js:joinFlow`（startedCode 分支） | `matching-party` | 刷新页面 |
+| 恢复对局（仅大厅显示按钮） | `matchmaker/public/client.js:installResumeButton` | `matching-party` | 刷新页面 |
+| 账号恢复失败提示（不再误导） | `public/js/ui/accountObserver.js` | `account-and-dashboard` | **重启节点** |
+| 同账号同房间接管座位 | `server/lobby.js:room.join` 的 takeover 分支 | `game-core-server` | 重启节点 |
+| **DOCTOR # 显示真实账号 tag** | `server/lobby.js`（`room.state seats[].tag`）、`public/js/screens/room.js:seatNo()` | `game-core-server` / `server-player-capacity` | **重启节点**（前端回退到哈希） |
+| **名片立绘跟随账号** | `matchmaker/account.cjs`（DOMAINS + validatePrefPayload + decodePrefPayload）、`matchmaker/public/account-title.js:PREF_MAP.card`、`public/js/ui/seatArt.js` | `account-and-dashboard` / `matching-party` | 重启 matchmaker |
+| 账号登录 / 管理后台 | `matchmaker/account.cjs`、`matchmaker/public/admin.html` | `account-and-dashboard` | 重启 matchmaker |
+
+### 网络与性能
+
+| 功能 | 涉及文件 | 所属补丁 | 生效方式 |
+|---|---|---|---|
+| **合并轮询 `/api/pulse`** | `matchmaker/server.js`（新端点）、`matchmaker/public/client.js`（refreshPulse / onPulse / getPulse） | `matching-party` / `client-announcement` | **重启 matchmaker**（前端刷新即可） |
+| 资源本机优先 + 缺失回源 | `nginx/conf/nginx.conf`（`/assets/` + `@assets_origin`）、`public/js/assets.js`、`public/js/assetPack.js` | 部署配置（见 `deploy/nginx.conf`） | `nginx -s reload` |
+| `sw.js` 永久 no-cache | `server/http/files.js:cacheControlFor()` | `game-core-server` | **重启节点** |
+| 资源站进 nginx 缓存 | `nginx/conf/nginx.conf`（`proxy_cache sp_assets`） | 部署配置 | `nginx -s reload` |
+
+### 界面
+
+| 功能 | 涉及文件 | 所属补丁 | 生效方式 |
+|---|---|---|---|
+| 公告条 | `matchmaker/public/client.js` | `client-announcement` | 刷新页面 |
+| 观战 / 房间旁观 | `public/js/screens/*`、`matchmaker/public/client.js` | `client-room-spectator` / `client-watch` | 刷新页面 |
+| 游客建房 | `public/js/screens/lobby.js`、`matchmaker/public/client.js` | `client-guest-create` | 刷新页面 |
+| 表情弹幕 | `public/js/ui/*` | `client-emote-danmaku` | 刷新页面 |
+| 资源缓存（资源包） | `public/js/assetPack.js`、`public/js/assets.js` | `client-asset-cache` | 刷新页面 |
+| 商店布局 | `public/js/screens/shop.js` | `client-shop-layout` | 刷新页面 |
+| 皮肤导入/导出 | `public/js/ui/skinIO.js` | `client-skin-io` | 刷新页面 |
+| 标题界面 Q群按钮定位 | `matchmaker/public/client.js:2022`、`shared/public/css/screens/title.css` | `matching-party` / `game-core-client-style` | 刷新页面 |
+| 版本号右下角对齐 | `shared/public/css/screens/title.css`（`.title-foot__meta`） | `game-core-client-style` | 刷新页面 |
+
+### 部署与运维
+
+| 功能 | 涉及文件 | 所属补丁 | 生效方式 |
+|---|---|---|---|
+| 多节点同步（**含 `server/`**） | `deploy/sync-nodes.cjs` | 不入补丁（`deploy/` 已进 IGNORE） | 手动运行 |
+| 重启旧代码节点 | `tools/_restart-stale.ps1` | 不入补丁 | 手动运行 |
+| 重建 nginx 开放列表 | `tools/_set-open-nodes.ps1` | 不入补丁 | 手动运行 |
+| nginx 配置备份 | `deploy/nginx.conf` | 入仓库 | `nginx -s reload` |
+
+### ⚠ 已知陷阱（踩过一次，别再踩）
+
+1. **`deploy/sync-nodes.cjs` 曾经不同步 `server/`** —— 导致 29 个节点一直跑 10-25 的旧服务端代码，
+   重启也拿不到新功能（2026-10-27 修复，提交 `bf9a7c58`）。
+   **凡是改 `server/`，同步后再确认一次各节点内容一致**（`node deploy/sync-nodes.cjs` 应输出 `0 处差异`）。
+2. **`healthz` 的 `build` 字段不覆盖 `server/net.js`、`server/lobby.js`、`server/match/**`** ——
+   不能靠 build 相同判断服务端已更新，要用「进程启动时间 vs 文件 mtime」。
+3. **`Copy-Item` 会保留源文件 mtime** —— 复制到各节点后 mtime 看起来还是旧的，
+   用内容哈希或 `deploy/sync-nodes.cjs` 的差异报告核对，不要只看时间戳。
+4. **前端/服务端两层的改动要分别验收** —— 例如 DOCTOR # 需要服务端下发 tag，
+   旧节点上前端会自动回退到哈希，看起来"没坏"但功能没生效。
+
 ## 两个一键脚本（在仓库根目录）
 
 | 脚本 | 作用 |
