@@ -242,6 +242,89 @@
         "导入只覆盖皮肤不动调配",
         "非法文件被拒绝"
       ]
+    },
+    {
+      "id": "game-core-match",
+      "name": "对局核心（5–20 人大厅、并发草稿、悬赏/盟约、跳过、联防分段、视图下发）",
+      "status": "ported-main",
+      "files": ["server/match/**"],
+      "tests": [
+        "4 人房顺序选策略、可跳过",
+        "5–20 人房并发草稿（开启「允许重复选择策略」时）",
+        "悬赏决策公共计时 30 秒、选卡不清零、超时自动派卡",
+        "联防分段与预算",
+        "对局状态视图字段下发"
+      ]
+    },
+    {
+      "id": "game-core-server",
+      "name": "服务端本体（连接/会话、重连窗口、持久化、HTTP 路由、模拟数据）",
+      "status": "ported-main",
+      "files": ["server/**"],
+      "tests": [
+        "重连窗口 15 分钟（与房间清理 TTL 对齐）",
+        "房间/对局快照与恢复",
+        "HTTP 路由与 CSP",
+        "模拟（server/sim）与上游一致"
+      ]
+    },
+    {
+      "id": "game-core-shared",
+      "name": "前后端共享常量与规则",
+      "status": "ported-main",
+      "files": ["shared/**"],
+      "tests": ["协议版本", "玩家容量", "实验选项", "道具/潜能/高地等共享规则"]
+    },
+    {
+      "id": "game-core-client-core",
+      "name": "客户端核心（启动、连接、资源、音频、状态存储）",
+      "status": "ported-main",
+      "files": ["public/js/*.js"],
+      "tests": [
+        "hello 带账号令牌、重连恢复",
+        "名字为空时仍能握手（游客误判回归）",
+        "素材下载与缓存"
+      ]
+    },
+    {
+      "id": "game-core-client-ui",
+      "name": "客户端 UI 组件（选策略头部、HUD、选择弹层、皮肤、设置等）",
+      "status": "ported-main",
+      "files": ["public/js/ui/**"],
+      "tests": [
+        "StepHeader status 槽位（跳过按钮/轮次提示）",
+        "draftMyTurn 并发判定",
+        "联防时间显示",
+        "恢复对局按钮可见性"
+      ]
+    },
+    {
+      "id": "game-core-client-screens",
+      "name": "客户端界面（标题、选策略、对局、结算、培养）",
+      "status": "ported-main",
+      "files": ["public/js/screens/**"],
+      "tests": ["选策略界面", "对局内覆盖层", "结算界面", "标题页与账号联动"]
+    },
+    {
+      "id": "game-core-client-render",
+      "name": "客户端渲染（棋盘、特效、投影、3D 场景）",
+      "status": "ported-main",
+      "files": ["public/js/render/**"],
+      "tests": ["棋盘绘制", "特效播放", "投影与落地"]
+    },
+    {
+      "id": "game-core-client-style",
+      "name": "客户端样式",
+      "status": "ported-main",
+      "files": ["public/css/**"],
+      "tests": ["选策略布局", "对局面板", "结算", "大厅"]
+    },
+    {
+      "id": "game-core-data",
+      "name": "本服数据与开关（建房限制、房间 TTL、本地特效）",
+      "status": "ported-main",
+      "files": ["data/**", "content/**"],
+      "tests": ["room-ttl.json 与重连窗口对齐", "create-room.json 建房开关", "local-fx.json 本地特效"]
     }
   ]
 }
