@@ -193,9 +193,9 @@ export function AwayOverlay({ onBack = () => {} }) {
 
 /**
  * Pre-game step header.
- * @param {{ step: number, of: number, title: string, micro: string, pub: any, total?: number|null, onExit: Function, extra?: any }} props
+ * @param {{ step: number, of: number, title: string, micro: string, pub: any, total?: number|null, onExit: Function, extra?: any, status?: any }} props
  */
-export function StepHeader({ step, of, title, micro, pub, total, onExit, extra = null }) {
+export function StepHeader({ step, of, title, micro, pub, total, onExit, extra = null, status = null }) {
   const conn = useStore((s) => s.connection, shallowEqual);
   return html`<header class="stephead">
     <div class="stephead__left">
@@ -212,6 +212,7 @@ export function StepHeader({ step, of, title, micro, pub, total, onExit, extra =
     </div>
     <div class="stephead__right">
       ${extra}
+      ${status ? html`<div class="stephead__status">${status}</div><i class="stephead__sep" aria-hidden="true"></i>` : null}
       <${GuideButton} class="stephead__guide" variant="secondary" />
       <${Countdown} deadline=${pub?.deadline} total=${total ?? undefined} size="md" />
     </div>
