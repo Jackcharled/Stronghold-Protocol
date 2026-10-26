@@ -2,7 +2,7 @@
 // never decode every model/image/audio file into RAM or persist an unverified "complete" flag.
 // A URL already stored by a local import (assetPack.js) is marked done and not requested again.
 import { mediaUrl } from './media.js';
-import { listImportedPaths } from './assetCache.js';
+import { listImportedPaths, IMPORTED_ASSET_CACHE } from './assetCache.js';
 
 /**
  * Collect only same-origin art files, including all Spine pages and optional local scenes.
@@ -68,9 +68,8 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
   // 会把全部素材重新请求一遍（实测一次 10742 个请求、三分钟打满上传带宽，
   // 玩家在对局里 ping 飙高、R5 掉线）。这里把「已经完成」和「已完成到哪个清单版本」
   // 记在 localStorage，刷新后认得出来。
-  // 只记清单指纹，不记「每个文件都在」——浏览器清掉 HTTP 缓存后文件其实没了，
-  // 所以命中记录时仍要用 HEAD + cache:'only-if-cached' 逐个确认，
-  // 缓存被清理的文件会重新排队下载（玩家的正常诉求必须保留）。
+  // 只记清单指纹，不记「每个文件都在」——浏览器清掉缓存后文件其实没了，
+  // 所以命中记录时仍要逐个确认（见 stillCached），清掉的那些会重新排队下载。
   const KEY = 'sp.assetDownload.done';
   const readDone = () => {
     try {
@@ -93,18 +92,45 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
   };
 
   /**
-   * 这个 URL 是否真的还在浏览器的 HTTP 缓存里。
-   * cache:'only-if-cached' 不会发网络请求，命中缓存才有响应；没命中会 reject。
-   * 因此「玩家清理了缓存」会自然变成 false → 重新下载。
+   * 这个 URL 是否已经下载过、并且现在还在本地。
+   *
+   * 不能用 fetch 的 cache:'only-if-cached' 判断：实测在 Edge/Chrome 上，
+   * 对本站的 /assets-cdn/、/js/、/data/ 三类 URL **全部 reject**
+   * （TypeError: Failed to fetch），即使文件刚下载完、明明就在缓存里。
+   * 于是这个判断永远返回 false，玩家每次打开都重新下载全部素材
+   * —— 玩家反馈的「下载完成重新打开又要重新下载」就是这个。
+   * cache:'force-cache' 也不行：服务器发 Cache-Control: no-cache，
+   * 浏览器每次都会回源验证，分不出「命中」和「回源」。
+   *
+   * 改用 Cache Storage：下载完成的文件自己写进 sp-asset-download 这个 cache，
+   * 清单记在 DOWNLOAD_INDEX_URL。Cache Storage 完全由我们控制，
+   * 不受 HTTP 缓存策略影响，cache.match() 命中就是真的还在。
+   * 玩家清理浏览器缓存时 Cache Storage 一并被清，match 不到 → 自动重新下载。
    */
   async function stillCached(url) {
+    const cache = await openDownloadCache();
+    if (!cache) return false;
     try {
-      const response = await doFetch(url, { cache: 'only-if-cached', mode: 'same-origin' });
-      if (!response) return false;
-      await response.body?.cancel?.();
-      return response.ok;
+      const hit = await cache.match(url);
+      return !!hit;
     } catch { return false; }
   }
+
+  /** 打开（或创建）下载记录用的 Cache Storage。不支持时返回 null。 */
+  async function openDownloadCache() {
+    if (globalThis.__spDlCache !== undefined) return globalThis.__spDlCache;
+    const cachesApi = globalThis.caches;
+    if (!cachesApi?.open) { globalThis.__spDlCache = null; return null; }
+    try {
+      globalThis.__spDlCache = await cachesApi.open(IMPORTED_ASSET_CACHE);
+      return globalThis.__spDlCache;
+    } catch { globalThis.__spDlCache = null; return null; }
+  }
+
+  /**
+   * 把一个下载好的文件写进 Cache Storage 由 worker 内的 dlCache.put 完成
+   * （复用 request() 已经读到的字节，不重复请求）。
+   */
 
   const emit = (force = false) => {
     if (!force && Date.now() - lastNotice < 100) return;
@@ -142,6 +168,9 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
         }
         if (json) return await response.json();
         let size = 0;
+        // 边读边收集字节：读完要写进 Cache Storage 的话直接用这份，
+        // 不能再发一次请求（那样每个文件要下载两遍，实测请求数直接翻倍）。
+        const chunks = [];
         if (response.body?.getReader) {
           const reader = response.body.getReader();
           try {
@@ -149,16 +178,20 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
               const { done, value } = await reader.read();
               if (done) break;
               size += value.byteLength;
+              chunks.push(value);
               state = { ...state, bytes: state.bytes + value.byteLength };
               emit();
             }
           } finally { reader.releaseLock(); }
         } else {
-          size = (await response.arrayBuffer()).byteLength;
+          const buf = await response.arrayBuffer();
+          size = buf.byteLength;
+          chunks.push(new Uint8Array(buf));
           state = { ...state, bytes: state.bytes + size };
         }
         if (!size) throw Object.assign(new Error('Empty asset response'), { status: 'empty' });
-        return;
+        // 把这份响应交给调用方，用于写进我们自己的 Cache Storage
+        return { chunks, size, headers: response.headers, status: response.status };
       } catch (error) {
         if (paused) throw error;
         // 404/410 以前算「永久失败」直接放弃。但服务器的 404 也可能是浏览器缓存里的旧结论
@@ -198,7 +231,7 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
 
       // 上次已经把这一版清单下完（记录在 localStorage）：这次不再是「全量重验」。
       // 但要确认文件真的还在缓存里 —— 玩家清理过缓存就必须重新下载。
-      // 用 cache:'only-if-cached' 逐个确认，不产生网络请求，清理过的会自动落回下面的正常队列。
+      // 用 Cache Storage 逐个确认（不发网络请求），清理过的会自动落回下面的正常队列。
       const saved = readDone();
       const fp = fingerprintOf(urls);
       if (saved && saved.fingerprint === fp) {
@@ -248,12 +281,24 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
       emit(true);
       const queue = urls.filter((url) => !complete.has(url));
       let next = 0;
+      const dlCache = await openDownloadCache();
       const worker = async () => {
         while (!paused && next < queue.length) {
           const url = queue[next++];
           try {
-            await request(url);
+            const body = await request(url);
             complete.add(url);
+            // 用刚读到的那份字节写进我们自己的 Cache Storage：判断「在不在」才可靠，
+            // 玩家清理缓存时会一起被清掉，于是能重新下载。不额外发请求。
+            if (dlCache && body) {
+              try {
+                const blob = new Blob(body.chunks);
+                const headers = {};
+                const ct = body.headers?.get?.('content-type');
+                if (ct) headers['content-type'] = ct;
+                await dlCache.put(url, new Response(blob, { status: body.status, headers }));
+              } catch { /* 写缓存失败不影响下载本身 */ }
+            }
           } catch (error) {
             if (!paused) failures.set(url, { url, status: error.status || 'network' });
           }
