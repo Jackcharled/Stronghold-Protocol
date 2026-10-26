@@ -365,9 +365,11 @@ const JOIN_COOKIE = (() => {
       // 它必须**排在 JOIN_COOKIE 之前**：刷新后 sp_join 里可能还留着上一次的邀请码，
       // 若先走 JOIN_COOKIE 就会去解析旧码（甚至再跳一次节点），玩家就得多输一次密钥。
       else if (PENDING_JOIN) joinFlow(sp, PENDING_JOIN.code, PENDING_JOIN.spectate);
+      // sp_join 只带房号、不带观战意图，所以观战一律回到 PENDING_JOIN（它记了 spectate）。
+      // 走到这里说明是纯邀请链接，按加入处理。
       else if (JOIN_COOKIE) resolveRoomNode(JOIN_COOKIE, () => joinFlow(sp, JOIN_COOKIE, false));
       else if (ROOM && ROOM_PINNED) joinFlow(sp, ROOM, SPECTATE);
-      else if (ROOM) resolveRoomNode(ROOM, () => joinFlow(sp, ROOM, SPECTATE));
+      else if (ROOM) resolveRoomNode(ROOM, () => joinFlow(sp, ROOM, SPECTATE), SPECTATE);
       roomUi(sp);
     }
     // 匹配成功的对局：不等房主手动点，自动准备 + 自动开始
@@ -568,15 +570,23 @@ const JOIN_COOKIE = (() => {
 
   const MODE_NAMES = { FUNNY: '标准模拟', NORMAL: '险境模拟', HARD: '绝境模拟', ABYSS: '终极模拟' };
 
-  /** 按房号查房间在哪个节点；不在本节点就写 cookie 切过去，同节点则继续本地加入。 */
-  function resolveRoomNode(code, onSameNode) {
+  /**
+   * 按房号查房间在哪个节点；不在本节点就写 cookie 切过去，同节点则继续本地加入。
+   * @param {string} code 房号
+   * @param {Function} onSameNode 已在本节点时继续
+   * @param {boolean} [spectate] 观战意图。跨节点跳转会把地址栏清成 `/`，`?spectate=1` 随之消失，
+   *   所以必须显式带上并写进 mm.pendingRoom —— 否则观战会退化成「加入」。
+   */
+  function resolveRoomNode(code, onSameNode, spectate = SPECTATE) {
     fetch('/mm/api/find-room?code=' + encodeURIComponent(code))
       .then((r) => r.json())
       .then((d) => {
         const cur = nodeOf();
         if (d && d.node && d.node !== cur) {
           setNodeCookie(d.node);
-          try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: SPECTATE })); } catch { /* ignore */ }
+          try {
+            sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: !!spectate }));
+          } catch { /* ignore */ }
           location.replace('/');
           return;
         }
@@ -3351,8 +3361,18 @@ const JOIN_COOKIE = (() => {
       // 已经在**目标房间**里才算加入完成。以前这里只判 `if (s.room)`：
       // 玩家手输密钥 → 跨节点刷新 → store 里还留着刷新前的房间（或另一个房间），
       // 于是立刻 joined = true，room.join 根本没发出去，表现为「要输第二次密钥才能进」。
-      const sameRoom = s.room && String(s.room.code).toUpperCase() === String(code).toUpperCase();
-      if (sameRoom) { joined = true; cleanUrl(); return; }
+      //
+      // 观战还要看**席位**：自己已经在同一个房间里当玩家时，房间号相同，
+      // 但 room.spectate 必须照发（否则点「观战」没有任何反应）。
+      // 已经在这个房间的观战席上才算完成。
+      const roomCode = s.room ? String(s.room.code).toUpperCase() : '';
+      const targetCode = String(code).toUpperCase();
+      const sameRoom = roomCode === targetCode;
+      // 观战席的判定与游戏本体一致（store.js isSpectating）：room.spectators 里有自己
+      const myId = (s.session && s.session.playerId) || null;
+      const onSpectatorSeat = !!s.room && myId != null && Array.isArray(s.room.spectators)
+        && s.room.spectators.some((x) => x && x.playerId === myId);
+      if (sameRoom && (!spectate || onSpectatorSeat)) { joined = true; cleanUrl(); return; }
       inFlight = true;
       net.request(spectate ? 'room.spectate' : 'room.join', { code })
         .then(() => { joined = true; cleanUrl(); })

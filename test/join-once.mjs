@@ -44,20 +44,42 @@ if (iHost >= 0 && iRoomUi > iHost) {
 
 // --- B) joinFlow 按目标房间判断 ---
 ok('★ joinFlow 比较房间号，而不是只看「有没有房间」',
-  /const sameRoom = s\.room && String\(s\.room\.code\)\.toUpperCase\(\) === String\(code\)\.toUpperCase\(\);/.test(src));
-ok('★ 只有同房间才直接跳过', /if \(sameRoom\) \{ joined = true; cleanUrl\(\); return; \}/.test(src));
+  /const roomCode = s\.room \? String\(s\.room\.code\)\.toUpperCase\(\) : '';/.test(src)
+  && /const sameRoom = roomCode === targetCode;/.test(src));
+ok('★ 只有同房间才直接跳过', /if \(sameRoom && \(!spectate \|\| onSpectatorSeat\)\) \{ joined = true; cleanUrl\(\); return; \}/.test(src));
 ok('不再有裸的 `if (s.room) { joined = true; return; }`',
   !/if \(s\.room\) \{ joined = true; return; \}/.test(src));
 
-// --- 行为模拟：复刻 sameRoom 判断 ---
-const isSame = (roomCode, target) =>
-  !!roomCode && String(roomCode).toUpperCase() === String(target).toUpperCase();
+// --- C) 观战也要一次到位 ---
+ok('★ 观战席按 room.spectators 里有没有自己判断', /s\.room\.spectators\.some\(\(x\) => x && x\.playerId === myId\)/.test(src));
+ok('★ 观战不因「已在同房间当玩家」而跳过', /if \(sameRoom && \(!spectate \|\| onSpectatorSeat\)\)/.test(src));
+ok('★ resolveRoomNode 接收观战意图', /function resolveRoomNode\(code, onSameNode, spectate = SPECTATE\)/.test(src));
+ok('★ 跳转时把观战意图写进 pendingRoom', /JSON\.stringify\(\{ code, spectate: !!spectate \}\)/.test(src));
+ok('★ ?room= 观战入口显式传 SPECTATE',
+  /resolveRoomNode\(ROOM, \(\) => joinFlow\(sp, ROOM, SPECTATE\), SPECTATE\)/.test(src));
+
+// --- 行为模拟：复刻 sameRoom / onSpectatorSeat 判断 ---
+const shouldSkip = ({ roomCode, target, spectate, spectators, myId }) => {
+  const sameRoom = !!roomCode && String(roomCode).toUpperCase() === String(target).toUpperCase();
+  const onSeat = !!spectators && myId != null && spectators.some((x) => x && x.playerId === myId);
+  return sameRoom && (!spectate || onSeat);
+};
 
 console.log('\n  === 场景模拟 ===');
-ok('store 里是别的房间 → 应该真的发 join', isSame('OLDX', 'WZFP') === false);
-ok('store 里是同一房间（大小写不同）→ 视作已加入', isSame('wzfp', 'WZFP') === true);
-ok('store 里没有房间 → 应该真的发 join', isSame(null, 'WZFP') === false);
-ok('刷新前的残留房间不等于目标 → 应该真的发 join', isSame('KAZB', 'RVJC') === false);
+ok('store 里是别的房间 → 应该真的发 join',
+  shouldSkip({ roomCode: 'OLDX', target: 'WZFP' }) === false);
+ok('store 里是同一房间（大小写不同）→ 视作已加入',
+  shouldSkip({ roomCode: 'wzfp', target: 'WZFP' }) === true);
+ok('store 里没有房间 → 应该真的发 join',
+  shouldSkip({ roomCode: null, target: 'WZFP' }) === false);
+ok('刷新前的残留房间不等于目标 → 应该真的发 join',
+  shouldSkip({ roomCode: 'KAZB', target: 'RVJC' }) === false);
+ok('★ 在房里当玩家、点观战同一房间 → 必须真的发 room.spectate',
+  shouldSkip({ roomCode: 'WZFP', target: 'WZFP', spectate: true, spectators: [], myId: 'p1' }) === false);
+ok('★ 已在观战席 → 视作已完成',
+  shouldSkip({ roomCode: 'WZFP', target: 'WZFP', spectate: true, spectators: [{ playerId: 'p1' }], myId: 'p1' }) === true);
+ok('★ 别人在观战席、自己不在 → 仍要发 room.spectate',
+  shouldSkip({ roomCode: 'WZFP', target: 'WZFP', spectate: true, spectators: [{ playerId: 'p2' }], myId: 'p1' }) === false);
 
 // --- 跨节点跳转后 pending room 会被消费掉（不能残留导致重复跳转）---
 ok('读取 pendingRoom 时立刻清除', /sessionStorage\.removeItem\('mm\.pendingRoom'\)/.test(src));

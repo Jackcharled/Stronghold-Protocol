@@ -91,10 +91,10 @@ const dashboard = {
 };
 
 // 全局匹配服务：http://<主机>:81/mm/ 排队，凑满 4 人后把玩家钉到同一节点并进房
-// MM_DISABLED_NODES：这些节点上还有未结束的对局，暂不接收经由匹配进来的新玩家（不能重启）。
-// 只在匹配器「挑哪个节点」这一步生效：已在房间里的人照常打完、继续开局、被邀请进房都不受影响。
-// 等在打的局自然结束后，从列表里移除并重启匹配器即可恢复正常调度。
-// 详见 PENDING-RESTART.md。
+// 哪些节点对外开放**只由 nginx 决定**（nginx/conf/nginx.conf 的 split_clients 与
+// $sp_cookie_open）。匹配器的 MM_DISABLED_NODES 只在需要时临时启用：
+// 不设时匹配器会把新对局分到任何健康节点，而能进来的玩家本来就只会落在 nginx
+// 放行的节点上，两者不会冲突，少一处要同步的配置。
 const matchmaker = {
   name: 'matchmaker',
   cwd: `${BASE}\\matchmaker`,
@@ -105,7 +105,6 @@ const matchmaker = {
   env: {
     MM_PORT: '3090',
     MM_HOST: '127.0.0.1',
-    MM_DISABLED_NODES: '1,3,9,10,11,12,13,14,16,17,18,19,20,23,25,27,28,29',
   },
   autorestart: true,
   max_restarts: 20,

@@ -768,3 +768,20 @@ nginx 的 split_clients 是静态权重表，会把访客随机分到 1-30 全�
 > 可开放节点变了要改两处：ecosystem.config.cjs 的 MM_DISABLED_NODES
 > 和 nginx/conf/nginx.conf 的 split_clients + \ 映射表。
 > nginx 那份不在 git 仓库里（本机运维配置），改完执行 nginx -t 然后 -s reload。
+
+---
+
+## 2026-10-26 17:16 对外开放只改 nginx
+
+MM_DISABLED_NODES 已从 `ecosystem.config.cjs` 移除（匹配器进程里也没了这个变量）。
+现在**哪 17 个节点对外开放，只由 nginx 的 `split_clients` + `` 决定**。
+
+当前开放（17）：1,2,4,5,6,7,8,10,15,20,21,22,24,25,26,28,30
+
+> 清空环境变量有个坑：`pm2 restart --update-env` **不会**清掉已存在的变量，
+> 必须 `pm2 delete matchmaker` 再 `pm2 start ecosystem.config.cjs --only matchmaker`。
+
+同时修了观战的两个问题（`mm/client.js`）：
+1. `JOIN_COOKIE` 分支写死 `false`，观战会退化成加入 —— 现在观战意图进 `mm.pendingRoom`
+2. `joinFlow` 只比房间号，自己在同房间当玩家时点观战会被当成「已加入」而不发 `room.spectate`
+   —— 现在观战还要求「自己在该房间的观战席上」
