@@ -91,6 +91,48 @@ const JOIN_COOKIE = (() => {
     document.cookie = `sp_node=${node}; path=/; max-age=86400; SameSite=Lax`;
     document.cookie = `sp_route=${node}; path=/; max-age=86400; SameSite=Lax`;
   };
+  /**
+   * 跨节点切换「无感」版：不刷新页面，只把 WebSocket 重连到目标节点。
+   *
+   * 原理：nginx 的 location = /ws 支持 ?watchNode=N（见 nginx.conf），会用它覆盖
+   * $sp_node 选择上游；页面本身的资源继续由当前的 sp_route 提供，不必重新下载。
+   * 于是玩家看不到任何刷新/白屏，只是 socket 换了个节点。
+   *
+   * 注意：切换后必须重设 cookie，否则之后刷新页面会回到旧节点（那里没有这个房间）。
+   * @param {number} node @param {{sp:any, keepName?:string}} opts
+   */
+  function switchNodeLive(sp, node) {
+    try { console.info('[mm-debug] switchNodeLive', { node, net: sp && sp.net && sp.net.status }); } catch { /* ignore */ }
+    return new Promise((resolve, reject) => {
+      try {
+        const net = sp && sp.net;
+        if (!net || typeof net.connect !== 'function') { reject(new Error('net unavailable')); return; }
+        const base = net.url || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+        const u = new URL(base, location.href);
+        u.searchParams.set('watchNode', String(node));
+        // 先记下目标节点：重连成功前页面仍显示旧状态，但 cookie 已经是新的
+        setNodeCookie(node);
+        // 关旧 socket（不触发自动重连），换 url 再开
+        try { net._quietSwap = true; } catch { /* ignore */ }
+        net.close?.();
+        net.url = u.toString();
+        const done = () => {
+          net.off?.('welcome', onWelcome);
+          clearTimeout(timer);
+          resolve();
+        };
+        const fail = (e) => {
+          net.off?.('welcome', onWelcome);
+          clearTimeout(timer);
+          reject(e || new Error('switch timeout'));
+        };
+        const onWelcome = () => done();
+        const timer = setTimeout(() => fail(new Error('switch timeout')), 8000);
+        try { net.on?.('welcome', onWelcome); } catch { /* ignore */ }
+        net.connect?.();
+      } catch (e) { reject(e); }
+    });
+  }
   const seatsOf = (room) => (room && Array.isArray(room.seats) ? room.seats.filter(Boolean).length : 0);
 
   const TIPS = [
@@ -378,7 +420,6 @@ const JOIN_COOKIE = (() => {
     installNodeBadge();
     installAdminEntry();
     /* @sp-strip-icp:start */
-    installIcpBadge();
     /* @sp-strip-icp:end */
   installQQGroup();
   setInterval(cleanTopExtras, 1200);
@@ -584,11 +625,16 @@ const JOIN_COOKIE = (() => {
       .then((d) => {
         const cur = nodeOf();
         if (d && d.node && d.node !== cur) {
-          setNodeCookie(d.node);
-          try {
-            sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: !!spectate }));
-          } catch { /* ignore */ }
-          location.replace('/');
+          // 跨节点：不刷新页面，直接把 socket 换到目标节点（玩家无感），随后本地加入/观战
+          const sp = window.__SP__;
+          switchNodeLive(sp, d.node)
+            .then(() => { onSameNode && onSameNode(); })
+            .catch(() => {
+              // 无感切换失败（例如 socket 起不来）才退回整页跳转
+              setNodeCookie(d.node);
+              try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: !!spectate })); } catch { /* ignore */ }
+              location.replace('/');
+            });
           return;
         }
         if (d && d.node === cur) { onSameNode && onSameNode(); return; }
@@ -644,10 +690,16 @@ const JOIN_COOKIE = (() => {
             if (spec && Number(d.spectators) >= 2) { showStyledToast('观战席位已满（2/2），请稍后再试'); return; }
             if (!spec && d.started) { showStyledToast('该同盟已开始对局，无法加入；可以点「观战」进入'); return; }
             if (!spec && d.full) { showStyledToast('该同盟人数已满，无法加入；可以点「观战」进入'); return; }
-            if (d.node === nodeOf()) { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); return; }
-            setNodeCookie(d.node);
-            try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: spec })); } catch { /* ignore */ }
-            location.replace('/');
+            const localGo = () => { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); };
+            if (d.node === nodeOf()) { localGo(); return; }
+            // 跨节点：socket 无感切过去，然后照常在本地点按钮（玩家看不到刷新）
+            switchNodeLive(window.__SP__, d.node)
+              .then(() => { localGo(); })
+              .catch(() => {
+                setNodeCookie(d.node);
+                try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: spec })); } catch { /* ignore */ }
+                location.replace('/');
+              });
             return;
           }
           if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec);
@@ -1671,75 +1723,6 @@ const JOIN_COOKIE = (() => {
 
 
   /* @sp-strip-icp:start */
-  // ---------------------------------------------------------------- ICP 备案号（页脚）
-
-  function installIcpBadge() {
-    const ICP = '鲁ICP备2026010707号-1';
-    let busy = false;
-
-    const findLeaf = () => {
-      let best = null;
-      for (const el of document.querySelectorAll('div,span,p')) {
-        if (el.childElementCount !== 0) continue;
-        const txt = (el.textContent || '').trim();
-        if (!/非官方同人/.test(txt)) continue;
-        if (txt.length > 80) continue;
-        if (!best || txt.length < best.txt.length) best = { el, txt };
-      }
-      return best;
-    };
-
-    const apply = () => {
-      if (busy) return;
-      const leaf = findLeaf();
-      if (!leaf) return;
-      busy = true;
-      try {
-        const { el, txt } = leaf;
-        // 原地定位，不搬动元素，字体继承关系保持不变
-        el.style.position = 'fixed';
-        el.style.left = '50%';
-        el.style.bottom = '22px';
-        el.style.transform = 'translateX(-50%)';
-        el.style.zIndex = '60';
-        el.style.whiteSpace = 'nowrap';
-        el.style.textAlign = 'center';
-        el.style.pointerEvents = 'auto';
-        // mm-align-right：与右下角「项目仓库」那一行保持同一水平高度
-        try {
-          const rightEl = [...document.querySelectorAll('div,span,p')]
-            .find((n) => n.childElementCount === 0 && /WEB SIMULATION/i.test((n.textContent || '').trim()));
-          if (rightEl) {
-            const r = rightEl.getBoundingClientRect();
-            const myH = el.getBoundingClientRect().height || 16;
-            const bottom = Math.max(6, Math.round(window.innerHeight - (r.top + r.height / 2) - myH / 2));
-            el.style.bottom = bottom + 'px';
-          }
-        } catch { /* ignore */ }
-        if (!el.querySelector('.mm-icp')) {
-          const a = document.createElement('a');
-          a.className = 'mm-icp';
-          a.href = 'https://beian.miit.gov.cn/';
-          a.target = '_blank';
-          a.rel = 'noreferrer noopener';
-          a.textContent = ICP;
-          a.style.cssText = 'color:inherit;text-decoration:none';
-          el.textContent = '· ' + txt;
-          el.insertBefore(a, el.firstChild);
-        }
-      } finally { busy = false; }
-    };
-
-    apply();
-    try { new MutationObserver(apply).observe(document.body, { childList: true, subtree: true }); } catch { /* ignore */ }
-  }
-  /* @sp-strip-icp:end */
-
-
-
-
-
-
   // ---------------------------------------------------------------- 官方 QQ 群（右上角）
 
   // 顶部按钮助手：克隆「统计」按钮的样式与图标位，替换图标路径与文字
