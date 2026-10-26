@@ -2725,11 +2725,21 @@ const JOIN_COOKIE = (() => {
       lastCode = code;
       if (!code) { removeBtn(); return; }
       if (existing()) return;
-      // 锚点：优先「公告」按钮（恢复对局排在它**左边**，与「管理后台」同一侧、管理后台更靠左）。
-      // 公告按钮偶发还没建出来（版本按钮未就绪的瞬间），这时退回到右上角工具条的锚点，
-      // 不让入口因为时序问题而消失。
+      // 锚点优先级（要同时覆盖**标题页**和**大厅**两个界面）：
+      //   1) 大厅：公告按钮（恢复对局排在它左边）
+      //   2) 标题页：右上角工具条 .title-corner__tools（「在线 N 人」/统计 + 语言切换那一行）
+      //      —— 玩家反馈「恢复对局只在联厅出现、标题页没有」，原因就是这里没列标题页的锚点，
+      //      一直落到最下面的兜底分支（固定定位在右下角，标题页上容易被忽略）。
+      //   3) 版本按钮（大厅/标题都可能出现）
+      //   4) 通用兜底
       const notice = document.getElementById('mm-notice-btn');
+      const titleTools = document.querySelector('.title-corner__tools');
+      // 标题页：插在「统计/在线」按钮前面
+      const titleAnchor = titleTools
+        ? (titleTools.querySelector('.title-stats') || titleTools.firstElementChild || null)
+        : null;
       const anchor = notice
+        || titleAnchor
         || document.querySelector('.verchip-wrap, button.verchip[data-testid="version-switch"]')
         || [...document.querySelectorAll('button')].find((b) => !b.id.startsWith('mm-') && /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
       // 所有锚点都找不到时（界面改版、按钮还没建出来、或玩家停在一个很简的页面），
