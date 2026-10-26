@@ -93,6 +93,7 @@ export function startBuildGuard(o = {}) {
   let pending = false;
   let timer = null;
   let stopped = false;
+  let lastNode = null;   // 上次检查时所在的节点（sp_node cookie）；变了说明玩家跨节点了
 
   const stopTimer = () => { if (timer != null) { clearIv(timer); timer = null; } };
   const reloadNow = () => { stopped = true; stopTimer(); reload(); };
@@ -100,12 +101,31 @@ export function startBuildGuard(o = {}) {
   const check = async () => {
     if (stopped) return { status: 'stopped', build: null };
     if (pending) return { status: 'pending', build: null };
+    // 跨节点时不要误判为「服务器更新了」：本服有 30 个节点，各节点进程启动时间不同，
+    // buildTag 又是进程启动时缓存的，于是同一个页面从 node-A 跳到 node-B 会看到不同的
+    // build，被当成「有新版」并自动 reload —— 玩家看到的就是「离开房间/跳节点突然刷新」。
+    // 节点变了就忽略「与旧基准不同」这件事，把新节点这次的 build 直接当作基准。
+    let nodeChanged = false;
+    try {
+      const nodeNow = (typeof document !== 'undefined' && document.cookie.match(/sp_node=(\d+)/) || [])[1] || '';
+      if (nodeNow && nodeNow !== lastNode) {
+        nodeChanged = true;
+        lastNode = nodeNow;
+        candidate = null;
+        seen = 0;
+      }
+    } catch { /* ignore */ }
     pending = true;
     let r;
     try { r = await checkBuildOnce({ fetchFn, known, timeoutMs: o.timeoutMs, setTimeout: o.setTimeout, clearTimeout: o.clearTimeout, onHealth: o.onHealth }); }
     finally { pending = false; }
     if (stopped) return { status: 'stopped', build: null };
     if (r.status === 'unknown') { candidate = null; seen = 0; return r; }   // review: a failed check never reloads
+    // 节点刚变：把这一轮的 build 直接当作基准，等同于「首次见到」。
+    // 不同节点进程启动时间不同，buildTag 必然不同，那不是「有新版本」。
+    if (nodeChanged) {
+      if (r.build) { known = r.build; candidate = null; seen = 0; return { status: 'first', build: r.build }; }
+    }
     if (r.status === 'first') { known = r.build; return r; }
     if (r.status === 'current') { candidate = null; seen = 0; return r; }
     // a different build: only BUILD_CONFIRMATIONS checks in a row with the SAME tag count (a deploy that is still

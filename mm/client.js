@@ -669,15 +669,20 @@ const JOIN_COOKIE = (() => {
       checkAndGo(code, spec, btn);
     }, true);
     // 回车提交同样先检查（游戏自己的 onEnter 会直接在当前节点加入，绕过按钮）
+    // 注意：回车**必须按实际意图**处理。这里原先写死 false（当作加入），
+    // 于是在「观战」模式下按回车会丢掉观战意图，跨节点后变成加入，甚至失败后要重输。
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' || bypass) return;
       const el = document.activeElement;
       if (!el || el.tagName !== 'INPUT' || !/密钥|邀请链接/.test(el.placeholder || '')) return;
       const code = codeFrom(el.value);
       if (!code) return;
+      // 当前是否处于观战模式：以界面上可见的观战按钮标签为准（与点击路径同一判据）
+      const specBtn = findBtn(true);
+      const specMode = !!specBtn && !/加入同盟/.test(specBtn.textContent || '');
       e.preventDefault();
       e.stopPropagation();
-      checkAndGo(code, false, null);
+      checkAndGo(code, specMode, specMode ? specBtn : findBtn(false));
     }, true);
   }
 
@@ -3343,21 +3348,31 @@ const JOIN_COOKIE = (() => {
   }
 
   function joinFlow(sp, code, spectate) {
+    // 诊断：玩家反馈「跨节点后还要再输一次房间号」。每次调用都留痕，便于事后从控制台定位。
+    try {
+      console.info('[mm-debug] joinFlow', { code, spectate, route: (document.cookie.match(/sp_route=(\d+)/) || [])[1] });
+    } catch { /* ignore */ }
     // Hidden admin watch is not a player deep-link: joining as a player would fail
     // with ROOM_FULL on a full room. A tab opened just after the watch closes must
     // discard its stale deep-link/pending join instead of surfacing an error.
     if (adminWatchActive() || watchExitRecent()) {
+      try { console.info('[mm-debug] joinFlow 放弃：adminWatch 或刚退出观战'); } catch { /* ignore */ }
       try { sp.store.patch('ui', { pendingJoin: null, pendingSpectate: false }); } catch { /* ignore */ }
       try { sessionStorage.removeItem('mm.pendingRoom'); } catch { /* ignore */ }
       return;
     }
     const { store, net } = sp;
-    let inFlight = false, joined = false;
+    let inFlight = false, joined = false, retries = 0;
     try { store.patch('ui', { pendingJoin: null }); } catch (e) { /* ignore */ }
     const tick = () => {
       if (adminWatchActive() || watchExitRecent()) { joined = true; return; }
       const s = store.get();
-      if (joined || inFlight || !s.session.entered || net.status !== 'online') return;
+      // 跨节点跳转后不要卡在 `session.entered` 上：
+      // entered 由 localStorage 里的「本机进入过」标记决定，跳到一个新节点后页面是全新上下文，
+      // 它可能是 false，于是这里一直 return，room.join / room.spectate 一条都不发，
+      // 玩家看到的就是「跳到新节点后又得重输一次房间号」。
+      // 只要 socket 已连上（net.status === 'online'）就允许发请求；服务端会按会话状态自行处理。
+      if (joined || inFlight || net.status !== 'online') return;
       // 已经在**目标房间**里才算加入完成。以前这里只判 `if (s.room)`：
       // 玩家手输密钥 → 跨节点刷新 → store 里还留着刷新前的房间（或另一个房间），
       // 于是立刻 joined = true，room.join 根本没发出去，表现为「要输第二次密钥才能进」。
@@ -3374,12 +3389,18 @@ const JOIN_COOKIE = (() => {
         && s.room.spectators.some((x) => x && x.playerId === myId);
       if (sameRoom && (!spectate || onSpectatorSeat)) { joined = true; cleanUrl(); return; }
       inFlight = true;
+      try {
+        console.info('[mm-debug] joinFlow 发请求', {
+          api: spectate ? 'room.spectate' : 'room.join', code,
+          sameRoom, onSpectatorSeat, myId, roomCode,
+        });
+      } catch { /* ignore */ }
       net.request(spectate ? 'room.spectate' : 'room.join', { code })
         .then(() => { joined = true; cleanUrl(); })
         .catch((e) => {
-          joined = true;
           const msg = String((e && e.message) || '');
           const code2 = String((e && e.code) || '');
+          try { console.warn('[mm-debug] joinFlow 失败', { api: spectate ? 'room.spectate' : 'room.join', code2, msg, retries }); } catch { /* ignore */ }
           // 确定性失败：重试多少次结果都一样，而且继续留着房号只会让玩家反复被弹提示。
           //   ROOM_STARTED  对局已经打起来了
           //   ROOM_FULL     房间满了
@@ -3388,6 +3409,13 @@ const JOIN_COOKIE = (() => {
           // 否则玩家退回大厅或刷新时 joinFlow 会被再次触发，表现为反复提示加入失败。
           const terminal = code2 === 'ROOM_STARTED' || code2 === 'ROOM_FULL' || code2 === 'ROOM_NOT_FOUND'
             || /模拟已开始|房间已满|未找到该同盟密钥|不存在|已开始|Simulation already started|Room full|room is full|not found/i.test(msg);
+          // 非终态失败（跨节点跳转后 socket 刚连上、会话还没就绪之类）先重试几次，
+          // 不要一次失败就放弃 —— 那会让玩家以为「还得再输一次房间号」。
+          if (!terminal && retries < 6) {
+            retries++;
+            return; // 交给下面的 setInterval 再 tick 一次
+          }
+          joined = true;
           if (terminal) {
             try { store.patch('ui', { pendingJoin: null, pendingSpectate: false }); } catch { /* ignore */ }
             // 清空所有可能让页面再次尝试加入的痕迹
