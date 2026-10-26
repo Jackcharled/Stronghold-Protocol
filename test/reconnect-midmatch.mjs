@@ -11,7 +11,7 @@ const check = (n, ok, extra = '') => { if (!ok) fail++; console.log(`  ${ok ? 'O
 
 console.log('=== 1) 重连窗口：多久之内还能回去 ===\n');
 const reg = new SessionRegistry({});
-check('★ 默认重连窗口 = 10 分钟', reg.reconnectWindowMs === 600000, `${reg.reconnectWindowMs} ms`);
+check('★ 默认重连窗口 = 15 分钟（与房间清理 TTL 对齐）', reg.reconnectWindowMs === 900000, `${reg.reconnectWindowMs} ms`);
 
 const s = reg.create('雾灯');
 check('建会话成功', !!s?.token);
@@ -28,8 +28,8 @@ check('5 分钟时未过期', reg.isExpired(s, NOW) === false);
 check('★ 同一 token 能找到会话（= resume 而非新建）', reg.byToken(s.token) === s);
 
 console.log('\n=== 3) 断线超过 10 分钟：会话被回收 ===\n');
-check('10 分 01 秒时已过期', reg.isExpired(s, NOW + 5 * 60_000 + 1000) === true);
-console.log('  → 超过 10 分钟，服务端会移除会话，玩家只能重新进房（对局已开始则进不去）');
+check('15 分 01 秒时已过期', reg.isExpired(s, NOW + 15 * 60_000 + 1000) === true);
+console.log('  → 超过 15 分钟（= 房间清理 TTL），服务端移除会话、房间同时销毁')
 
 console.log('\n=== 4) 单人模式可以延长到 24 小时 ===\n');
 const s2 = reg.create('雾灯2');
@@ -57,7 +57,7 @@ check('★ 重连后 resync 到对局（match.onReconnect）',
   /this\.callMatch\(room, room\.spectatorOf\(session\.playerId\) \? 'addSpectator' : 'onReconnect', session\.playerId\)/.test(lobby));
 
 console.log('\n=== 结论 ===\n');
-console.log('  对局中掉线 → 座位保留 → 10 分钟内（单人 24 小时）刷新可自动回到对局。');
+console.log('  对局中掉线 → 座位保留 → 15 分钟内（单人 24 小时）刷新可自动回到对局。');
 console.log('  超过窗口或对局结束，就只能重新开一局。');
 
 console.log(fail ? `\n${fail} 项失败` : '\n全部通过');
