@@ -441,7 +441,13 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
   const exp = room?.experimental || {};
   const currentCap = Number(room?.capacity) || Number(exp.playerCapacity) || 4;
   /** 鸭爵叠加（本服新增）：没有「允许重复选择策略」就没有多个鸭爵可叠，所以跟着 repeat 一起显示/收起。 */
-  const showDuckStack = capacity > 4 && repeat;
+  /**
+   * 鸭爵叠加（本服新增）的显示条件：
+   *   - 扩展房（人数 > 4）：普通 4 人房没有这些选项
+   *   - 勾了「允许重复选择策略」：去重时一支队伍最多一个鸭爵，叠加无从谈起
+   *   - **没有勾「禁用鸭爵策略」**：鸭爵都被禁了，再来一个「鸭爵可叠加」是自相矛盾的选项
+   */
+  const showDuckStack = capacity > 4 && repeat && !noDuck;
   const toggle = () => {
     const next = !open;
     setOpen(next);
@@ -515,7 +521,7 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
       ${capacity > 4 ? html`<${Tooltip} text=${t('多人大厅里不出现鸭爵策略')}>
         <button type="button" role="switch" aria-checked=${noDuck ? 'true' : 'false'} data-testid="exp-no-duck"
             class=${`dpick__opt ailast__opt${noDuck ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
-            onClick=${() => { setCapOpen(false); canEdit && setNoDuck(!noDuck); }}>
+            onClick=${() => { setCapOpen(false); if (canEdit) { setNoDuck(!noDuck); if (!noDuck) setStackDuck(false); } }}>
           <${Icon} name="check" class=${noDuck ? 'is-on' : ''} />${t('禁用鸭爵策略')}
         </button>
       <//>` : null}

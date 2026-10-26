@@ -342,9 +342,11 @@ export class Match {
     this.twentyPlayerMode = this.capacityExperiment && this.playerCapacity === 20;
     this.disableDuckLord = this.capacityExperiment && this.experimental.disableDuckLord === true;
     this.allowRepeat = this.capacityExperiment && this.experimental.allowRepeat === true;
-    // 鸭爵叠加（本服新增）：只有「允许重复选择策略」开着才有意义 —— 去重时一支队伍最多一个鸭爵，
-    // 叠不叠加都是 1 份。所以这里用 allowRepeat 做前置条件，而不只是 capacityExperiment。
-    this.stackDuckLord = this.allowRepeat && this.experimental.stackDuckLord === true;
+    // 鸭爵叠加（本服新增）：两个前置条件缺一不可。
+    //   - allowRepeat：去重时一支队伍最多一个鸭爵，叠不叠加都是 1 份，开关无从谈起。
+    //   - 不能同时禁用鸭爵：鸭爵都被禁了，"鸭爵可叠加"是自相矛盾的组合。
+    //     前端在勾了「禁用鸭爵策略」时会隐藏并清掉这个开关；这里再兜一层，防止手搓请求带上矛盾组合。
+    this.stackDuckLord = this.allowRepeat && !this.disableDuckLord && this.experimental.stackDuckLord === true;
     this.gd.disableDuckLord = this.disableDuckLord;
     this.gd.stackDuckLord = this.stackDuckLord;
     if (opts.seats.length > this.playerCapacity) throw new RangeError('Match: seats exceed room capacity');
