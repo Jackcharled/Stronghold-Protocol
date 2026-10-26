@@ -150,6 +150,18 @@ const CHECKS = [
     ],
   },
   {
+    id: 'client-op-model-retry',
+    name: '干员模型加载失败不会永久放弃',
+    rules: [
+      // 旧实现：SPINE_RETRY_MS 用完（约 40 秒）就彻底放弃，之后只能靠切标签页触发 retryAssets，
+      // 玩家一直盯着屏幕就永远只有菱形头像
+      ['public/js/render/units.js', /export const SPINE_RETRY_MAX_MS = \d+/, '★ 长期退避上限常量'],
+      ['public/js/render/units.js', /this\._retryAt = nowMs\(\) \+ wait;/, '★ 失败后无条件安排下次重试'],
+      ['public/js/render/units.js', /tries < SPINE_RETRY_MS\.length/, '★ 先快速重试'],
+      ['public/js/render/units.js', /Math\.min\(SPINE_RETRY_MAX_MS/, '★ 长期退避封顶（不放弃）'],
+    ],
+  },
+  {
     id: 'admin-room-version',
     name: '后台/控制台显示房间版本',
     rules: [

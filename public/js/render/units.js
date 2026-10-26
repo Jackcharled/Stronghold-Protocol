@@ -157,11 +157,18 @@ const ICE_FRAME = 0x9fe6ff;
 /** How long a view waits for its avatar before showing the image-less placeholder diamond. */
 const PIC_WAIT_MS = 400;
 /**
- * Waits (ms, real time) before a view loads its Spine model again after the load failed or timed out (assets.js, 20 s)
- * — bounded: after the last one the view keeps its diamond until `retryAssets` (a manifest that arrived late, the tab
- * shown again). Counted from the failure; a hidden tab runs no frames, so nothing is retried while hidden.
+ * Waits (ms, real time) before a view loads its Spine model again after the load failed or timed out (assets.js, 20 s).
+ * These are the fast retries; once they run out the view keeps retrying at a slower back-off (SPINE_RETRY_MAX_MS) instead
+ * of giving up — a view that gave up showed its fallback diamond until the manifest changed or the tab was shown again,
+ * which on a screen the player keeps watching means "forever" (player report: one operator never left its avatar diamond).
+ * Counted from the failure; a hidden tab runs no frames, so nothing is retried while hidden.
  */
 export const SPINE_RETRY_MS = Object.freeze([1200, 4000, 10000, 25000]);
+/**
+ * The slowest wait (ms) a view retries a failed Spine load at, once SPINE_RETRY_MS is used up. Bounded so a genuinely
+ * unreachable model does not hammer the network, but never stops: the model appears as soon as a retry succeeds.
+ */
+export const SPINE_RETRY_MAX_MS = 60000;
 /**
  * A Spine load begun while the tab was hidden and still in flight this long (ms, real time) after the tab is shown again
  * is started again (`retryAssets` arms it, `update` fires it; GitHub #68: such a load — a request the hidden tab left
@@ -938,7 +945,8 @@ export class UnitView {
    * load releases its own entry; the displayed model's entry (`_actorEntry`) is released when that model is replaced or
    * destroyed. A model that fails to load falls back to the entry's `fallback` (an optional local-client model,
    * assets.js spineEntry: DESIGN §13) when it names one; otherwise the view keeps its fallback diamond and — while no
-   * model is shown — loads again after SPINE_RETRY_MS (a timed-out or failed download used to stay a diamond for good).
+   * model is shown — retries on a back-off that never gives up (SPINE_RETRY_MS then SPINE_RETRY_MAX_MS), so a model that
+   * failed once still appears when a later attempt succeeds.
    */
   _acquireSpine(entry, id, retry = false) {
     const a = this.ctx.assets;
@@ -1024,8 +1032,21 @@ export class UnitView {
       this._releaseEntry(entry);
       if (this.destroyed || req !== this._spineReq) return;
       if (entry.fallback) { this._acquireSpine(entry.fallback, id, retry); return; }
-      // keep the fallback diamond (or the model already shown: a failed Front ⇄ Back swap) — and try again later
-      if (!this.actor && this._spineTries < SPINE_RETRY_MS.length) this._retryAt = nowMs() + SPINE_RETRY_MS[this._spineTries++];
+      // 失败后保留菱形头像兜底，稍后重试。
+      //
+      // 以前这里是「SPINE_RETRY_MS 用完就彻底放弃」（1200/4000/10000/25000 四档，合计约 40 秒），
+      // 之后这个单位会一直挂着菱形头像，直到素材清单变化或玩家切走标签页再回来
+      // （retryAssets 只在资产变更 / visibilitychange 时触发）。
+      // 玩家反馈「某个干员一直只显示头像没有模型」正是这个原因：多单位并发加载时
+      // 个别请求超时/失败，40 秒后就被永久放弃，而玩家一直盯着屏幕不会触发重试。
+      //
+      // 现在：前几档仍按 SPINE_RETRY_MS 快速重试，用完后转入长期退避（封顶 60 秒）继续重试。
+      // 模型一旦加载成功就清零计数回到正常；不会无限紧密重试拖垮网络。
+      const tries = this._spineTries++;
+      const wait = tries < SPINE_RETRY_MS.length
+        ? SPINE_RETRY_MS[tries]
+        : Math.min(SPINE_RETRY_MAX_MS, SPINE_RETRY_MS[SPINE_RETRY_MS.length - 1] * (tries - SPINE_RETRY_MS.length + 1));
+      this._retryAt = nowMs() + wait;
     });
   }
 

@@ -305,6 +305,54 @@ node test\e2e-enemy-model-load.cjs       6/6 可解析、模型文件全部 200�
 
 ---
 
+### 1g. 某个干员一直只显示头像、没有模型
+
+**现象**：战斗中一个干员位置上只有一个菱形头像框，同场其他干员模型都正常。
+
+**排查**（先说结论：**不是素材缺失**）：
+```
+node test\op-model-gaps.mjs        229 个干员全部有 Front 模型
+node test\skin-model-gaps.mjs      486 个皮肤模型全部有效
+```
+素材、皮肤、清单都是完整的。
+
+**病根**：`render/units.js` 里模型加载失败后的重试是**有次数上限的**：
+
+```js
+if (!this.actor && this._spineTries < SPINE_RETRY_MS.length)   // ← 4 次后彻底放弃
+  this._retryAt = nowMs() + SPINE_RETRY_MS[this._spineTries++];
+```
+
+`SPINE_RETRY_MS = [1200, 4000, 10000, 25000]`，合计约 40 秒。用完之后这个单位就**永久挂着菱形头像**，
+只有两种情况能让它再试：素材清单发生变化（`assets.onChange`），或玩家**切走标签页再回来**
+（`visibilitychange` → `retryAssets`）。
+
+而 `retryAssets` 正是「重试耗尽后唯一的补救入口」—— 玩家一直盯着战斗画面不动，
+就永远等不到那一次补救。多单位同时进场时个别请求超时/失败很常见，
+于是表现为「就那一个干员没模型」，而且**怎么等都不会自己恢复**。
+
+**改了什么**（`public/js/render/units.js`）：
+
+- 前 4 档仍按 `SPINE_RETRY_MS` 快速重试（网络抖动几秒内就能恢复）；
+- 用完转入**长期退避**：25s → 50s → 封顶 60s，**永不放弃**；
+- 加载成功即清零，回到正常状态。
+
+不会拖垮网络：封顶 60 秒，且只在模型确实缺失时才重试。
+
+**验证**：
+```
+node test\model-retry-backoff.mjs   全部通过（新增）
+```
+覆盖：源码不再有「次数用尽就放弃」、失败后无条件安排重试、第 100 次仍会重试、
+退避封顶 60s、60 秒内至少重试 5 次（旧实现 4 次后停止）。
+
+`patcher\check-features.mjs` 新增 `client-op-model-retry`（4 条断言），
+改回旧逻辑会让单测和校验器同时变红（破坏性测试已验证）。
+
+**涉及文件**：`public/js/render/units.js`（静态文件，**刷新即生效，不用重启**）
+
+---
+
 ### 2. 隐身观战加载不出来
 
 **病根**：`Lobby.sendToPlayer()` 只认 `seatOf()` / `spectatorOf()`，
