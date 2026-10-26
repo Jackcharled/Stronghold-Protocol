@@ -10,7 +10,21 @@
 
 (function () {
   const q = new URLSearchParams(location.search);
-  const NAME = (q.get('name') || '').trim().slice(0, 12);
+  // 名字：优先 URL 参数（匹配/邀请链接会带），否则回退到本机记住的名字。
+  // 只认 URL 的话，老玩家直接打开域名（没有 ?name=）时 NAME 为空：
+  // 于是 net.setName 从不调用 → net.name 为空 → hello 不发、rehandshake 也返回 false
+  // → accountToken 送不上去 → 服务端 session.accountId 为空 → 有账号却被判成游客。
+  const NAME = (() => {
+    const fromUrl = (q.get('name') || '').trim();
+    if (fromUrl) return fromUrl.slice(0, 12);
+    try {
+      for (const k of ['sp.name', 'mm.name']) {
+        const v = (localStorage.getItem(k) || '').trim();
+        if (v) return v.replace(/#\d{4}\s*$/, '').slice(0, 12);   // 去掉「#四位代码」后缀
+      }
+    } catch { /* 隐私模式 */ }
+    return '';
+  })();
   const ROOM = q.get('room');
   const IS_HOST = q.get('mmhost') === '1';
   const MID = q.get('mid');
@@ -381,8 +395,19 @@ const JOIN_COOKIE = (() => {
     // 这些值已经读进常量了，立刻抹掉不影响后续流程。
     else if (!ADMIN_WATCH && (IS_HOST || PMID || q.get('mm') === '1' || MID || TICKET)) cleanUrl();
 
-    if (NAME && !store.get().session.entered) {
-      try { store.set((s) => ({ ...s, me: { ...s.me, name: NAME }, session: { ...s.session, entered: true } })); } catch (e) { /* ignore */ }
+    // 名字必须**无条件**设置到 net：它是 hello 的前置条件。
+    // 以前这里写着 `if (NAME && !store.get().session.entered)`，而 entered 是存在
+    // localStorage 里的「本机进过大堂」标记 —— 老玩家第二次及以后打开页面时它是 true，
+    // 于是 setName() 从未被调用，net.name 一直为空：
+    //   · _onOpen 里 `if (this.name)` 不成立 → 连 hello 都不发
+    //   · rehandshake() 里 `if (... || !this.name) return false` → 身份重发也被跳过
+    // 结果 accountToken 送不上去，服务端 session.accountId 为空，玩家在有账号的情况下
+    // 被 lobby 判成游客（dashboard 显示「游客」、房间游客标签、游客限制也一并触发）。
+    // setName 本身是幂等的（同名字不会重复握手），放心每次调用。
+    if (NAME) {
+      if (!store.get().session.entered) {
+        try { store.set((s) => ({ ...s, me: { ...s.me, name: NAME }, session: { ...s.session, entered: true } })); } catch (e) { /* ignore */ }
+      }
       try { net.setName(NAME); } catch (e) { /* ignore */ }
     }
 

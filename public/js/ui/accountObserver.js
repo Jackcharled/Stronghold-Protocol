@@ -199,6 +199,13 @@ export function installAccountObserver() {
       lastHandshakeSig = sig;
     } catch { /* 隐私模式：照常发一次 */ }
     try {
+      // 先确保 net 有名字：rehandshake() 在 net.name 为空时直接返回 false，
+      // 而账号名往往比页面启动晚到（client.js 启动时可能还取不到名字）。
+      // 这里补一层，避免「有账号令牌却因为没有名字而永远握不上手」。
+      if (!net.name) {
+        const nm = (window.__SP_ACCOUNT_USER || '').trim();
+        if (nm) net.setName(nm);
+      }
       const sent = net.rehandshake();
       log('rehandshake', { sent, role: role || null });
     } catch { /* ignore */ }
