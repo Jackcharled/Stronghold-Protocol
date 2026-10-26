@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>同盟集结 · 卫戍协议</title>
+<style>
+  :root {
+    --bg: #070a09; --panel: #0e1412; --line: #24312c; --line-2: #3a4a44;
+    --text: #eef0ef; --lo: #8d9391; --dim: #6a716f;
+    --mint: #4ed8af; --mint-2: #5df0c6; --mint-700: #1f6f57;
+    --gold: #f6a329; --red: #ff5d6c;
+    --font-display: "Rajdhani", "Oxanium", "Segoe UI", system-ui, sans-serif;
+    --font-num: "Consolas", "SFMono-Regular", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; color: var(--text); font: 15px/1.6 "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+    background:
+      radial-gradient(60% 60% at 50% 0%, rgba(46, 210, 160, .10), transparent 70%),
+      repeating-linear-gradient(90deg, rgba(255,255,255,.02) 0 1px, transparent 1px 4px),
+      linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px) 0 0 / 46px 46px,
+      linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px) 0 0 / 46px 46px,
+      radial-gradient(120% 90% at 50% 35%, #101615, #060808 70%);
+  }
+  .top { display: flex; align-items: center; gap: 16px; padding: 16px 22px; border-bottom: 1px solid rgba(255,255,255,.06); }
+  .back { color: var(--lo); text-decoration: none; font-size: 13px; letter-spacing: .05em; }
+  .back:hover { color: var(--text); }
+  .mf-brand { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-display); font-size: 13px; letter-spacing: .12em; color: var(--lo); margin-left: auto; }
+  .mf-brand__rook { display: inline-flex; align-items: center; gap: 1px; color: var(--mint); font-weight: 300; }
+
+  .screen { max-width: 1080px; margin: 0 auto; padding: 26px 22px 40px; min-height: calc(100vh - 62px); display: flex; flex-direction: column; justify-content: center; }
+  .hidden { display: none !important; }
+  .mf-search .mf-brand, .mf-found .mf-brand { margin-left: 0; }
+
+  .hero { text-align: center; margin-bottom: 22px; }
+  .kicker { font-family: var(--font-display); letter-spacing: .3em; font-size: 12px; color: var(--mint); text-transform: uppercase; }
+  .hero h1 { margin: 6px 0 8px; font-size: 44px; letter-spacing: .18em; font-weight: 900; text-shadow: 0 0 26px rgba(78,216,175,.35); }
+  .hero p { margin: 0 auto; max-width: 620px; color: var(--lo); font-size: 14px; }
+
+  .panel { position: relative; background: linear-gradient(180deg, rgba(18,26,23,.94), rgba(10,14,13,.96)); border: 1px solid var(--line); padding: 22px 24px; }
+  .panel::before, .panel::after { content: ""; position: absolute; width: 14px; height: 14px; border: 1px solid var(--mint-700); }
+  .panel::before { left: -1px; top: -1px; border-right: 0; border-bottom: 0; }
+  .panel::after { right: -1px; bottom: -1px; border-left: 0; border-top: 0; }
+
+  .field { display: block; margin-bottom: 18px; }
+  .field > span { display: block; font-size: 11px; letter-spacing: .18em; color: var(--lo); margin-bottom: 7px; text-transform: uppercase; }
+  .field input {
+    width: 100%; padding: 12px 14px; font: inherit; color: var(--text); background: #0a100e;
+    border: 1px solid var(--line); border-left: 3px solid var(--mint-700); outline: none;
+  }
+  .field input:focus { border-color: var(--mint); border-left-color: var(--mint); }
+
+  .diff-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .diff-card {
+    position: relative; text-align: left; padding: 14px 14px 12px; cursor: pointer; color: var(--text);
+    background: linear-gradient(180deg, rgba(24,31,28,.9), rgba(12,16,15,.95)); border: 1px solid var(--line);
+    transition: border-color .15s, background .15s, transform .15s;
+  }
+  .diff-card:hover { border-color: var(--line-2); transform: translateY(-1px); }
+  .diff-card.is-on { border-color: var(--c, var(--mint)); box-shadow: inset 0 0 0 1px var(--c, var(--mint)), 0 0 22px rgba(0,0,0,.5); }
+  .diff-card__code { font-family: var(--font-num); font-size: 11px; letter-spacing: .2em; color: var(--c, var(--mint)); }
+  .diff-card__name { font-size: 20px; font-weight: 800; letter-spacing: .08em; margin: 4px 0 2px; }
+  .diff-card__meta { font-size: 12px; color: var(--dim); }
+  .diff-card__check { position: absolute; right: 10px; top: 10px; color: var(--c, var(--mint)); opacity: 0; font-size: 16px; }
+  .diff-card.is-on .diff-card__check { opacity: 1; }
+
+  .cta {
+    width: 100%; margin-top: 20px; height: 62px; cursor: pointer; border: 1px solid #3fbf8a;
+    background: linear-gradient(90deg, #1f7a54, #14503a); color: #eafff5; font-size: 22px; font-weight: 800; letter-spacing: .3em;
+  }
+  .cta:hover:not(:disabled) { filter: brightness(1.12); }
+  .cta:disabled { opacity: .55; cursor: default; }
+  .note { margin: 12px 0 0; font-size: 12px; color: var(--dim); text-align: center; }
+
+  /* ---- 搜寻中（复刻 fork 的 mf-search） ---- */
+  .mf-search { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 30px 20px 10px; text-align: center; }
+  .mf-search__title { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 0; font-size: 40px; font-weight: 900; letter-spacing: .08em; text-shadow: 0 0 24px rgba(255,255,255,.35); }
+  .mf-search__dots { display: inline-block; width: 1.2em; text-align: left; }
+  .mf-search__title small { font-size: .45em; font-weight: 700; color: #c9cecc; font-family: var(--font-num); }
+  .mf-search__tags { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+  .mf-tag { display: inline-flex; align-items: center; gap: 6px; padding: 5px 16px; font-size: 13px; font-weight: 700; color: #eef0ef;
+    background: color-mix(in srgb, var(--tag) 26%, #1b1d1d); border-radius: 999px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tag) 55%, transparent); }
+  .mf-search__scene { position: relative; width: min(100%, 420px); padding: 12px 24px; overflow: hidden; contain: paint; -webkit-mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent); mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent); }
+  .mf-cross { position: absolute; width: 14px; height: 14px; }
+  .mf-cross::before, .mf-cross::after { content: ''; position: absolute; background: rgba(78,216,175,.55); }
+  .mf-cross::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .mf-cross::after { top: 50%; left: 0; right: 0; height: 1px; }
+  .mf-cross--tl { left: 8px; top: 0; } .mf-cross--tr { right: 8px; top: 0; }
+  .mf-cross--bl { left: 8px; bottom: 0; } .mf-cross--br { right: 8px; bottom: 0; }
+  .mf-scout { display: block; width: 100%; height: auto; overflow: visible; }
+  .mf-scout__wave { fill: none; stroke: rgba(78,216,175,.35); stroke-width: 6; filter: blur(2px); animation: mf-wave 3s ease-in-out infinite alternate; }
+  @keyframes mf-wave { to { transform: translateX(-12px); } }
+  .mf-scout__sky { fill: #48e2b6; opacity: .9; animation: mf-sky 4s linear infinite; }
+  @keyframes mf-sky { from { transform: translateX(0); } to { transform: translateX(-120px); } }
+  .mf-scout__bot rect { fill: #5df0c6; }
+  .mf-scout__bot { animation: mf-hop .5s steps(2) infinite; }
+  @keyframes mf-hop { 50% { transform: translateY(-3px); } }
+  .mf-scout__eye { fill: #0b2620 !important; animation: mf-blink 3s steps(1) infinite; }
+  @keyframes mf-blink { 0%,92% { opacity: 1; } 94%,100% { opacity: 0; } }
+  .mf-scout__leg--a { animation: mf-leg .3s steps(2) infinite; }
+  .mf-scout__leg--b { animation: mf-leg .3s steps(2) infinite reverse; }
+  @keyframes mf-leg { 50% { transform: translateY(-3px); } }
+  .mf-scout__ground { stroke: rgba(93,240,198,.5); stroke-width: 2; stroke-dasharray: 6 4; }
+  .mf-scout text { fill: #5df0c6; font: 700 8px var(--font-num); letter-spacing: 2px; opacity: .85; }
+  .mf-search__tip { min-height: 2.8em; margin: 0; max-width: 520px; font-size: 14px; line-height: 1.5; color: #e6e9e8; }
+  .mf-search__pop { display: flex; align-items: baseline; gap: 8px; color: var(--lo); font-size: 13px; }
+  .mf-search__pop strong { font-family: var(--font-num); font-size: 26px; color: var(--mint); }
+  .mf-stop { display: inline-flex; align-items: center; gap: 12px; height: 46px; padding: 0 26px 0 12px; cursor: pointer;
+    font: inherit; font-size: 16px; font-weight: 800; color: #ffd9d9;
+    background: linear-gradient(90deg, rgba(120,24,34,.85), rgba(70,14,20,.85)); border: 1px solid rgba(255,120,130,.55); }
+  .mf-stop:hover { filter: brightness(1.15); }
+  .mf-stop__x { display: grid; place-items: center; width: 22px; height: 22px; border: 2px solid currentColor; border-radius: 3px; }
+
+  /* ---- 搜寻成功（复刻 fork 的 mf-found） ---- */
+  .mf-found { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 34px 26px; text-align: center; width: min(100%, 620px); margin: 0 auto;
+    background: radial-gradient(80% 50% at 50% 30%, rgba(90,255,205,.30), transparent 70%), linear-gradient(180deg, #2bb892, #155f4d 55%, #0d3b31);
+    animation: mf-found-in 260ms ease-out backwards; }
+  @keyframes mf-found-in { from { opacity: 0; transform: translateX(24px); } }
+  .mf-found .mf-brand { color: #c9fff0; }
+  .mf-found__face svg { width: 84px; height: 84px; }
+  .mf-found__face rect:first-child { fill: #5df0c6; }
+  .mf-found__eye { fill: #0d3b31; }
+  .mf-found__wink, .mf-found__smile { fill: none; stroke: #0d3b31; stroke-width: 4; stroke-linecap: round; }
+  .mf-found__title { font-size: 34px; font-weight: 900; letter-spacing: .08em; color: #b7ffe8; }
+  .mf-found__sub { font-size: 14px; color: #d5fff2; }
+
+  @media (max-width: 760px) {
+    .diff-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hero h1 { font-size: 32px; }
+    .mf-search__title { font-size: 30px; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <a class="back" href="/">‹ 返回大厅</a>
+  <span class="mf-brand"><span class="mf-brand__rook"><i>[</i>♜<i>]</i></span>STRONGHOLD PROTOCOL</span>
+</header>
+
+<!-- 1. 集结 -->
+<section id="setup" class="screen">
+  <div class="hero">
+    <div class="kicker">ALLIANCE ASSEMBLY · PUBLIC MATCHMAKING</div>
+    <h1>同盟集结</h1>
+    <p>4～20 名真人 · 同一难度 · 同一人数 · 凑满自动开局。系统会挑一个人数最少的节点，把整队送到那里。</p>
+  </div>
+  <div class="panel">
+    <label class="field"><span>博士代号 / CALLSIGN</span>
+      <input id="name" maxlength="12" placeholder="输入你的代号（最多 12 字）" autocomplete="off">
+    </label>
+    <div class="diff-grid" id="diffs"></div>
+    <label style="display:flex;align-items:center;gap:10px;margin:14px 0 0;font-size:13px;color:#9fb4b8;letter-spacing:.08em">
+      匹配人数
+      <select id="capacity" style="height:34px;padding:0 12px;background:#0b1416;color:#7ff0cf;border:1px solid #2f4a4f;font:inherit">
+        <option value="4">4 人</option>
+        <option value="5">5 人</option>
+        <option value="6">6 人</option>
+        <option value="7">7 人</option>
+        <option value="8">8 人</option>
+        <option value="9">9 人</option>
+        <option value="10">10 人</option>
+        <option value="11">11 人</option>
+        <option value="12">12 人</option>
+        <option value="13">13 人</option>
+        <option value="14">14 人</option>
+        <option value="15">15 人</option>
+        <option value="16">16 人</option>
+        <option value="17">17 人</option>
+        <option value="18">18 人</option>
+        <option value="19">19 人</option>
+        <option value="20">20 人（实验）</option>
+      </select>
+    </label>
+    <button id="start" class="cta">开始多人匹配</button>
+    <p class="note">等待期间请保持页面打开；同一难度的博士会被编进同一队。</p>
+  </div>
+</section>
+
+<!-- 2. 搜寻中 -->
+<section id="searching" class="screen hidden">
+  <aside class="mf-search">
+    <span class="mf-brand"><span class="mf-brand__rook"><i>[</i>♜<i>]</i></span>STRONGHOLD PROTOCOL</span>
+    <h2 class="mf-search__title">搜寻中<span class="mf-search__dots" id="dots">.</span><small id="clock">(0s)</small></h2>
+    <div class="mf-search__tags" id="tags"></div>
+    <div class="mf-search__scene">
+      <i class="mf-cross mf-cross--tl"></i><i class="mf-cross mf-cross--tr"></i>
+      <svg class="mf-scout" viewBox="0 0 240 90" aria-hidden="true">
+        <path class="mf-scout__wave" d="M0 58 C30 40 50 76 80 58 S130 40 160 58 S210 76 240 58" />
+        <g class="mf-scout__sky">
+          <path d="M10 70h8v-14h6v14h10v-24h6v24h12v-10h6v10h20v-18h4v-6h4v24h18v-12h6v12h10v-20h6v20h14v-8h8v8" />
+          <path d="M130 70h8v-14h6v14h10v-24h6v24h12v-10h6v10h20v-18h4v-6h4v24h18v-12h6v12h10v-20h6v20h14v-8h8v8" />
+        </g>
+        <g class="mf-scout__bot">
+          <rect x="104" y="34" width="26" height="22" rx="3" />
+          <rect class="mf-scout__eye" x="110" y="41" width="4" height="5" />
+          <rect class="mf-scout__eye mf-scout__eye--r" x="120" y="41" width="4" height="5" />
+          <rect x="114" y="26" width="6" height="8" />
+          <rect x="112" y="22" width="10" height="4" />
+          <rect class="mf-scout__leg mf-scout__leg--a" x="108" y="56" width="5" height="7" />
+          <rect class="mf-scout__leg mf-scout__leg--b" x="121" y="56" width="5" height="7" />
+        </g>
+        <line class="mf-scout__ground" x1="60" y1="70" x2="180" y2="70" />
+        <text x="120" y="84" text-anchor="middle">SCANNING · · ·</text>
+      </svg>
+      <i class="mf-cross mf-cross--bl"></i><i class="mf-cross mf-cross--br"></i>
+    </div>
+    <div class="mf-search__pop"><span id="popLabel">本难度等待队列</span><strong id="pop">0</strong><span>人</span><small>(含你)</small></div>
+    <p class="mf-search__tip" id="tip"></p>
+    <button class="mf-stop" id="cancel"><span class="mf-stop__x">✕</span>停止搜寻</button>
+  </aside>
+</section>
+
+<!-- 3. 搜寻成功 -->
+<section id="found" class="screen hidden">
+  <aside class="mf-found">
+    <span class="mf-brand"><span class="mf-brand__rook"><i>[</i>♜<i>]</i></span>STRONGHOLD PROTOCOL</span>
+    <div class="mf-found__face" aria-hidden="true">
+      <svg viewBox="0 0 64 64">
+        <rect x="6" y="8" width="52" height="48" rx="8" />
+        <rect class="mf-found__eye" x="18" y="24" width="7" height="8" />
+        <path class="mf-found__wink" d="M37 29h10" />
+        <path class="mf-found__smile" d="M22 42q10 7 20 0" />
+      </svg>
+    </div>
+    <b class="mf-found__title">搜寻成功！</b>
+    <span class="mf-found__sub" id="foundSub">正在连接中…</span>
+  </aside>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const DIFFS = [
+  { id: 'FUNNY', name: '标准模拟', code: 'AC-1', meta: '敌方强度较低', color: '#f6a329' },
+  { id: 'NORMAL', name: '险境模拟', code: 'AC-2', meta: '可使用盟约层数加成', color: '#e85a1a' },
+  { id: 'HARD', name: '绝境模拟', code: 'AC-3', meta: '出现更加危险的敌人', color: '#e73118' },
+  { id: 'ABYSS', name: '终极模拟', code: 'AC-4', meta: '极限难度 · 仅限老练博士', color: '#ff0024' },
+];
+const TIPS = [
+  '联合模拟在选择策略时可以进行一次跳过',
+  '调度中心即使冻结，依然可以主动刷新',
+  '两件同名装备可以合成一件更强力的装备',
+  '只有达成完美作战的队友可以进行联防',
+];
+const NAME_KEY = 'mm.callsign';
+let difficulty = 'NORMAL';
+let ticket = null;
+let timer = null;
+let joinAt = 0;
+let tipTimer = null;
+let tipIndex = 0;
+let leaving = false;
+
+$('name').value = localStorage.getItem(NAME_KEY) || '';
+
+// 难度卡片
+$('diffs').innerHTML = DIFFS.map((d) => `
+  <button type="button" class="diff-card${d.id === difficulty ? ' is-on' : ''}" data-id="${d.id}" style="--c:${d.color}">
+    <span class="diff-card__check">✔</span>
+    <div class="diff-card__code">${d.code}</div>
+    <div class="diff-card__name">${d.name}</div>
+    <div class="diff-card__meta">${d.meta}</div>
+  </button>`).join('');
+$('diffs').addEventListener('click', (e) => {
+  const card = e.target.closest('.diff-card');
+  if (!card) return;
+  difficulty = card.dataset.id;
+  document.querySelectorAll('.diff-card').forEach((c) => c.classList.toggle('is-on', c === card));
+});
+
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({ credentials: 'same-origin', cache: 'no-store' }, opts));
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+  return j;
+}
+
+function show(id) {
+  ['setup', 'searching', 'found'].forEach((s) => $(s).classList.toggle('hidden', s !== id));
+}
+
+function syncClock() {
+  const s = Math.max(0, Math.floor((Date.now() - joinAt) / 1000));
+  $('clock').textContent = `(${s < 60 ? s + 's' : Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0')})`;
+  $('dots').textContent = '.'.repeat((s % 3) + 1);
+}
+
+function startTips() {
+  tipIndex = Math.floor(Math.random() * TIPS.length);
+  $('tip').textContent = TIPS[tipIndex];
+  clearInterval(tipTimer);
+  tipTimer = setInterval(() => { tipIndex += 1; $('tip').textContent = TIPS[tipIndex % TIPS.length]; }, 5000);
+}
+
+async function start() {
+  const name = $('name').value.trim();
+  if (!name) { $('name').focus(); return; }
+  const capacity = Number($('capacity').value) || 4;
+  localStorage.setItem(NAME_KEY, name);
+  $('start').disabled = true;
+  try {
+    const r = await api('api/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, difficulty, capacity }),
+    });
+    ticket = r;
+    const d = DIFFS.find((x) => x.id === difficulty);
+    $('tags').innerHTML = `<span class="mf-tag" style="--tag:${d.color}">${d.name}</span>`
+      + `<span class="mf-tag" style="--tag:#4ed8af">${capacity} 人 · 不补 AI</span>`;
+    joinAt = Date.now();
+    show('searching');
+    syncClock();
+    startTips();
+    timer = setInterval(poll, 1000);
+    clearInterval(window.__clock);
+    window.__clock = setInterval(syncClock, 1000);
+    poll();
+  } catch (e) {
+    $('start').disabled = false;
+    alert(e.message);
+  }
+}
+
+async function poll() {
+  if (!ticket || leaving) return;
+  let s;
+  try {
+    s = await api(`api/state?id=${encodeURIComponent(ticket.id)}&secret=${encodeURIComponent(ticket.secret)}`);
+  } catch { return; }
+  if (s.state === 'queued') {
+    $('pop').textContent = s.waiting;
+    return;
+  }
+  if (s.state === 'matched') {
+    clearInterval(timer);
+    clearInterval(window.__clock);
+    clearInterval(tipTimer);
+    if (s.role === 'guest' && !s.code) {
+      $('foundSub').textContent = '已找到队友，正在等待房主建立房间…';
+      show('found');
+      timer = setInterval(poll, 800);
+      return;
+    }
+    show('found');
+    $('foundSub').textContent = `正在连接游戏节点 · 第 ${s.node} 区`;
+    await enter(s);
+  }
+}
+
+async function enter(s) {
+  leaving = true;
+  try {
+    await api(`api/pin?id=${encodeURIComponent(ticket.id)}&secret=${encodeURIComponent(ticket.secret)}&node=${s.node}`);
+  } catch (e) {
+    leaving = false;
+    return;
+  }
+  const name = encodeURIComponent($('name').value.trim());
+  setTimeout(() => {
+    if (s.role === 'host') {
+      location.href = `/?mmhost=1&mid=${encodeURIComponent(s.matchId)}&t=${encodeURIComponent(ticket.id)}&tk=${encodeURIComponent(ticket.secret)}&d=${encodeURIComponent(s.difficulty)}&c=${encodeURIComponent(s.capacity)}&name=${name}`;
+    } else {
+      location.href = `/?room=${encodeURIComponent(s.code)}&name=${name}`;
+    }
+  }, 900);
+}
+
+async function cancel() {
+  if (!ticket) return;
+  leaving = true;
+  clearInterval(timer);
+  clearInterval(window.__clock);
+  clearInterval(tipTimer);
+  try {
+    await api('api/leave', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: ticket.id, secret: ticket.secret }) });
+  } catch { /* ignore */ }
+  ticket = null;
+  leaving = false;
+  $('start').disabled = false;
+  show('setup');
+}
+
+$('start').onclick = start;
+$('cancel').onclick = cancel;
+$('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
+</script>
+</body>
+</html>

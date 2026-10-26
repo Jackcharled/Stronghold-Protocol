@@ -66,6 +66,16 @@ desktop.ini
 # tools/sim-check.mjs: the corpus and its Node traces for /dev/sim-check.html
 public/dev/simcheck/data/
 
+# --- matchmaker/ (this server's own matchmaking service) ------------------------------------------
+# 匹配服（matchmaker）是本服的独立服务：账号、公告、房间目录、节点状态、匹配池。
+# 它不在上游仓库里，但其中的 client.js / server.js / account.cjs 是本服功能的一部分，
+# 需要版本管理（否则改动只留在服务器上，一旦重装就丢）。
+# 管理后台页面按项目规定只部署在服务器，不入库：
+matchmaker/public/admin.html
+matchmaker/public/admin-*.js
+matchmaker/admin*.cjs
+matchmaker/node_modules/
+
 # --- patcher/ feature snapshots: NOT from upstream, this server's transplant material ---------------
 # The snapshots under patcher/features/<id>/files/ are copied from the live server. Keep only the code
 # that a transplant actually needs; never commit what the repository is not allowed to hold.

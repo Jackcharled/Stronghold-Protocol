@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>【管理员】隐身观战 · Stronghold Protocol</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b1518'/%3E%3Cpath d='M7 32s10-15 25-15 25 15 25 15-10 15-25 15S7 32 7 32Z' fill='none' stroke='%234ed8af' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23e8b25a'/%3E%3C/svg%3E">
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#071012}
+#watch-frame{display:block;width:100%;height:100%;border:0;background:#071012}
+#watch-error{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#071012;color:#d9f7ef;font:600 15px/1.7 "Noto Sans SC",system-ui,sans-serif;text-align:center;padding:24px;box-sizing:border-box}
+#watch-error:not([hidden]){display:flex}
+</style>
+</head>
+<body>
+<iframe id="watch-frame" title="隐身观战" allow="fullscreen; autoplay"></iframe>
+<div id="watch-error" hidden>观战信息已失效，请返回管理后台重新点击「隐身观战」。</div>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  function cookie(name) {
+    try {
+      var m = document.cookie.match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)'));
+      return m ? decodeURIComponent(m[1]) : '';
+    } catch (e) { return ''; }
+  }
+  function fromWindowName() {
+    try {
+      var x = JSON.parse(window.name || 'null');
+      return x && typeof x === 'object' ? x : null;
+    } catch (e) { return null; }
+  }
+  var remembered = fromWindowName() || {};
+  var code = (q.get('code') || cookie('sp_admin_watch_code') || localStorage.getItem('sp_admin_watch_code') || remembered.code || '').toUpperCase();
+  var node = Number(q.get('node') || cookie('sp_admin_watch_node') || localStorage.getItem('sp_admin_watch_node') || remembered.node || 0);
+  var name = q.get('name') || cookie('sp_admin_watch_name') || localStorage.getItem('sp_admin_watch_name') || remembered.name || '管理员观战';
+  var watchToken = q.get('token') || cookie('sp_watch_token') || localStorage.getItem('sp_watch_token') || sessionStorage.getItem('sp_admin_watch_token') || '';
+  var frame = document.getElementById('watch-frame');
+  var err = document.getElementById('watch-error');
+  // Query is only a fallback for browsers that block localStorage; strip it
+  // immediately so the address bar stays clean.
+  if (q.has('code') || q.has('node') || q.has('name') || q.has('token')) {
+    try { history.replaceState(null, '', '/mm/watch.html'); } catch (e) { /* ignore */ }
+  }
+  if (!/^[A-Z0-9]{4,8}$/.test(code) || !(node > 0 && node <= 30)) {
+    frame.hidden = true;
+    err.hidden = false;
+    setTimeout(function () { location.href = '/mm/admin.html'; }, 1800);
+    return;
+  }
+  document.title = '【管理员】隐身观战 ' + code + ' · Stronghold Protocol';
+  try { window.name = JSON.stringify({ code: code, node: node, name: name }); } catch (e) { /* ignore */ }
+  // Pin the iframe and its WebSocket to the room's node before any game request starts.
+  try {
+    var maxAge = '; Path=/; Max-Age=1800; SameSite=Lax';
+    document.cookie = 'sp_route=' + node + maxAge;
+    document.cookie = 'sp_node=' + node + maxAge;
+  } catch (e) { /* ignore */ }
+  var gameQuery = '/?room=' + encodeURIComponent(code)
+    + '&adminWatch=1'
+    + '&adminNode=' + node
+    + '&watchGuest=1'
+    + '&name=' + encodeURIComponent(name)
+    + '&watchToken=' + encodeURIComponent(watchToken);
+  frame.src = 'https://stronghold.luobomiao.love' + gameQuery;
+
+  // If the room disappeared (or the game cleared its ?room= state), the iframe is
+  // already on the normal title/lobby. Drop the admin-watch wrapper instead of
+  // leaving a stale 「管理员隐身观战」 tab title above a normal page.
+  var settled = false;
+  function leaveWatchWrapper() {
+    if (settled) return;
+    var w = frame.contentWindow;
+    if (!w) return;
+    var href = '';
+    try { href = w.location.href; } catch (e) { return; }
+    if (!/^https?:/i.test(href)) return;
+    var u;
+    try { u = new URL(href); } catch (e) { return; }
+    if (u.searchParams.get('room')) return;
+    settled = true;
+    try { document.title = '卫戍协议：盟约 · STRONGHOLD PROTOCOL'; } catch (e) { /* ignore */ }
+    try {
+      localStorage.removeItem('sp_watch_token');
+      localStorage.removeItem('sp_admin_watch_code');
+      localStorage.removeItem('sp_admin_watch_node');
+      localStorage.removeItem('sp_admin_watch_name');
+      localStorage.setItem('sp_admin_watch_closed_at', String(Date.now()));
+    } catch (e) { /* ignore */ }
+    try {
+      sessionStorage.removeItem('sp_admin_watch_code');
+      sessionStorage.removeItem('sp_admin_watch_token');
+      sessionStorage.removeItem('sp.accountResume');
+      sessionStorage.removeItem('sp.accountResumeSilent');
+    } catch (e) { /* ignore */ }
+    try {
+      ['sp_admin_watch_code', 'sp_admin_watch_node', 'sp_admin_watch_name', 'sp_watch_token'].forEach(function (n) {
+        document.cookie = n + '=; Path=/; Max-Age=0; SameSite=Lax';
+      });
+    } catch (e) { /* ignore */ }
+    try { window.name = ''; } catch (e) { /* ignore */ }
+    try {
+      ['room', 'adminWatch', 'adminNode', 'watchGuest', 'watchToken'].forEach(function (n) {
+        u.searchParams.delete(n);
+      });
+      var qs = u.searchParams.toString();
+      var target = u.pathname + (qs ? '?' + qs : '') + u.hash;
+      if (target !== location.pathname + location.search) location.replace(target);
+      else document.title = '卫戍协议：盟约 · STRONGHOLD PROTOCOL';
+    } catch (e) { /* ignore */ }
+  }
+  frame.addEventListener('load', function () { setTimeout(leaveWatchWrapper, 250); });
+  setInterval(leaveWatchWrapper, 700);
+
+  // Closing the watch tab must not leave shared watch markers behind: a later normal
+  // room would otherwise still be treated as a hidden spectator. A reload keeps the
+  // token in sessionStorage/window.name, so the wrapper can rebuild itself.
+  window.addEventListener('pagehide', function () {
+    if (window.top !== window) return;
+    try {
+      localStorage.removeItem('sp_watch_token');
+      localStorage.removeItem('sp_admin_watch_code');
+      localStorage.removeItem('sp_admin_watch_node');
+      localStorage.removeItem('sp_admin_watch_name');
+      localStorage.setItem('sp_admin_watch_closed_at', String(Date.now()));
+      localStorage.setItem('sp_admin_watch_cleanup', '1');
+    } catch (e) { /* ignore */ }
+    try { sessionStorage.removeItem('sp_admin_watch_code'); } catch (e) { /* ignore */ }
+  });
+})();
+</script>
+</body>
+</html>

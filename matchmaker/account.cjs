@@ -1,0 +1,1344 @@
+// matchmaker/account.cjs — 账号（QQ 邮箱验证码）+ 用户偏好（MySQL）
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const nodemailer = require('nodemailer');
+
+// 私有密钥：优先环境变量，其次项目根目录 .secrets/secrets.json（不进入仓库）
+function readSecret(key) {
+  try {
+    const p = require('node:path').join(__dirname, '..', '.secrets', 'secrets.json');
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return j[key] || '';
+  } catch { return ''; }
+}
+
+function watchSecret() {
+  const p = require('node:path').join(__dirname, '..', '.secrets', 'watch-secret');
+  try {
+    const s = fs.readFileSync(p, 'utf8').trim();
+    if (s.length >= 32) return s;
+  } catch { /* create below */ }
+  const s = crypto.randomBytes(32).toString('hex');
+  try {
+    fs.mkdirSync(require('node:path').dirname(p), { recursive: true });
+    fs.writeFileSync(p, s, { mode: 0o600 });
+  } catch { /* read-only deployment */ }
+  return s;
+}
+
+// 短时管理员能力令牌：游戏节点用同一 watch-secret 验签，无需读取账号数据库。
+function adminTokenFor(u) {
+  if (!u || (u.role !== 'owner' && u.role !== 'admin')) return null;
+  const payload = Buffer.from(JSON.stringify({ v: 1, uid: u.id, role: u.role, exp: Date.now() + 12 * 3600_000 })).toString('base64url');
+  const sig = crypto.createHmac('sha256', watchSecret()).update(payload).digest('base64url');
+  return payload + '.' + sig;
+}
+
+// 登录账号的短期签名身份：游戏节点验签后只信 uid/tag，不再依赖可伪造的四位 tag。
+function userTokenFor(u) {
+  if (!u || !u.id) return null;
+  const payload = Buffer.from(JSON.stringify({
+    v: 1,
+    uid: u.id,
+    role: u.role || 'player',
+    tag: u.tag || null,
+    exp: Date.now() + 7 * 24 * 3600_000,
+  })).toString('base64url');
+  const sig = crypto.createHmac('sha256', watchSecret()).update(payload).digest('base64url');
+  return payload + '.' + sig;
+}
+
+// 数据库连接只从环境变量 / .secrets/secrets.json 读取；代码里不写死账号、口令、库名
+const DEFAULTS = {
+  host: process.env.SP_DB_HOST || readSecret('dbHost') || '127.0.0.1',
+  port: Number(process.env.SP_DB_PORT || readSecret('dbPort') || 3306),
+  user: process.env.SP_DB_USER || readSecret('dbUser') || '',
+  password: process.env.SP_DB_PASSWORD || readSecret('dbPassword') || '',
+  database: process.env.SP_DB_NAME || readSecret('dbName') || '',
+};
+
+const MAIL = {
+  // 主机 / 发件账号 / 授权码都只放在 .secrets/secrets.json（或环境变量），代码里不写死
+  host: process.env.MAIL_HOST || readSecret('mailHost') || '',
+  port: Number(process.env.MAIL_PORT || 465),
+  secure: (process.env.MAIL_ENCRYPTION || 'ssl') === 'ssl',
+  user: process.env.MAIL_USERNAME || readSecret('mailUser') || '',
+  pass: process.env.MAIL_PASSWORD || readSecret('mailPassword') || '',
+};
+
+const SESSION_COOKIE = 'sp_sid';
+const SESSION_DAYS = 30;
+const DOMAINS = new Set(['identity', 'loadout', 'ownership', 'diy', 'skins', 'cosmetics', 'notices', 'annSeen', 'stats']);
+
+// ---------------- 管理员权限组（最高管理员可配置 admin 能用哪些功能） ----------------
+const ADMIN_PERMISSIONS = [
+  { key: 'accounts.view', label: '查看账号 / 账号详情', desc: '玩家账号列表、搜索、账号详情', def: true },
+  { key: 'accounts.ban', label: '封禁 / 解封', desc: '封禁或解封等级更低的账号', def: true },
+  { key: 'accounts.rename', label: '修改昵称', desc: '修改等级更低账号的昵称', def: true },
+  { key: 'accounts.resetpw', label: '重置密码', desc: '重置等级更低账号的密码', def: true },
+  { key: 'accounts.delete', label: '删除 / 恢复账号', desc: '软删除、已删除列表、恢复（高风险）', def: false },
+  { key: 'accounts.role', label: '修改权限', desc: '调整等级更低账号的角色（高风险）', def: false },
+  { key: 'audit.view', label: '查看审计日志', desc: '只读查看后台操作记录', def: true },
+  { key: 'audit.export', label: '导出审计 CSV', desc: '导出最近 500 条审计', def: false },
+  { key: 'nodes.view', label: '查看节点状态', desc: '30 节点在线 / 人数 / 对局 / 趋势', def: false },
+  { key: 'nodes.restart', label: '重启游戏节点', desc: '从后台重启单个节点（高风险）', def: false },
+  { key: 'storage.view', label: '查看数据占用', desc: '账号云端数据大小排行', def: false },
+  { key: 'rooms.view', label: '查看所有房间号', desc: '各节点当前房间码', def: false },
+  { key: 'rooms.maintenance', label: '维护开关', desc: '创建房间 / 开始游戏 / 匹配队友的维护开关', def: false },
+  { key: 'dash.settings', label: '服务器设置', desc: '公告板、房间时长、服务器状态等', def: false },
+];
+const DEFAULT_ADMIN_PERMS = ADMIN_PERMISSIONS.filter((p) => p.def).map((p) => p.key);
+let adminPermsCache = { at: 0, list: null };
+async function getAdminPerms() {
+  if (adminPermsCache.list && Date.now() - adminPermsCache.at < 5000) return adminPermsCache.list;
+  try {
+    const [rows] = await db().query("SELECT v FROM admin_settings WHERE k = 'admin_perms'");
+    if (rows[0]) {
+      const list = JSON.parse(rows[0].v);
+      if (Array.isArray(list)) {
+        const valid = list.filter((k) => ADMIN_PERMISSIONS.some((p) => p.key === k));
+        adminPermsCache = { at: Date.now(), list: valid };
+        return valid;
+      }
+    }
+  } catch { /* 表还没建好 */ }
+  adminPermsCache = { at: Date.now(), list: DEFAULT_ADMIN_PERMS };
+  return DEFAULT_ADMIN_PERMS;
+}
+async function setAdminPerms(list) {
+  const valid = [...new Set((Array.isArray(list) ? list : []).filter((k) => ADMIN_PERMISSIONS.some((p) => p.key === k)))];
+  await db().query("INSERT INTO admin_settings (k, v) VALUES ('admin_perms', ?) ON DUPLICATE KEY UPDATE v = VALUES(v)", [JSON.stringify(valid)]);
+  adminPermsCache = { at: Date.now(), list: valid };
+  return valid;
+}
+function adminCan(me, key) {
+  if (!me) return false;
+  if (me.role === 'owner') return true;
+  return me.role === 'admin' && Array.isArray(me.perms) && me.perms.includes(key);
+}
+// 云端数据 schema：按域校验结构，并提供版本迁移入口（未来加字段时在此补 migrate）
+const PREF_SCHEMA_VERSION = 1;
+function validatePrefPayload(domain, payload) {
+  if (domain === 'identity') {
+    return typeof payload === 'string' ? payload.length <= 64 : (payload && typeof payload === 'object');
+  }
+  if (domain === 'annSeen') return payload === null || typeof payload === 'object';
+  if (payload === null || typeof payload !== 'object') return false;
+  if (Array.isArray(payload)) return domain === 'notices' || domain === 'annSeen' || domain === 'stats';
+  return true;
+}
+function migratePrefPayload(domain, payload, fromVer) {
+  let v = Number(fromVer) || PREF_SCHEMA_VERSION;
+  let out = payload;
+  // 版本 1 为初始结构：保留占位，后续升级在这里按 v 逐级迁移
+  if (v < PREF_SCHEMA_VERSION) v = PREF_SCHEMA_VERSION;
+  return { payload: out, ver: v };
+}
+
+const DOMAIN_LIMIT = 64 * 1024;
+const STATS_LIMIT = 2 * 1024 * 1024;
+
+const CODE_TTL_MS = 10 * 60 * 1000;
+const CODE_RESEND_MS = 60 * 1000;
+const CODE_WINDOW_MS = 30 * 60 * 1000;
+const CODE_MAX_PER_WINDOW = 5;
+const CODE_MAX_ATTEMPTS = 5;
+const DEV = process.env.SP_AUTH_DEV === '1';
+
+let pool = null;
+function db() {
+  if (!pool) {
+    if (!DEFAULTS.user || !DEFAULTS.password || !DEFAULTS.database) throw new Error('DB_NOT_CONFIGURED');
+    const mysql = require('mysql2/promise');
+    pool = mysql.createPool({ ...DEFAULTS, waitForConnections: true, connectionLimit: 8, charset: 'utf8mb4' });
+  }
+  return pool;
+}
+
+let mailer = null;
+function mail() {
+  if (!mailer) {
+    if (!MAIL.host || !MAIL.user) throw new Error('MAIL_NOT_CONFIGURED');
+    mailer = nodemailer.createTransport({ host: MAIL.host, port: MAIL.port, secure: MAIL.secure, auth: { user: MAIL.user, pass: MAIL.pass } });
+  }
+  return mailer;
+}
+
+// 验证码邮件 HTML（深色卡片风格，避免外部图片被拦截）
+function codeMailHtml(code) {
+  return `<!doctype html><html><body style="margin:0;padding:24px;background:#0a1012;font-family:'Noto Sans SC',Arial,sans-serif;color:#d8e6e3">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;margin:0 auto;background:#0f181b;border:1px solid #22383b;border-radius:12px;overflow:hidden">
+    <tr><td style="padding:26px 28px 8px;text-align:center">
+      <div style="font-size:13px;letter-spacing:3px;color:#7ff0cf">萝 卜 喵 公 益 服</div>
+      <div style="margin-top:6px;font-size:12px;letter-spacing:1px;color:#7f9a95">卫戍协议：盟约</div>
+    </td></tr>
+    <tr><td style="padding:18px 28px 0;text-align:center">
+      <div style="font-size:14px;color:#a9c4bf">你的注册验证码</div>
+      <div style="margin:14px auto 0;display:inline-block;padding:12px 26px;border:1px solid #2f4a4f;border-radius:10px;background:#0b1416;font-size:30px;font-weight:700;letter-spacing:10px;color:#7ff0cf">${code}</div>
+      <div style="margin-top:14px;font-size:12px;color:#7f9a95">验证码 10 分钟内有效，请勿转发给他人</div>
+    </td></tr>
+    <tr><td style="padding:18px 28px 0">
+      <div style="height:1px;background:#1e3235"></div>
+    </td></tr>
+    <tr><td style="padding:14px 28px 24px;text-align:center;font-size:12px;line-height:1.7;color:#6f8a86">
+      若非本人操作，请忽略本邮件。<br />
+      —— 萝卜喵公益服 · 卫戍协议：盟约
+    </td></tr>
+  </table>
+</body></html>`;
+}
+
+// 反代后 req.socket 是 127.0.0.1，真实 IP 在 X-Forwarded-For / X-Real-IP
+function ipOf(req) {
+  const xf = String(req.headers['x-forwarded-for'] || '');
+  const first = xf.split(',')[0].trim();
+  const real = String(req.headers['x-real-ip'] || '').trim();
+  const ip = real || first || String(req.socket.remoteAddress || '');
+  return ip.replace(/^::ffff:/, '').slice(0, 45);
+}
+
+function hashPassword(pw) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(pw, salt, 64, { N: 16384, r: 8, p: 1 });
+  return `scrypt$16384$8$1$${salt.toString('base64')}$${hash.toString('base64')}`;
+}
+function verifyPassword(pw, stored) {
+  try {
+    const [, N, r, p, salt, hash] = String(stored).split('$');
+    const got = crypto.scryptSync(pw, Buffer.from(salt, 'base64'), 64, { N: Number(N), r: Number(r), p: Number(p) });
+    const want = Buffer.from(hash, 'base64');
+    return got.length === want.length && crypto.timingSafeEqual(got, want);
+  } catch { return false; }
+}
+
+function parseCookies(req) {
+  const out = {};
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    const k = part.slice(0, i).trim();
+    if (k) out[k] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+function cookieHeader(sid, maxAgeSec) {
+  return `${SESSION_COOKIE}=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${process.env.SP_COOKIE_SECURE === '0' ? '' : '; Secure'}`;
+}
+function newSid() { return crypto.randomBytes(32).toString('base64url'); }
+function displayOf(u) { return u && (u.nickname || null); }
+
+// A tag is only a four-digit display discriminator, never an identity key. Duplicate tags are allowed.
+function freshTag() { return String(crypto.randomInt(1000, 10000)); }
+
+async function currentUser(req) {
+  // Cookie 优先；被浏览器拦截时退回 Authorization: Bearer <sid>
+  let sid = parseCookies(req)[SESSION_COOKIE];
+  if (!sid) {
+    const auth = String(req.headers.authorization || '');
+    const m = /^Bearer\s+([A-Za-z0-9_-]{20,64})$/.exec(auth);
+    if (m) sid = m[1];
+  }
+  if (!sid || !/^[A-Za-z0-9_-]{20,64}$/.test(sid)) return null;
+  const [rows] = await db().query(
+    'SELECT u.id, u.email, u.nickname, u.tag, u.name, u.role, s.expires_at FROM user_sessions s JOIN accounts u ON u.id = s.user_id WHERE s.sid = ? AND u.disabled = 0 AND u.deleted_at IS NULL',
+    [sid],
+  );
+  const r = rows[0];
+  if (!r || new Date(r.expires_at).getTime() < Date.now()) return null;
+  const display = displayOf(r);
+  return { id: r.id, email: r.email, nickname: r.nickname, tag: r.tag, role: r.role || 'player', name: display, displayName: display, titleName: r.nickname ? r.nickname + '#' + r.tag : null };
+}
+
+async function createSession(userId, req, res) {
+  const sid = newSid();
+  const expires = new Date(Date.now() + SESSION_DAYS * 86400_000);
+  await db().query('INSERT INTO user_sessions (sid, user_id, expires_at, ua, ip) VALUES (?,?,?,?,?)',
+    [sid, userId, expires, String(req.headers['user-agent'] || '').slice(0, 255), ipOf(req)]);
+  res.setHeader('Set-Cookie', cookieHeader(sid, SESSION_DAYS * 86400));
+  return sid;
+}
+
+function readBody(req, limit = 3 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { reject(new Error('BODY_TOO_LARGE')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try {
+        let text = chunks.length ? Buffer.concat(chunks).toString('utf8') : '{}';
+        if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+        resolve(JSON.parse(text));
+      } catch { reject(new Error('BAD_JSON')); }
+    });
+    req.on('error', reject);
+  });
+}
+function sendJson(res, code, obj) {
+  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(obj));
+}
+
+const rate = new Map();
+const FAILS = new Map();
+function limited(key, max, windowMs) {
+  const now = Date.now();
+  const rec = rate.get(key) || { n: 0, t: now };
+  if (now - rec.t > windowMs) { rec.n = 0; rec.t = now; }
+  rec.n++; rate.set(key, rec);
+  return rec.n > max;
+}
+
+const QQ_EMAIL = /^[1-9][0-9]{4,11}@qq\.com$/;
+
+// ---- 图形验证码（内存，单进程 matchmaker）----
+const captchaStore = new Map();
+const CAPTCHA_TTL_MS = 3 * 60 * 1000;
+const CAPTCHA_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+function makeCaptcha() {
+  const code = Array.from({ length: 4 }, () => CAPTCHA_CHARS[crypto.randomInt(0, CAPTCHA_CHARS.length)]).join('');
+  const id = crypto.randomBytes(16).toString('base64url');
+  captchaStore.set(id, { code, exp: Date.now() + CAPTCHA_TTL_MS });
+  // 简单清理，避免长时间运行内存增长
+  if (captchaStore.size > 5000) {
+    const now = Date.now();
+    for (const [k, v] of captchaStore) if (v.exp < now) captchaStore.delete(k);
+  }
+  return { id, code };
+}
+
+function captchaSvg(code) {
+  const w = 120, h = 40;
+  let noise = '';
+  for (let i = 0; i < 6; i++) {
+    const x1 = crypto.randomInt(0, w), y1 = crypto.randomInt(0, h);
+    const x2 = crypto.randomInt(0, w), y2 = crypto.randomInt(0, h);
+    noise += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#3c5a5f" stroke-width="1" opacity=".6"/>`;
+  }
+  let chars = '';
+  code.split('').forEach((ch, i) => {
+    const x = 14 + i * 26 + crypto.randomInt(-2, 3);
+    const y = 28 + crypto.randomInt(-3, 4);
+    const rot = crypto.randomInt(-18, 19);
+    chars += `<text x="${x}" y="${y}" transform="rotate(${rot} ${x} ${y})" font-family="Arial,Helvetica,sans-serif" font-size="24" font-weight="700" fill="#8ff0d0">${ch}</text>`;
+  });
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="100%" height="100%" fill="#0b1416"/>${noise}${chars}</svg>`;
+}
+
+function checkCaptcha(body) {
+  const id = String(body.captchaId || '');
+  const text = String(body.captcha || '').trim().toUpperCase();
+  const rec = captchaStore.get(id);
+  if (!rec) return false;
+  captchaStore.delete(id); // 一次性
+  if (rec.exp < Date.now()) return false;
+  return rec.code === text;
+}
+function validNickname(n) {
+  const s = String(n || '').trim();
+  if (s.length < 1 || s.length > 16) return null;
+  if (!/^[\p{L}\p{N}_\-·]+$/u.test(s)) return null;
+  return s;
+}
+const hashCode = (email, code) => crypto.createHash('sha256').update(email + ':' + code).digest('hex');
+
+async function ensureSchema() {
+  if (!DEFAULTS.database) throw new Error('DB_NOT_CONFIGURED');
+  const mysql = require('mysql2/promise');
+  const boot = await mysql.createConnection({ host: DEFAULTS.host, port: DEFAULTS.port, user: DEFAULTS.user, password: DEFAULTS.password });
+  try {
+    await boot.query(`CREATE DATABASE IF NOT EXISTS \`${DEFAULTS.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci`);
+  } catch (e) {
+    // 受限账号没有全局 CREATE：库已由管理员建好时继续；真正的连接/权限错误仍抛出
+    if (![1044, 1045].includes(e.errno)) throw e;
+  } finally { await boot.end(); }
+
+  const c = await db().getConnection();
+  try {
+    await c.query(`CREATE TABLE IF NOT EXISTS accounts (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      email VARCHAR(120) NULL,
+      nickname VARCHAR(32) NULL,
+      tag CHAR(4) NULL,
+      name VARCHAR(40) NULL,
+      pass_hash VARCHAR(255) NOT NULL,
+      disabled TINYINT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_login_at TIMESTAMP NULL,
+      UNIQUE KEY uk_email (email),
+      KEY idx_nick_tag (nickname, tag)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    for (const [col, ddl] of [['email', 'VARCHAR(120) NULL'], ['nickname', 'VARCHAR(32) NULL'], ['tag', 'CHAR(4) NULL']]) {
+      try { await c.query(`ALTER TABLE accounts ADD COLUMN ${col} ${ddl}`); } catch { /* 已有 */ }
+    }
+    try { await c.query('ALTER TABLE accounts ADD UNIQUE KEY uk_email (email)'); } catch { /* 已有 */ }
+    try { await c.query("ALTER TABLE accounts ADD COLUMN role VARCHAR(16) NOT NULL DEFAULT 'player'"); } catch { /* 已有 */ }
+    try { await c.query('ALTER TABLE accounts ADD COLUMN deleted_at DATETIME NULL'); } catch { /* 已有 */ }
+    await c.query(`CREATE TABLE IF NOT EXISTS admin_devices (
+      account_id BIGINT UNSIGNED NOT NULL,
+      device CHAR(64) NOT NULL,
+      ua VARCHAR(255) NULL,
+      ip VARCHAR(45) NULL,
+      first_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (account_id, device)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    // 老库遗留：name 必填 + 唯一键，会阻止「注册后再设代号」的流程
+    try { await c.query('ALTER TABLE accounts MODIFY COLUMN name VARCHAR(40) NULL DEFAULT NULL'); } catch { /* 已可空 */ }
+    try { await c.query('ALTER TABLE accounts DROP INDEX uk_name'); } catch { /* 无该索引 */ }
+
+    await c.query(`CREATE TABLE IF NOT EXISTS admin_users (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      username VARCHAR(32) NOT NULL,
+      pass_hash VARCHAR(255) NOT NULL,
+      role VARCHAR(16) NOT NULL DEFAULT 'admin',
+      disabled TINYINT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_login_at TIMESTAMP NULL,
+      UNIQUE KEY uk_admin_name (username)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await c.query(`CREATE TABLE IF NOT EXISTS reset_codes (email VARCHAR(120) NOT NULL PRIMARY KEY, code_hash CHAR(64) NOT NULL, expires_at DATETIME NOT NULL, attempts INT NOT NULL DEFAULT 0, last_sent_at DATETIME NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await c.query(`CREATE TABLE IF NOT EXISTS admin_codes (email VARCHAR(120) NOT NULL PRIMARY KEY, code_hash CHAR(64) NOT NULL, expires_at DATETIME NOT NULL, attempts INT NOT NULL DEFAULT 0, last_sent_at DATETIME NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await c.query(`CREATE TABLE IF NOT EXISTS admin_sessions (
+      token CHAR(43) NOT NULL PRIMARY KEY,
+      admin_id BIGINT UNSIGNED NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TIMESTAMP NOT NULL,
+      KEY idx_admin (admin_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await c.query(`CREATE TABLE IF NOT EXISTS admin_audit (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      actor_id BIGINT UNSIGNED NULL,
+      actor_email VARCHAR(120) NULL,
+      action VARCHAR(32) NOT NULL,
+      target_id BIGINT UNSIGNED NULL,
+      detail VARCHAR(255) NULL,
+      ip VARCHAR(45) NULL,
+      at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_at (at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await c.query(`CREATE TABLE IF NOT EXISTS admin_settings (
+      k VARCHAR(64) NOT NULL PRIMARY KEY,
+      v TEXT NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    // 首次启动创建默认 owner（登录后台后请立即修改密码）
+    try {
+      const [cnt] = await c.query('SELECT COUNT(*) AS n FROM admin_users');
+      if (!Number(cnt[0].n)) {
+        await c.query('INSERT INTO admin_users (username, pass_hash, role) VALUES (?,?,?)', ['admin', hashPassword(process.env.SP_ADMIN_PASSWORD || 'Stronghold@2026'), 'owner']);
+        console.log('[account] created default admin: admin');
+      }
+    } catch { /* 忽略 */ }
+    await c.query(`CREATE TABLE IF NOT EXISTS email_codes (
+      email VARCHAR(120) NOT NULL PRIMARY KEY,
+      code_hash CHAR(64) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      attempts INT NOT NULL DEFAULT 0,
+      last_sent_at DATETIME NOT NULL,
+      win_start DATETIME NOT NULL,
+      win_count INT NOT NULL DEFAULT 1
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+    await c.query(`CREATE TABLE IF NOT EXISTS user_sessions (
+      sid CHAR(43) NOT NULL PRIMARY KEY,
+      user_id BIGINT UNSIGNED NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TIMESTAMP NOT NULL,
+      ua VARCHAR(255) NULL,
+      ip VARCHAR(45) NULL,
+      KEY idx_user (user_id), KEY idx_exp (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+    await c.query(`CREATE TABLE IF NOT EXISTS user_prefs (
+      user_id BIGINT UNSIGNED NOT NULL,
+      domain VARCHAR(32) NOT NULL,
+      payload JSON NOT NULL,
+      version BIGINT UNSIGNED NOT NULL DEFAULT 1,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, domain)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  } finally { c.release(); }
+}
+
+async function audit(actor, action, targetId, detail, ip) {
+  try {
+    await db().query('INSERT INTO admin_audit (actor_id, actor_email, action, target_id, detail, ip) VALUES (?,?,?,?,?,?)',
+      [actor ? actor.id : null, actor ? (actor.email || null) : null, action, targetId || null, detail ? String(detail).slice(0, 255) : null, String(ip || '').slice(0, 45)]);
+  } catch { /* 审计失败不影响主流程 */ }
+}
+
+async function handle(req, res, pathname) {
+  const method = req.method;
+
+  if (method === 'GET' && pathname === '/api/auth/me') {
+    const u = await currentUser(req);
+    return u ? sendJson(res, 200, { ok: true, user: u, userToken: userTokenFor(u), adminToken: adminTokenFor(u) }) : sendJson(res, 401, { ok: false, error: 'unauthorized' });
+  }
+
+  // 跨节点恢复：只告诉当前登录账号它自己所在的房间，不暴露全服房间目录。
+  if (method === 'GET' && pathname === '/api/account/room') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    // 主判据是账号 ID：昵称会重名、会改，用昵称匹配会把玩家送去别人的对局。
+    const uid = u.id != null ? String(u.id) : null;
+    // 兼容旧数据：早期座位没有 accountId，只能退回昵称匹配。
+    // 只在「该房间没有任何人带 accountId」时才用，避免抢到别人的房间。
+    const names = new Set([u.nickname, u.name].filter(Boolean).map(String));
+    let nameFallback = null;
+    try {
+      const r = await fetch('http://127.0.0.1:3080/api/status', { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        for (const n of j?.rooms?.nodes || []) {
+          for (const room of n.rooms || []) {
+            // Only a live player match can be restored. A finished match's room may still
+            // exist with its players in the lobby, and spectators are never restorable.
+            if (room.started !== true) continue;
+            const players = (room.players || []).filter(Boolean);
+            // 1) 账号 ID 精确命中：这是唯一可信的判据
+            if (uid && players.some((p) => p && p.accountId != null && String(p.accountId) === uid)) {
+              return sendJson(res, 200, { ok: true, room: { code: room.code, node: Number(n.n) || null }, by: 'account' });
+            }
+            // 2) 昵称兜底：只在该房间所有座位都没有 accountId（纯旧数据）时记录，稍后再决定
+            if (!nameFallback) {
+              const anyHasAccount = players.some((p) => p && p.accountId != null);
+              if (!anyHasAccount && players.some((p) => p && names.has(String(p.name)))) {
+                nameFallback = { code: room.code, node: Number(n.n) || null };
+              }
+            }
+          }
+        }
+      }
+    } catch { /* fall through: no room */ }
+    if (nameFallback) return sendJson(res, 200, { ok: true, room: nameFallback, by: 'name-legacy' });
+    return sendJson(res, 200, { ok: true, room: null });
+  }
+
+  if (method === 'POST' && pathname === '/api/auth/send-code') {
+    const ip = ipOf(req) || '?';
+    if (limited('code-ip:' + ip, 20, 60 * 60 * 1000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests', retryAfter: 60 });
+    const body = await readBody(req, 8 * 1024);
+    const email = String(body.email || '').trim().toLowerCase();
+    if (!QQ_EMAIL.test(email)) return sendJson(res, 400, { ok: false, error: 'invalid_email' });
+
+    const [mine] = await db().query('SELECT 1 FROM accounts WHERE email = ? AND deleted_at IS NULL', [email]);
+    if (mine[0]) return sendJson(res, 409, { ok: false, error: 'email_taken' });
+
+    const now = new Date();
+    const [rows] = await db().query('SELECT last_sent_at, win_start, win_count FROM email_codes WHERE email = ?', [email]);
+    const row = rows[0];
+    if (row) {
+      const last = new Date(row.last_sent_at).getTime();
+      if (now.getTime() - last < CODE_RESEND_MS) {
+        return sendJson(res, 429, { ok: false, error: 'too_soon', retryAfter: Math.ceil((CODE_RESEND_MS - (now.getTime() - last)) / 1000) });
+      }
+      let winStart = new Date(row.win_start).getTime();
+      const winCount = Number(row.win_count) || 0;
+      if (now.getTime() - winStart > CODE_WINDOW_MS) { winStart = now.getTime(); }
+      else if (winCount >= CODE_MAX_PER_WINDOW) {
+        return sendJson(res, 429, { ok: false, error: 'too_many_codes', retryAfter: Math.ceil((CODE_WINDOW_MS - (now.getTime() - winStart)) / 1000) });
+      }
+    }
+
+    const code = String(crypto.randomInt(100000, 1000000));
+    try {
+      await mail().sendMail({
+        from: `"萝卜喵公益服" <${MAIL.user}>`,
+        to: email,
+        subject: '【萝卜喵公益服】卫戍协议：盟约 · 注册验证码',
+        text: `你的注册验证码是 ${code}，10 分钟内有效。若非本人操作请忽略。\n\n—— 萝卜喵公益服 · 卫戍协议：盟约`,
+        html: codeMailHtml(code),
+      });
+    } catch {
+      return sendJson(res, 502, { ok: false, error: 'mail_failed' });
+    }
+
+    const inWindow = row && now.getTime() - new Date(row.win_start).getTime() <= CODE_WINDOW_MS;
+    const nextWinStart = inWindow ? new Date(row.win_start) : now;
+    const nextCount = inWindow ? Number(row.win_count) + 1 : 1;
+    await db().query(
+      `INSERT INTO email_codes (email, code_hash, expires_at, attempts, last_sent_at, win_start, win_count)
+       VALUES (?,?,?,0,?,?,?)
+       ON DUPLICATE KEY UPDATE code_hash = VALUES(code_hash), expires_at = VALUES(expires_at), attempts = 0,
+         last_sent_at = VALUES(last_sent_at), win_start = VALUES(win_start), win_count = VALUES(win_count)`,
+      [email, hashCode(email, code), new Date(now.getTime() + CODE_TTL_MS), now, nextWinStart, nextCount],
+    );
+    return sendJson(res, 200, { ok: true, cooldown: 60, ...(DEV ? { devCode: code } : {}) });
+  }
+
+  if (method === 'GET' && pathname === '/api/auth/captcha') {
+    const { id, code } = makeCaptcha();
+    return sendJson(res, 200, { ok: true, id, svg: captchaSvg(code), ttl: Math.round(CAPTCHA_TTL_MS / 1000) });
+  }
+
+  if (method === 'POST' && pathname === '/api/auth/register') {
+    const ip = ipOf(req) || '?';
+    if (limited('reg:' + ip, 10, 60_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
+    const body = await readBody(req, 8 * 1024);
+    if (!checkCaptcha(body)) return sendJson(res, 400, { ok: false, error: 'captcha_wrong' });
+    const email = String(body.email || '').trim().toLowerCase();
+    const code = String(body.code || '').trim();
+    const pw = String(body.password || '');
+    if (!QQ_EMAIL.test(email)) return sendJson(res, 400, { ok: false, error: 'invalid_email' });
+    if (!/^[0-9]{6}$/.test(code)) return sendJson(res, 400, { ok: false, error: 'invalid_code' });
+    if (pw.length < 8 || pw.length > 128) return sendJson(res, 400, { ok: false, error: 'invalid_password' });
+
+    const [rows] = await db().query('SELECT code_hash, expires_at, attempts FROM email_codes WHERE email = ?', [email]);
+    const rec = rows[0];
+    if (!rec) return sendJson(res, 400, { ok: false, error: 'code_required' });
+    if (new Date(rec.expires_at).getTime() < Date.now()) return sendJson(res, 400, { ok: false, error: 'code_expired' });
+    if (Number(rec.attempts) >= CODE_MAX_ATTEMPTS) return sendJson(res, 429, { ok: false, error: 'code_attempts' });
+    if (rec.code_hash !== hashCode(email, code)) {
+      await db().query('UPDATE email_codes SET attempts = attempts + 1 WHERE email = ?', [email]);
+      return sendJson(res, 400, { ok: false, error: 'code_wrong' });
+    }
+
+    try {
+      // 注册只分配 4 位代码；昵称由玩家登录后首次输入
+      const tag = freshTag();
+      const [r] = await db().query(
+        'INSERT INTO accounts (email, tag, pass_hash) VALUES (?,?,?)',
+        [email, tag, hashPassword(pw)],
+      );
+      await db().query('DELETE FROM email_codes WHERE email = ?', [email]);
+      const sid = await createSession(r.insertId, req, res);
+      const created = { id: r.insertId, email, nickname: null, tag, role: 'player', name: null, displayName: null };
+      return sendJson(res, 200, { ok: true, token: sid, userToken: userTokenFor(created), user: created });
+    } catch (e) {
+      if (e && e.code === 'ER_DUP_ENTRY') return sendJson(res, 409, { ok: false, error: 'email_taken' });
+      return sendJson(res, 500, { ok: false, error: 'server_error' });
+    }
+  }
+
+  // 登录设备列表 / 退出其他设备
+  if (method === 'GET' && pathname === '/api/auth/sessions') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    const sid = parseCookies(req)[SESSION_COOKIE] || '';
+    const [rows] = await db().query('SELECT sid, ua, ip, created_at, expires_at FROM user_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 30', [u.id]);
+    const sessions = rows.map((r) => ({ current: r.sid === sid, ua: r.ua || '', ip: r.ip || '', createdAt: r.created_at, expiresAt: r.expires_at }));
+    return sendJson(res, 200, { ok: true, sessions });
+  }
+  if (method === 'POST' && pathname === '/api/auth/sessions/revoke') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    const sid = parseCookies(req)[SESSION_COOKIE] || '';
+    await db().query('DELETE FROM user_sessions WHERE user_id = ? AND sid <> ?', [u.id, sid]);
+    await audit({ id: u.id, email: u.email }, 'self-revoke-sessions', u.id, null, ipOf(req));
+    return sendJson(res, 200, { ok: true });
+  }
+  // 修改密码
+  if (method === 'POST' && pathname === '/api/auth/password') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    const body = await readBody(req, 8 * 1024);
+    const oldPw = String(body.oldPassword || '');
+    const newPw = String(body.newPassword || '');
+    if (newPw.length < 8 || newPw.length > 128) return sendJson(res, 400, { ok: false, error: 'invalid_password' });
+    const [rows] = await db().query('SELECT pass_hash FROM accounts WHERE id = ?', [u.id]);
+    if (!rows[0] || !verifyPassword(oldPw, rows[0].pass_hash)) return sendJson(res, 400, { ok: false, error: 'bad_old_password' });
+    await db().query('UPDATE accounts SET pass_hash = ? WHERE id = ?', [hashPassword(newPw), u.id]);
+    const sid = parseCookies(req)[SESSION_COOKIE] || '';
+    await db().query('DELETE FROM user_sessions WHERE user_id = ? AND sid <> ?', [u.id, sid]);
+    await audit({ id: u.id, email: u.email }, 'self-change-password', u.id, null, ipOf(req));
+    return sendJson(res, 200, { ok: true });
+  }
+  // 修改代号（昵称），四位代码不变
+  if (method === 'POST' && pathname === '/api/auth/set-name') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    const body = await readBody(req, 8 * 1024);
+    const nickname = String(body.nickname || '').trim();
+    if (nickname.length < 1 || nickname.length > 7 || !/^[\p{L}\p{N}_\-·]+$/u.test(nickname)) return sendJson(res, 400, { ok: false, error: 'invalid_nickname' });
+    const tag = freshTag();
+    await db().query('UPDATE accounts SET nickname = ?, name = ?, tag = ? WHERE id = ?', [nickname, nickname + '#' + tag, tag, u.id]);
+    const display = nickname + '#' + tag;
+    const next = { ...u, nickname, tag, name: display, displayName: display, titleName: display };
+    return sendJson(res, 200, { ok: true, userToken: userTokenFor(next), adminToken: adminTokenFor(next), user: next });
+  }
+  // 首次设置/修改代号（昵称），自动带 #四位代码
+  if (method === 'POST' && pathname === '/api/auth/set-name') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    const body = await readBody(req, 8 * 1024);
+    const nickname = String(body.nickname || '').trim();
+    if (nickname.length < 1 || nickname.length > 7 || !/^[\p{L}\p{N}_\-·]+$/u.test(nickname)) {
+      return sendJson(res, 400, { ok: false, error: 'invalid_nickname' });
+    }
+    const tag = freshTag();
+    await db().query('UPDATE accounts SET nickname = ?, name = ?, tag = ? WHERE id = ?', [nickname, nickname, tag, u.id]);
+    // name/displayName 是玩家名（不带代码）；titleName 只给标题页显示 名字#代码
+    const next = { ...u, nickname, tag, name: nickname, displayName: nickname, titleName: `${nickname}#${tag}` };
+    return sendJson(res, 200, { ok: true, userToken: userTokenFor(next), adminToken: adminTokenFor(next), user: next });
+  }
+
+  if (method === 'POST' && pathname === '/api/auth/login') {
+    const ip = ipOf(req) || '?';
+    const body = await readBody(req, 8 * 1024);
+    if (!checkCaptcha(body)) return sendJson(res, 400, { ok: false, error: 'captcha_wrong' });
+    const email = String(body.email || '').trim().toLowerCase();
+    if (limited('login:' + ip + ':' + email, 10, 60_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
+    const [rows] = await db().query('SELECT id, email, nickname, tag, name, role, pass_hash, disabled FROM accounts WHERE email = ? AND deleted_at IS NULL', [email]);
+    const u = rows[0];
+    if (!u || u.disabled || !verifyPassword(String(body.password || ''), u.pass_hash)) {
+      return sendJson(res, 401, { ok: false, error: 'bad_credentials' });
+    }
+    await db().query('UPDATE accounts SET last_login_at = NOW() WHERE id = ?', [u.id]);
+    const sid = await createSession(u.id, req, res);
+    const display = displayOf(u);
+    return sendJson(res, 200, { ok: true, token: sid, userToken: userTokenFor(u), adminToken: adminTokenFor(u), user: { id: u.id, email: u.email, nickname: u.nickname, tag: u.tag, role: u.role || 'player', name: display, displayName: display, titleName: u.nickname ? u.nickname + '#' + u.tag : null } });
+  }
+
+  if (method === 'POST' && pathname === '/api/auth/logout') {
+    const sid = parseCookies(req)[SESSION_COOKIE];
+    if (sid) await db().query('DELETE FROM user_sessions WHERE sid = ?', [sid]);
+    res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // ---------------- 管理员登录（网页后台）----------------
+  if (method === 'POST' && pathname === '/api/admin/login') {
+    const body = await readBody(req, 8 * 1024);
+    const username = String(body.username || '').trim();
+    if (limited('adminlogin:' + (ipOf(req) || '?'), 10, 60_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
+    const [rows] = await db().query('SELECT id, username, pass_hash, role, disabled FROM admin_users WHERE username = ?', [username]);
+    const a = rows[0];
+    if (!a || a.disabled || !verifyPassword(String(body.password || ''), a.pass_hash)) return sendJson(res, 401, { ok: false, error: 'bad_credentials' });
+    const token = newSid();
+    await db().query('INSERT INTO admin_sessions (token, admin_id, expires_at) VALUES (?,?,?)', [token, a.id, new Date(Date.now() + 12 * 3600_000)]);
+    await db().query('UPDATE admin_users SET last_login_at = NOW() WHERE id = ?', [a.id]);
+    return sendJson(res, 200, { ok: true, token, admin: { id: a.id, username: a.username, role: a.role } });
+  }
+
+  if (pathname.startsWith('/api/admin/') && !pathname.startsWith('/api/admin/login')) {
+    const body0 = { token: '' };
+    const auth = String(req.headers.authorization || '');
+    const bm = /^Bearer\s+([A-Za-z0-9_-]{20,64})$/.exec(auth);
+    if (bm) body0.token = bm[1];
+    const [sess] = body0.token
+      ? await db().query('SELECT s.admin_id, s.expires_at, u.username, u.role, u.disabled FROM admin_sessions s JOIN admin_users u ON u.id = s.admin_id WHERE s.token = ?', [body0.token])
+      : [[]];
+    const me2 = sess[0];
+    if (!me2 || me2.disabled || new Date(me2.expires_at).getTime() < Date.now()) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    const isOwner = me2.role === 'owner';
+
+    if (method === 'GET' && pathname === '/api/admin/me') return sendJson(res, 200, { ok: true, admin: { id: me2.admin_id, username: me2.username, role: me2.role } });
+
+    if (method === 'POST' && pathname === '/api/admin/logout') {
+      await db().query('DELETE FROM admin_sessions WHERE token = ?', [body0.token]);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'GET' && pathname === '/api/admin/accounts') { /* handled below */ }
+
+    // 管理员账号管理（仅 owner）
+    if (pathname === '/api/admin/users') {
+      if (!isOwner) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      if (method === 'GET') {
+        const [rows] = await db().query('SELECT id, username, role, disabled, created_at, last_login_at FROM admin_users ORDER BY id');
+        return sendJson(res, 200, { ok: true, users: rows });
+      }
+      if (method === 'POST') {
+        const body = await readBody(req, 8 * 1024);
+        const username = String(body.username || '').trim();
+        const password = String(body.password || '');
+        const role = body.role === 'owner' ? 'owner' : (body.role === 'moderator' ? 'moderator' : 'admin');
+        if (!/^[A-Za-z0-9_\-]{3,32}$/.test(username)) return sendJson(res, 400, { ok: false, error: 'invalid_username' });
+        if (password.length < 8) return sendJson(res, 400, { ok: false, error: 'invalid_password' });
+        try {
+          const [r] = await db().query('INSERT INTO admin_users (username, pass_hash, role) VALUES (?,?,?)', [username, hashPassword(password), role]);
+          return sendJson(res, 200, { ok: true, id: r.insertId });
+        } catch (e) { if (e && e.code === 'ER_DUP_ENTRY') return sendJson(res, 409, { ok: false, error: 'name_taken' }); return sendJson(res, 500, { ok: false, error: 'server_error' }); }
+      }
+    }
+    const mu = /^\/api\/admin\/users\/([0-9]+)\/(disabled|password)$/.exec(pathname);
+    if (mu && method === 'POST') {
+      if (!isOwner) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const id = Number(mu[1]);
+      const body = await readBody(req, 8 * 1024);
+      if (mu[2] === 'disabled') {
+        const disabled = body.disabled === true ? 1 : 0;
+        await db().query('UPDATE admin_users SET disabled = ? WHERE id = ?', [disabled, id]);
+        if (disabled) await db().query('DELETE FROM admin_sessions WHERE admin_id = ?', [id]);
+        return sendJson(res, 200, { ok: true });
+      }
+            const pw = String(body.password || '');
+      if (pw.length < 8) return sendJson(res, 400, { ok: false, error: 'invalid_password' });
+      await db().query('UPDATE admin_users SET pass_hash = ? WHERE id = ?', [hashPassword(pw), id]);
+      await db().query('DELETE FROM admin_sessions WHERE admin_id = ?', [id]);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // 玩家账号管理：复用后续 /api/admin/accounts 逻辑（去掉本机限制）
+    if (method === 'GET' && pathname === '/api/admin/accounts') {
+      const u2 = new URL(req.url, 'http://x');
+      const q = String(u2.searchParams.get('q') || '').trim();
+      const onlyDeleted = u2.searchParams.get('deleted') === '1';
+      const like = '%' + q + '%';
+      const [rows] = q
+        ? await db().query('SELECT id, email, nickname, tag, disabled, created_at, last_login_at FROM accounts WHERE email LIKE ? OR nickname LIKE ? OR tag LIKE ? ORDER BY id DESC LIMIT 200', [like, like, like])
+        : await db().query('SELECT id, email, nickname, tag, disabled, created_at, last_login_at FROM accounts ORDER BY id DESC LIMIT 200');
+      const [agg] = await db().query('SELECT COUNT(*) AS total, SUM(disabled = 1) AS disabled FROM accounts');
+      return sendJson(res, 200, { ok: true, accounts: rows, total: Number(agg[0].total) || 0, disabled: Number(agg[0].disabled) || 0 });
+    }
+    const macc = /^\/api\/admin\/accounts\/([0-9]+)\/(disabled|password)$/.exec(pathname);
+    if (macc && method === 'POST') {
+      const id = Number(macc[1]);
+      const body = await readBody(req, 8 * 1024);
+      if (macc[2] === 'disabled') {
+        const disabled = body.disabled === true ? 1 : 0;
+        await db().query('UPDATE accounts SET disabled = ? WHERE id = ?', [disabled, id]);
+        await audit({ id: me2.admin_id, email: me2.email }, disabled ? 'disable' : 'enable', id, null, ipOf(req));
+        if (disabled) await db().query('DELETE FROM user_sessions WHERE user_id = ?', [id]);
+        return sendJson(res, 200, { ok: true });
+      }
+      const pw = String(body.password || '');
+      if (pw.length < 8) return sendJson(res, 400, { ok: false, error: 'invalid_password' });
+      await db().query('UPDATE accounts SET pass_hash = ? WHERE id = ?', [hashPassword(pw), id]);
+      await db().query('DELETE FROM user_sessions WHERE user_id = ?', [id]);
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  // ---------------- 后台账号管理（仅本机可访问）----------------
+  if (pathname.startsWith('/api/admin/')) {
+    const ra = ipOf(req);
+    if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(ra)) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+
+    if (method === 'GET' && pathname === '/api/admin/accounts') {
+      const q = String(new URL(req.url, 'http://x').searchParams.get('q') || '').trim();
+      const like = '%' + q + '%';
+      const [rows] = q
+        ? await db().query('SELECT id, email, nickname, tag, disabled, created_at, last_login_at FROM accounts WHERE email LIKE ? OR nickname LIKE ? OR tag LIKE ? ORDER BY id DESC LIMIT 200', [like, like, like])
+        : await db().query('SELECT id, email, nickname, tag, disabled, created_at, last_login_at FROM accounts ORDER BY id DESC LIMIT 200');
+      const [agg] = await db().query('SELECT COUNT(*) AS total, SUM(disabled = 1) AS disabled FROM accounts');
+      return sendJson(res, 200, { ok: true, accounts: rows, total: Number(agg[0].total) || 0, disabled: Number(agg[0].disabled) || 0 });
+    }
+
+    let m2 = /^\/api\/admin\/accounts\/([0-9]+)\/disabled$/.exec(pathname);
+    if (m2 && method === 'POST') {
+      const body = await readBody(req, 8 * 1024);
+      const disabled = body.disabled === true ? 1 : 0;
+      await db().query('UPDATE accounts SET disabled = ? WHERE id = ?', [disabled, Number(m2[1])]);
+      if (disabled) await db().query('DELETE FROM user_sessions WHERE user_id = ?', [Number(m2[1])]);
+      return sendJson(res, 200, { ok: true, id: Number(m2[1]), disabled: !!disabled });
+    }
+
+    m2 = /^\/api\/admin\/accounts\/([0-9]+)\/password$/.exec(pathname);
+    if (m2 && method === 'POST') {
+      const body = await readBody(req, 8 * 1024);
+      const pw = String(body.password || '');
+      if (pw.length < 8 || pw.length > 128) return sendJson(res, 400, { ok: false, error: 'invalid_password' });
+      await db().query('UPDATE accounts SET pass_hash = ? WHERE id = ?', [hashPassword(pw), Number(m2[1])]);
+      await db().query('DELETE FROM user_sessions WHERE user_id = ?', [Number(m2[1])]);
+      return sendJson(res, 200, { ok: true, id: Number(m2[1]) });
+    }
+  }
+
+  // ---------------- 账号权限（后台直接用玩家账号登录）----------------
+  // 忘记密码：邮箱验证码重置
+  if (method === 'POST' && pathname === '/api/auth/reset/send') {
+    const body = await readBody(req, 8 * 1024);
+    const email = String(body.email || '').trim().toLowerCase();
+    if (!QQ_EMAIL.test(email)) return sendJson(res, 400, { ok: false, error: 'invalid_email' });
+    if (limited('rsend:' + email, 1, 55_000)) return sendJson(res, 429, { ok: false, error: 'too_soon', retryAfter: 55 });
+    if (limited('rsend-day:' + email, 5, 24 * 3600_000)) return sendJson(res, 429, { ok: false, error: 'too_many_codes' });
+    if (limited('rsend-ip:' + (ipOf(req) || '?'), 10, 3600_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
+    const [rows] = await db().query('SELECT id FROM accounts WHERE email = ? AND deleted_at IS NULL', [email]);
+    // 无论是否存在都返回成功，避免探测邮箱是否注册
+    if (rows[0]) {
+      const code = String(crypto.randomInt(100000, 1000000));
+      await db().query('INSERT INTO reset_codes (email, code_hash, expires_at, attempts, last_sent_at) VALUES (?,?,?,0,?) ON DUPLICATE KEY UPDATE code_hash = VALUES(code_hash), expires_at = VALUES(expires_at), attempts = 0, last_sent_at = VALUES(last_sent_at)', [email, hashCode(email, code), new Date(Date.now() + 10 * 60_000), new Date()]);
+      try { await mail().sendMail({ from: `"萝卜喵公益服" <${MAIL.user}>`, to: email, subject: '【萝卜喵公益服】重置密码验证码', text: `你的重置密码验证码是 ${code}，10 分钟内有效。如非本人操作请忽略。\n\n—— 萝卜喵公益服 · 卫戍协议：盟约`, html: codeMailHtml(code) }); } catch { /* 邮件失败不暴露 */ }
+    }
+    return sendJson(res, 200, { ok: true, cooldown: 60 });
+  }
+  if (method === 'POST' && pathname === '/api/auth/reset') {
+    const body = await readBody(req, 8 * 1024);
+    const email = String(body.email || '').trim().toLowerCase();
+    const code = String(body.code || '').trim();
+    const pw = String(body.password || '');
+    if (!QQ_EMAIL.test(email)) return sendJson(res, 400, { ok: false, error: 'invalid_email' });
+    if (!/^[0-9]{6}$/.test(code)) return sendJson(res, 400, { ok: false, error: 'invalid_code' });
+    if (pw.length < 8) return sendJson(res, 400, { ok: false, error: 'invalid_password' });
+    if (limited('reset:' + email, 10, 3600_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
+    const [rows] = await db().query('SELECT id, email FROM accounts WHERE email = ? AND deleted_at IS NULL', [email]);
+    const a = rows[0];
+    if (!a) return sendJson(res, 400, { ok: false, error: 'code_wrong' });
+    const [cr] = await db().query('SELECT code_hash, expires_at, attempts FROM reset_codes WHERE email = ?', [email]);
+    const rec = cr[0];
+    if (!rec) return sendJson(res, 400, { ok: false, error: 'code_required' });
+    if (new Date(rec.expires_at).getTime() < Date.now()) return sendJson(res, 400, { ok: false, error: 'code_expired' });
+    if (Number(rec.attempts) >= 5) return sendJson(res, 429, { ok: false, error: 'code_attempts' });
+    if (rec.code_hash !== hashCode(email, code)) { await db().query('UPDATE reset_codes SET attempts = attempts + 1 WHERE email = ?', [email]); return sendJson(res, 400, { ok: false, error: 'code_wrong' }); }
+    await db().query('DELETE FROM reset_codes WHERE email = ?', [email]);
+    await db().query('UPDATE accounts SET pass_hash = ? WHERE id = ?', [hashPassword(pw), a.id]);
+    await db().query('DELETE FROM user_sessions WHERE user_id = ?', [a.id]);
+    await audit({ id: a.id, email }, 'self-reset-password', a.id, null, ipOf(req));
+    return sendJson(res, 200, { ok: true });
+  }
+  // 管理员登录：必须已有游戏登录态（Cookie 会话），再通过邮箱验证码二次验证
+  if (method === 'GET' && pathname === '/api/admin2/whoami') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'login_required' });
+    if (!u.role || u.role === 'player') return sendJson(res, 403, { ok: false, error: 'not_admin' });
+    return sendJson(res, 200, { ok: true, user: { id: u.id, email: u.email, nickname: u.nickname, tag: u.tag, role: u.role } });
+  }
+  if (method === 'POST' && pathname === '/api/admin2/send-code') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'login_required' });
+    if (!u.role || u.role === 'player') return sendJson(res, 403, { ok: false, error: 'not_admin' });
+    if (!u.email) return sendJson(res, 400, { ok: false, error: 'no_email' });
+    if (limited('a2code:' + u.email, 1, 55_000)) return sendJson(res, 429, { ok: false, error: 'too_soon', retryAfter: 55 });
+    if (limited('a2code-ip:' + (ipOf(req) || '?'), 20, 3600_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests', retryAfter: 600 });
+    if (limited('a2code-day:' + u.email, 30, 24 * 3600_000)) return sendJson(res, 429, { ok: false, error: 'too_many_codes', retryAfter: 3600 });
+    const code = String(crypto.randomInt(100000, 1000000));
+    await db().query('INSERT INTO admin_codes (email, code_hash, expires_at, attempts, last_sent_at) VALUES (?,?,?,0,?) ON DUPLICATE KEY UPDATE code_hash = VALUES(code_hash), expires_at = VALUES(expires_at), attempts = 0, last_sent_at = VALUES(last_sent_at)', [u.email, hashCode(u.email, code), new Date(Date.now() + 10 * 60_000), new Date()]);
+    try {
+      await mail().sendMail({ from: `"萝卜喵公益服" <${MAIL.user}>`, to: u.email, subject: '【萝卜喵公益服】管理后台二次验证码', text: `你的管理后台二次验证码是 ${code}，10 分钟内有效。\n\n—— 萝卜喵公益服 · 卫戍协议：盟约`, html: codeMailHtml(code) });
+    } catch { return sendJson(res, 502, { ok: false, error: 'mail_failed' }); }
+    return sendJson(res, 200, { ok: true, cooldown: 60, masked: u.email.replace(/^(.).*(@.*)$/, '$1***$2') });
+  }
+  if (method === 'POST' && pathname === '/api/admin2/login-code') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'login_required' });
+    if (!u.role || u.role === 'player') return sendJson(res, 403, { ok: false, error: 'not_admin' });
+    const body = await readBody(req, 8 * 1024);
+    const code = String(body.code || '').trim();
+    if (!/^[0-9]{6}$/.test(code)) return sendJson(res, 400, { ok: false, error: 'invalid_code' });
+    const [cr] = await db().query('SELECT code_hash, expires_at, attempts FROM admin_codes WHERE email = ?', [u.email]);
+    const rec = cr[0];
+    if (!rec) return sendJson(res, 400, { ok: false, error: 'code_required' });
+    if (new Date(rec.expires_at).getTime() < Date.now()) return sendJson(res, 400, { ok: false, error: 'code_expired' });
+    if (Number(rec.attempts) >= 5) return sendJson(res, 429, { ok: false, error: 'code_attempts' });
+    if (rec.code_hash !== hashCode(u.email, code)) { await db().query('UPDATE admin_codes SET attempts = attempts + 1 WHERE email = ?', [u.email]); return sendJson(res, 400, { ok: false, error: 'code_wrong' }); }
+    // 先建会话再消费验证码：会话写入失败时验证码仍可用，避免白白作废
+    const sid = parseCookies(req)[SESSION_COOKIE] || '';
+    const token = newSid();
+    await db().query('INSERT INTO admin_sessions (token, admin_id, expires_at, sid) VALUES (?,?,?,?)', [token, u.id, new Date(Date.now() + 12 * 3600_000), sid]);
+    await db().query('DELETE FROM admin_codes WHERE email = ?', [u.email]);
+    await audit({ id: u.id, email: u.email }, 'login-code', u.id, u.role, ipOf(req));
+    return sendJson(res, 200, { ok: true, token, admin: { id: u.id, email: u.email, nickname: u.nickname, tag: u.tag, role: u.role } });
+  }
+  if (method === 'POST' && pathname === '/api/admin2/login') {
+    const body = await readBody(req, 8 * 1024);
+    const email = String(body.email || '').trim().toLowerCase();
+    if (limited('admin2:' + (ipOf(req) || '?'), 10, 60_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
+    const [rows] = await db().query('SELECT id, email, nickname, tag, pass_hash, role, disabled FROM accounts WHERE email = ? AND deleted_at IS NULL', [email]);
+    const a = rows[0];
+    const failKey = 'a2fail:' + email + ':' + (ipOf(req) || '?');
+    if ((FAILS.get(failKey) || 0) >= 5) return sendJson(res, 429, { ok: false, error: 'locked' });
+    if (!a || a.disabled || a.role === 'player' || !verifyPassword(String(body.password || ''), a.pass_hash)) {
+      FAILS.set(failKey, (FAILS.get(failKey) || 0) + 1);
+      setTimeout(() => FAILS.delete(failKey), 5 * 60_000);
+      return sendJson(res, 401, { ok: false, error: 'bad_credentials' });
+    }
+    FAILS.delete(failKey);
+    // 非常用设备识别：新设备登录时邮件通知所有最高管理员
+    try {
+      const ua = String(req.headers['user-agent'] || '').slice(0, 255);
+      const lang = String(req.headers['accept-language'] || '');
+      const dev = crypto.createHash('sha256').update(ua + '|' + lang).digest('hex');
+      const [known] = await db().query('SELECT 1 FROM admin_devices WHERE account_id = ? AND device = ?', [a.id, dev]);
+      if (!known[0]) {
+        await db().query('INSERT IGNORE INTO admin_devices (account_id, device, ua, ip) VALUES (?,?,?,?)', [a.id, dev, ua, ipOf(req)]);
+        const [owners] = await db().query("SELECT email FROM accounts WHERE role = 'owner' AND email IS NOT NULL AND deleted_at IS NULL");
+        const subject = '【萝卜喵公益服】管理员账号在新设备登录';
+        const text = '管理员账号 ' + a.email + '（' + (a.nickname || '') + '#' + (a.tag || '') + '）于新设备登录。\nIP: ' + ipOf(req) + '\nUA: ' + ua + '\n如非本人操作，请立即到后台重置密码或收回权限。\n\n—— 萝卜喵公益服 · 卫戍协议：盟约';
+        for (const o of owners) {
+          if (!o.email) continue;
+          try { await mail().sendMail({ from: `"萝卜喵公益服" <${MAIL.user}>`, to: o.email, subject, text }); } catch { /* 忽略 */ }
+        }
+        await audit({ id: a.id, email: a.email }, 'new-device', a.id, ipOf(req), ipOf(req));
+      }
+    } catch { /* 设备识别失败不影响登录 */ }
+    const token = newSid();
+    await db().query('INSERT INTO admin_sessions (token, admin_id, expires_at) VALUES (?,?,?)', [token, a.id, new Date(Date.now() + 12 * 3600_000)]);
+    await audit({ id: a.id, email: a.email }, 'login', a.id, a.role, ipOf(req));
+    return sendJson(res, 200, { ok: true, token, admin: { id: a.id, email: a.email, nickname: a.nickname, tag: a.tag, role: a.role } });
+  }
+  if (pathname.startsWith('/api/admin2/') && pathname !== '/api/admin2/login') {
+    // Read the small POST body before the awaited admin-session lookup: on some
+    // Node versions the request stream has already flushed by the time the
+    // route handler queries MySQL, which made game-gate/create-room read '{}'.
+    const earlyBody = method === 'POST' && (
+      pathname === '/api/admin2/game-gate' ||
+      pathname === '/api/admin2/create-room' ||
+      pathname === '/api/admin2/watch-token'
+    ) ? readBody(req, 8 * 1024).catch(() => null) : null;
+    const auth = String(req.headers.authorization || '');
+    const bm = /^Bearer\s+([A-Za-z0-9_-]{20,64})$/.exec(auth);
+    const [sess] = bm ? await db().query('SELECT s.admin_id, s.expires_at, s.sid, a.email, a.nickname, a.tag, a.role, a.disabled FROM admin_sessions s JOIN accounts a ON a.id = s.admin_id WHERE s.token = ?', [bm[1]]) : [[]];
+    const me2 = sess[0];
+    if (!me2 || me2.disabled || me2.role === 'player' || new Date(me2.expires_at).getTime() < Date.now()) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    if (!me2.sid || parseCookies(req)[SESSION_COOKIE] !== me2.sid) return sendJson(res, 401, { ok: false, error: 'session_mismatch' });
+    const isOwner = me2.role === 'owner';
+    me2.perms = isOwner ? ['*'] : await getAdminPerms();
+    if (method === 'GET' && pathname === '/api/admin2/me') return sendJson(res, 200, { ok: true, admin: { id: me2.admin_id, email: me2.email, nickname: me2.nickname, tag: me2.tag, role: me2.role }, perms: me2.perms });
+    if (method === 'POST' && pathname === '/api/admin2/watch-token') {
+      if (!adminCan(me2, 'rooms.view')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      let code = '';
+      try { const b = earlyBody ? await earlyBody : null; code = String(b && b.code || '').toUpperCase(); } catch { /* bad body */ }
+      if (!code) {
+        try { code = String(new URL(req.url, 'http://x').searchParams.get('code') || '').toUpperCase(); } catch { /* ignore */ }
+      }
+      if (!/^[A-Z0-9]{4,8}$/.test(code)) return sendJson(res, 400, { ok: false, error: 'bad_code' });
+      const payload = Buffer.from(JSON.stringify({ c: code, exp: Date.now() + 30 * 60 * 1000 })).toString('base64url');
+      const sig = crypto.createHmac('sha256', watchSecret()).update(payload).digest('base64url');
+      return sendJson(res, 200, { ok: true, token: payload + '.' + sig });
+    }
+    if (method === 'GET' && pathname === '/api/admin2/game-gate') {
+      if (!adminCan(me2, 'rooms.maintenance')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      try {
+        const j = JSON.parse(fs.readFileSync(require('node:path').join(__dirname, '..', 'content', 'game-gate.json'), 'utf8'));
+        return sendJson(res, 200, { ok: true, start: j.start !== false, match: j.match !== false, reason: String(j.reason || '') });
+      } catch { return sendJson(res, 200, { ok: true, start: true, match: true, reason: '' }); }
+    }
+    if (method === 'POST' && pathname === '/api/admin2/game-gate') {
+      if (!adminCan(me2, 'rooms.maintenance')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      let b = null;
+      try { b = earlyBody ? await earlyBody : null; } catch { /* bad body */ }
+      if (!b || typeof b.start !== 'boolean' || typeof b.match !== 'boolean') {
+        try {
+          const q = new URL(req.url, 'http://x').searchParams;
+          if (q.has('start') && q.has('match')) b = { start: q.get('start') === '1', match: q.get('match') === '1' };
+        } catch { /* ignore */ }
+      }
+      if (!b || typeof b.start !== 'boolean' || typeof b.match !== 'boolean') return sendJson(res, 400, { ok: false, error: 'bad_gate' });
+      const doc = { start: b.start, match: b.match, reason: String(b.reason || '').slice(0, 200), updatedAt: Date.now() };
+      try { fs.writeFileSync(require('node:path').join(__dirname, '..', 'content', 'game-gate.json'), JSON.stringify(doc, null, 2), 'utf8'); } catch { return sendJson(res, 500, { ok: false, error: 'write_failed' }); }
+      await audit({ id: me2.admin_id, email: me2.email }, 'game-gate', null, `start=${doc.start} match=${doc.match}`, ipOf(req));
+      return sendJson(res, 200, { ok: true, ...doc });
+    }
+    if (method === 'GET' && pathname === '/api/admin2/create-room') {
+      if (!adminCan(me2, 'rooms.maintenance')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      try {
+        const p = require('node:path');
+        let enabled = true;
+        for (let n = 1; n <= 30; n++) {
+          try {
+            const j = JSON.parse(fs.readFileSync(p.join(__dirname, '..', `node-${n}`, 'data', 'create-room.json'), 'utf8'));
+            if (j.enabled === false) enabled = false;
+          } catch { /* a missing node file means the default: enabled */ }
+        }
+        return sendJson(res, 200, { ok: true, enabled });
+      } catch { return sendJson(res, 200, { ok: true, enabled: true }); }
+    }
+    if (method === 'POST' && pathname === '/api/admin2/create-room') {
+      if (!adminCan(me2, 'rooms.maintenance')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      let b = null;
+      try { b = earlyBody ? await earlyBody : null; } catch { /* bad body */ }
+      if (!b || typeof b.enabled !== 'boolean') {
+        try {
+          const q = new URL(req.url, 'http://x').searchParams;
+          if (q.has('enabled')) b = { enabled: q.get('enabled') === '1' };
+        } catch { /* ignore */ }
+      }
+      if (!b || typeof b.enabled !== 'boolean') return sendJson(res, 400, { ok: false, error: 'bad_request' });
+      const doc = { enabled: b.enabled, updatedAt: Date.now() };
+      try {
+        const p = require('node:path');
+        for (let n = 1; n <= 30; n++) {
+          fs.mkdirSync(p.join(__dirname, '..', `node-${n}`, 'data'), { recursive: true });
+          fs.writeFileSync(p.join(__dirname, '..', `node-${n}`, 'data', 'create-room.json'), JSON.stringify(doc, null, 2), 'utf8');
+        }
+      } catch { return sendJson(res, 500, { ok: false, error: 'write_failed' }); }
+      await audit({ id: me2.admin_id, email: me2.email }, 'create-room', null, `enabled=${b.enabled}`, ipOf(req));
+      return sendJson(res, 200, { ok: true, enabled: b.enabled });
+    }
+    if (method === 'POST' && pathname === '/api/admin2/logout') { await db().query('DELETE FROM admin_sessions WHERE token = ?', [bm[1]]); return sendJson(res, 200, { ok: true }); }
+    if (method === 'GET' && pathname === '/api/admin2/permissions') {
+      if (!isOwner) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      return sendJson(res, 200, { ok: true, catalog: ADMIN_PERMISSIONS, current: await getAdminPerms() });
+    }
+    if (method === 'POST' && pathname === '/api/admin2/permissions') {
+      if (!isOwner) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const pb = await readBody(req, 4096);
+      const list = await setAdminPerms(pb.perms);
+      await audit({ id: me2.admin_id, email: me2.email }, 'set-admin-perms', null, list.join(','), ipOf(req));
+      return sendJson(res, 200, { ok: true, perms: list });
+    }
+    const md = /^\/api\/admin2\/accounts\/([0-9]+)\/detail$/.exec(pathname);
+    if (md && method === 'GET') {
+      if (!adminCan(me2, 'accounts.view')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const id = Number(md[1]);
+      const [rows] = await db().query('SELECT id, email, nickname, tag, role, disabled, deleted_at, created_at, last_login_at FROM accounts WHERE id = ?', [id]);
+      const a = rows[0];
+      if (!a) return sendJson(res, 404, { ok: false, error: 'not_found' });
+      const [pf] = await db().query('SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(payload)),0) AS bytes FROM user_prefs WHERE user_id = ?', [id]);
+      const [ss] = await db().query('SELECT COUNT(*) AS n FROM user_sessions WHERE user_id = ? AND expires_at > NOW()', [id]);
+      const [au] = await db().query('SELECT actor_email, action, target_id, detail, ip, at FROM admin_audit WHERE target_id = ? OR actor_id = ? ORDER BY id DESC LIMIT 10', [id, id]);
+      return sendJson(res, 200, { ok: true, account: a, prefs: { domains: Number(pf[0].n), bytes: Number(pf[0].bytes) }, sessions: Number(ss[0].n), audit: au });
+    }
+    if (method === 'GET' && pathname === '/api/admin2/accounts') {
+      if (!adminCan(me2, 'accounts.view')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const ua2 = new URL(req.url, 'http://x');
+      const q = String(ua2.searchParams.get('q') || '').trim();
+      const onlyDeleted = ua2.searchParams.get('deleted') === '1';
+      if (onlyDeleted && !adminCan(me2, 'accounts.delete')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const like = '%' + q + '%';
+      const [rows] = q
+        ? await db().query('SELECT id, email, nickname, tag, role, disabled, deleted_at, created_at, last_login_at FROM accounts WHERE (email LIKE ? OR nickname LIKE ? OR tag LIKE ?)' + (onlyDeleted ? ' AND deleted_at IS NOT NULL' : '') + ' ORDER BY id DESC', [like, like, like])
+        : await db().query('SELECT id, email, nickname, tag, role, disabled, deleted_at, created_at, last_login_at FROM accounts' + (onlyDeleted ? ' WHERE deleted_at IS NOT NULL' : '') + ' ORDER BY id DESC');
+      return sendJson(res, 200, { ok: true, accounts: rows });
+    }
+    const mr = /^\/api\/admin2\/accounts\/([0-9]+)\/(role|disabled|password|delete|restore|nickname)$/.exec(pathname);
+    if (mr && method === 'POST') {
+      const id = Number(mr[1]);
+      const body = await readBody(req, 8 * 1024);
+      const RANK = { player: 0, moderator: 2, admin: 2, owner: 3 };
+      const myRank = RANK[me2.role] || 0;
+      const [tgt] = await db().query('SELECT id, role FROM accounts WHERE id = ?', [id]);
+      const target = tgt[0];
+      if (!target) return sendJson(res, 404, { ok: false, error: 'not_found' });
+      const tgtRank = RANK[target.role] || 0;
+      // 只能操作比自己等级低的账号；同级或更高一律拒绝
+      if (tgtRank >= myRank) return sendJson(res, 403, { ok: false, error: 'rank_denied' });
+      if (mr[2] === 'nickname') {
+        if (!adminCan(me2, 'accounts.rename')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+        const nick = String(body.nickname || '').trim();
+        if (!nick || nick.length > 7) return sendJson(res, 400, { ok: false, error: 'invalid_nickname' });
+        const tag = freshTag();
+        await db().query('UPDATE accounts SET nickname = ?, name = ?, tag = ? WHERE id = ?', [nick, nick, tag, id]);
+        await audit({ id: me2.admin_id, email: me2.email }, 'set-nickname', id, nick, ipOf(req));
+        return sendJson(res, 200, { ok: true, id, nickname: nick, tag });
+      }
+      if (mr[2] === 'role') {
+        if (!adminCan(me2, 'accounts.role')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+        const role = ['player', 'admin', 'owner'].includes(body.role) ? body.role : 'player';
+        const newRank = RANK[role];
+        // 不能授予与自己同级或更高的权限
+        if (newRank >= myRank) return sendJson(res, 403, { ok: false, error: 'rank_denied' });
+        await db().query('UPDATE accounts SET role = ? WHERE id = ?', [role, id]);
+        if (role === 'player') await db().query('DELETE FROM admin_sessions WHERE admin_id = ?', [id]);
+        await audit({ id: me2.admin_id, email: me2.email }, 'set-role', id, role, ipOf(req));
+        return sendJson(res, 200, { ok: true, id, role });
+      }
+      if (mr[2] === 'disabled') {
+        if (!adminCan(me2, 'accounts.ban')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+        const disabled = body.disabled === true ? 1 : 0;
+        await db().query('UPDATE accounts SET disabled = ? WHERE id = ?', [disabled, id]);
+        if (disabled) await db().query('DELETE FROM user_sessions WHERE user_id = ?', [id]);
+        await audit({ id: me2.admin_id, email: me2.email }, disabled ? 'disable' : 'enable', id, null, ipOf(req));
+        return sendJson(res, 200, { ok: true, id, disabled: !!disabled });
+      }
+      if (mr[2] === 'restore') {
+        if (!adminCan(me2, 'accounts.delete')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+        await db().query('UPDATE accounts SET deleted_at = NULL WHERE id = ?', [id]);
+        await audit({ id: me2.admin_id, email: me2.email }, 'restore-account', id, null, ipOf(req));
+        return sendJson(res, 200, { ok: true, id });
+      }
+      if (mr[2] === 'delete') {
+        if (!adminCan(me2, 'accounts.delete')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+        await db().query('DELETE FROM user_sessions WHERE user_id = ?', [id]);
+        await db().query('DELETE FROM user_prefs WHERE user_id = ?', [id]);
+        await db().query('DELETE FROM admin_sessions WHERE admin_id = ?', [id]);
+        await db().query('UPDATE accounts SET deleted_at = NOW() WHERE id = ?', [id]);
+        await audit({ id: me2.admin_id, email: me2.email }, 'delete-account', id, null, ipOf(req));
+        return sendJson(res, 200, { ok: true, id });
+      }
+      if (!adminCan(me2, 'accounts.resetpw')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const pw = String(body.password || '');
+      if (pw.length < 8) return sendJson(res, 400, { ok: false, error: 'invalid_password' });
+      await db().query('UPDATE accounts SET pass_hash = ? WHERE id = ?', [hashPassword(pw), id]);
+      await db().query('DELETE FROM user_sessions WHERE user_id = ?', [id]);
+      await audit({ id: me2.admin_id, email: me2.email }, 'reset-password', id, null, ipOf(req));
+      return sendJson(res, 200, { ok: true, id });
+    }
+  }
+
+  // ---------------- 审计与节点控制（管理员）----------------
+  if (pathname.startsWith('/api/admin2/audit') || pathname.startsWith('/api/admin2/nodes') || pathname.startsWith('/api/admin2/node/') || pathname.startsWith('/api/admin2/storage') || pathname.startsWith('/api/admin2/rooms')) {
+    const auth = String(req.headers.authorization || '');
+    const bm = /^Bearer\s+([A-Za-z0-9_-]{20,64})$/.exec(auth);
+    const [sess] = bm ? await db().query('SELECT s.admin_id, s.expires_at, a.email, a.role, a.disabled FROM admin_sessions s JOIN accounts a ON a.id = s.admin_id WHERE s.token = ?', [bm[1]]) : [[]];
+    const me3 = sess[0];
+    if (!me3 || me3.disabled || me3.role === 'player' || new Date(me3.expires_at).getTime() < Date.now()) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    me3.perms = me3.role === 'owner' ? ['*'] : await getAdminPerms();
+    if (method === 'GET' && pathname === '/api/admin2/storage') {
+      if (!adminCan(me3, 'storage.view')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const [rows] = await db().query('SELECT u.id, u.email, u.nickname, u.tag, COUNT(p.domain) AS domains, COALESCE(SUM(LENGTH(p.payload)),0) AS bytes FROM user_prefs p JOIN accounts u ON u.id = p.user_id GROUP BY u.id ORDER BY bytes DESC LIMIT 20');
+      const [tot] = await db().query('SELECT COUNT(*) AS users, COALESCE(SUM(LENGTH(payload)),0) AS bytes FROM user_prefs');
+      return sendJson(res, 200, { ok: true, rows, total: { users: Number(tot[0].users), bytes: Number(tot[0].bytes) } });
+    }
+    if (method === 'GET' && pathname === '/api/admin2/audit') {
+      if (!adminCan(me3, 'audit.view')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const u0 = new URL(req.url, 'http://x');
+      const q = String(u0.searchParams.get('q') || '').trim();
+      const action = String(u0.searchParams.get('action') || '').trim();
+      const wantCsv = u0.searchParams.get('format') === 'csv';
+      if (wantCsv && !adminCan(me3, 'audit.export')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const where = [];
+      const args = [];
+      if (q) { where.push('(actor_email LIKE ? OR detail LIKE ? OR ip LIKE ?)'); args.push('%' + q + '%', '%' + q + '%', '%' + q + '%'); }
+      if (action) { where.push('action = ?'); args.push(action); }
+      const sql = 'SELECT id, actor_email, action, target_id, detail, ip, at FROM admin_audit'
+        + (where.length ? ' WHERE ' + where.join(' AND ') : '')
+        + ' ORDER BY id DESC LIMIT 500';
+      const [rows] = await db().query(sql, args);
+      if (wantCsv) {
+        const esc = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+        const head = ['id', 'time', 'actor', 'action', 'target', 'detail', 'ip'].map(esc).join(',');
+        const body = rows.map((r) => [r.id, String(r.at || ''), r.actor_email || '', r.action, r.target_id || '', r.detail || '', r.ip || ''].map(esc).join(',')).join('\r\n');
+        res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="admin-audit.csv"', 'cache-control': 'no-store' });
+        return res.end('\uFEFF' + head + '\r\n' + body);
+      }
+      return sendJson(res, 200, { ok: true, logs: rows });
+    }
+    if (method === 'GET' && pathname === '/api/admin2/nodes') {
+      if (!adminCan(me3, 'nodes.view')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      try {
+        const r = await fetch('http://127.0.0.1:3090/api/node-status');
+        const j = await r.json();
+        return sendJson(res, 200, { ok: true, ...j });
+      } catch { return sendJson(res, 502, { ok: false, error: 'unavailable' }); }
+    }
+    if (method === 'GET' && pathname === '/api/admin2/rooms') {
+      if (!adminCan(me3, 'rooms.view')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      try {
+        const p = require('node:path').join(__dirname, '..', 'content', 'rooms.json');
+        const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+        return sendJson(res, 200, { ok: true, at: data.at || 0, nodes: data.nodes || [] });
+      } catch {
+        const nodes = (roomDirProvider ? roomDirProvider() : []).map((x) => ({ n: x.n, at: x.at, rooms: (x.codes || []).map((code) => ({ code })) }));
+        return sendJson(res, 200, { ok: true, at: Date.now(), nodes });
+      }
+    }
+    const mn = /^\/api\/admin2\/node\/([0-9]{1,2})\/restart$/.exec(pathname);
+    if (mn && method === 'POST') {
+      if (!adminCan(me3, 'nodes.restart')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const n = Number(mn[1]);
+      if (!(n >= 1 && n <= 30)) return sendJson(res, 400, { ok: false, error: 'bad_node' });
+      try {
+        const { execFile } = require('node:child_process');
+        await new Promise((resolve, reject) => execFile('pm2', ['restart', 'node-' + n, '--update-env'], { windowsHide: true }, (e) => e ? reject(e) : resolve()));
+        await audit({ id: me3.admin_id, email: me3.email }, 'restart-node', n, 'node-' + n, ipOf(req));
+        return sendJson(res, 200, { ok: true, node: n });
+      } catch (e) { return sendJson(res, 500, { ok: false, error: 'restart_failed' }); }
+    }
+  }
+  // ---------------- 服务器设置代理（仅最高管理员，转发本机 3080）----------------
+  if (pathname.startsWith('/api/admin2/dash/') && (method === 'GET' || method === 'POST')) {
+    const auth = String(req.headers.authorization || '');
+    const bm = /^Bearer\s+([A-Za-z0-9_-]{20,64})$/.exec(auth);
+    const [sess] = bm ? await db().query('SELECT s.admin_id, s.expires_at, a.email, a.role, a.disabled FROM admin_sessions s JOIN accounts a ON a.id = s.admin_id WHERE s.token = ?', [bm[1]]) : [[]];
+    const me4 = sess[0];
+    if (!me4 || me4.disabled || me4.role === 'player' || new Date(me4.expires_at).getTime() < Date.now()) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+    me4.perms = me4.role === 'owner' ? ['*'] : await getAdminPerms();
+    if (!adminCan(me4, 'dash.settings')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+    const sub = pathname.slice('/api/admin2/dash'.length);
+    if (!/^\/(status|create-room|room-ttl|game-gate|announcement|announcements|update|update\/run|protection|protection\/action|logs|nginx|action|health|history)(\?.*)?$/.test(sub + (new URL(req.url, 'http://x').search || ''))) return sendJson(res, 400, { ok: false, error: 'bad_path' });
+    try {
+      const init = { method, headers: { 'content-type': 'application/json' } };
+      if (method === 'POST') init.body = await new Promise((resolve) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b || '{}')); });
+      const r = await fetch('http://127.0.0.1:3080/api' + sub + (new URL(req.url, 'http://x').search || ''), init);
+      const text = await r.text();
+      res.writeHead(r.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(text);
+    } catch { return sendJson(res, 502, { ok: false, error: 'dashboard_unavailable' }); }
+  }
+  // 一键重置账号云端数据
+  if (method === 'POST' && pathname === '/api/prefs/reset') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    await db().query('DELETE FROM user_prefs WHERE user_id = ?', [u.id]);
+    await audit({ id: u.id, email: u.email }, 'self-reset-prefs', u.id, null, ipOf(req));
+    return sendJson(res, 200, { ok: true });
+  }
+  if (pathname.startsWith('/api/prefs')) {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+
+    if (method === 'GET' && pathname === '/api/prefs') {
+      const [rows] = await db().query('SELECT domain, payload, version, updated_at FROM user_prefs WHERE user_id = ?', [u.id]);
+      const domains = {};
+      for (const r of rows) domains[r.domain] = { payload: typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload, version: Number(r.version), updatedAt: r.updated_at };
+      return sendJson(res, 200, { ok: true, domains });
+    }
+
+    // 合并必须在 /api/prefs/:domain 之前处理，否则 "merge" 会被当成域名 → 404
+    if (method === 'POST' && pathname === '/api/prefs/merge') {
+      if (limited('prefs-merge:' + u.id, 20, 60_000)) return sendJson(res, 429, { ok: false, error: 'too_many_writes' });
+      const body = await readBody(req);
+      const domains = body && typeof body.domains === 'object' && body.domains ? body.domains : {};
+      const result = {};
+      const isEmptyPayload = (v) => v == null || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0) || (Array.isArray(v) && v.length === 0);
+      for (const [domain, value] of Object.entries(domains)) {
+        if (!DOMAINS.has(domain)) continue;
+        const rawMerge = value && value.payload !== undefined ? value.payload : value;
+        if (!validatePrefPayload(domain, rawMerge)) { result[domain] = { merged: false, reason: 'invalid' }; continue; }
+        if (isEmptyPayload(rawMerge)) { result[domain] = { merged: false, reason: 'empty' }; continue; }
+        const payload = JSON.stringify(rawMerge);
+        if (payload.length > (domain === 'stats' ? STATS_LIMIT : DOMAIN_LIMIT)) { result[domain] = { merged: false, reason: 'too_large' }; continue; }
+        const [rows] = await db().query('SELECT version FROM user_prefs WHERE user_id = ? AND domain = ?', [u.id, domain]);
+        if (rows[0]) { result[domain] = { merged: false, reason: 'server_wins', version: Number(rows[0].version) }; continue; }
+        await db().query('INSERT INTO user_prefs (user_id, domain, payload, version) VALUES (?,?,?,1)', [u.id, domain, payload]);
+        result[domain] = { merged: true, version: 1 };
+      }
+      return sendJson(res, 200, { ok: true, result });
+    }
+
+    const m = /^\/api\/prefs\/([A-Za-z]+)$/.exec(pathname);
+    if (m) {
+      const domain = m[1];
+      if (!DOMAINS.has(domain)) return sendJson(res, 404, { ok: false, error: 'unknown_domain' });
+      if (method === 'GET') {
+        const [rows] = await db().query('SELECT payload, version, updated_at FROM user_prefs WHERE user_id = ? AND domain = ?', [u.id, domain]);
+        if (!rows[0]) return sendJson(res, 404, { ok: false, error: 'empty' });
+        const r = rows[0];
+        return sendJson(res, 200, { ok: true, payload: typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload, version: Number(r.version), updatedAt: r.updated_at });
+      }
+      if (method === 'PUT') {
+        // 写入限流：正常 800ms 防抖最多约 75 次/分钟，这里放宽到 120 次/分钟防刷
+        if (limited('prefs-put:' + u.id, 120, 60_000)) return sendJson(res, 429, { ok: false, error: 'too_many_writes' });
+        const body = await readBody(req);
+        if (!validatePrefPayload(domain, body.payload)) return sendJson(res, 400, { ok: false, error: 'invalid_payload' });
+        const migrated = migratePrefPayload(domain, body.payload, body.schemaVer);
+        const payload = JSON.stringify(migrated.payload ?? null);
+        if (payload.length > (domain === 'stats' ? STATS_LIMIT : DOMAIN_LIMIT)) return sendJson(res, 413, { ok: false, error: 'payload_too_large' });
+        const base = Number(body.baseVersion || 0);
+        const [rows] = await db().query('SELECT version FROM user_prefs WHERE user_id = ? AND domain = ?', [u.id, domain]);
+        const cur = rows[0] ? Number(rows[0].version) : 0;
+        if (cur > 0 && base !== cur) {
+          const [now] = await db().query('SELECT payload, version, updated_at FROM user_prefs WHERE user_id = ? AND domain = ?', [u.id, domain]);
+          return sendJson(res, 409, { ok: false, error: 'version_conflict', server: { payload: typeof now[0].payload === 'string' ? JSON.parse(now[0].payload) : now[0].payload, version: Number(now[0].version) } });
+        }
+        // 防误覆盖：调配条目大幅减少时要求显式确认
+        if (domain === 'loadout' && cur > 0 && body.force !== true) {
+          try {
+            const [op] = await db().query('SELECT payload FROM user_prefs WHERE user_id = ? AND domain = ?', [u.id, domain]);
+            const oldP = typeof op[0].payload === 'string' ? JSON.parse(op[0].payload) : op[0].payload;
+            const oldN = Object.keys((oldP && oldP.entries) || {}).length;
+            const newN = Object.keys((body.payload && body.payload.entries) || {}).length;
+            if (oldN >= 4 && newN < Math.ceil(oldN / 2)) {
+              return sendJson(res, 409, { ok: false, error: 'mass_removal_guard', server: { payload: oldP, version: cur } });
+            }
+          } catch { /* 忽略 */ }
+        }
+        if (cur === 0) {
+          await db().query('INSERT INTO user_prefs (user_id, domain, payload, version) VALUES (?,?,?,1)', [u.id, domain, payload]);
+          return sendJson(res, 200, { ok: true, version: 1 });
+        }
+        await db().query('UPDATE user_prefs SET payload = ?, version = version + 1 WHERE user_id = ? AND domain = ?', [payload, u.id, domain]);
+        return sendJson(res, 200, { ok: true, version: cur + 1 });
+      }
+    }
+  }
+
+  return false;
+}
+
+module.exports = { handle, ensureSchema, currentUser, DOMAINS, codeMailHtml, adminGate, setRoomDirProvider };
+
+/** 由 server.js 注入：返回 [{ n, codes, at }]，供后台 /api/admin2/rooms 展示。 */
+let roomDirProvider = null;
+function setRoomDirProvider(fn) { roomDirProvider = typeof fn === 'function' ? fn : null; }
+
+// 页面级访问控制：只有已登录且非普通玩家的账号才能打开管理页面
+async function adminGate(req) {
+  try {
+    const u = await currentUser(req);
+    return !!(u && u.role && u.role !== 'player');
+  } catch { return false; }
+}
