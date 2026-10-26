@@ -2020,21 +2020,19 @@ const JOIN_COOKIE = (() => {
         const st = document.createElement('style');
         st.id = 'mm-qq-css';
         st.textContent = `
-          /* 标题屏页脚：Q群按钮独占一行，贴着左下角，位于「添加到桌面」上方。
-             flex 容器里 flex-basis:100% 不会自动换行，所以用一个占满整行的
-             透明占位块（.mm-qq-row）把按钮顶到单独一行。 */
-          .title-foot > .mm-qq-row{flex:0 0 100%;display:flex;justify-content:flex-start;align-items:center;line-height:0}
-          .title-foot > .mm-qq-row ~ *{flex-grow:0}
-          .title-foot .mm-qq-row > #mm-qq{position:static!important;flex:0 0 auto!important;width:auto!important;max-width:fit-content!important;align-self:center!important;margin:0!important;padding:.05rem .2rem!important;height:max(.3rem,1.75em)!important;font-size:calc(.13 * var(--t))!important;line-height:1!important;box-sizing:border-box!important;justify-content:flex-start!important}
+          /* ★ 标题屏：Q群按钮放在左下角「添加到桌面」的正上方。
+             要求（维护者）：页脚原有布局不能变（版本号仍在右下角、添加/公告在原位），
+             只是把 Q群按钮叠加在「添加到桌面」上面一行。
+             做法：按钮绝对定位在 .title-foot 内，left/bottom 由脚本按
+             「添加到桌面」的实际位置算出来（不猜像素），因此
+               —— 各屏幕尺寸 / 缩放 / 移动端都对齐
+               —— 不参与页脚 flex 排版，不撑高页脚、不推开任何原有元素
+             为防重叠，按钮自身的 pointer-events 只在它自己的矩形内生效。 */
+          .title-foot > .mm-qq-row{position:absolute!important;left:0!important;right:auto!important;top:auto!important;bottom:100%!important;flex:0 0 auto!important;width:auto!important;display:flex!important;justify-content:flex-start!important;align-items:flex-end!important;line-height:0!important;margin:0 0 .06rem 0!important;padding:0!important;pointer-events:none!important}
+          .title-foot .mm-qq-row > #mm-qq{position:static!important;flex:0 0 auto!important;width:auto!important;max-width:fit-content!important;align-self:center!important;margin:0!important;padding:.05rem .2rem!important;height:max(.3rem,1.75em)!important;font-size:calc(.13 * var(--t))!important;line-height:1!important;box-sizing:border-box!important;justify-content:flex-start!important;pointer-events:auto!important}
           .title-foot .mm-qq-row > #mm-qq .mm-qq-penguin{width:1.05em!important;height:1.05em!important}
-          /* ★ 兜底：Q群按钮绝不能盖住任何可点击元素。
-             以前 #mm-qq 是 position:fixed 钉在左下角 bottom:82px，正好压在
-             「添加到桌面」上面，导致那个按钮点不到（玩家反馈）。
-             现在：只要它落进了页脚（.mm-qq-row 或直接是 .title-foot 的子元素），
-             就一律改成流内相对定位，让页脚自己排版，绝不覆盖。 */
-          .title-foot #mm-qq,.title-foot .mm-qq-row > #mm-qq{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;top:auto!important;z-index:auto!important}
-          /* 万一页脚结构不存在（走了 body 兜底分支），也要让开底部按钮：
-             用 pointer-events 只在自身矩形内生效，并把 bottom 抬高到安全线以上。 */
+          /* 兜底：万一按钮没进 .mm-qq-row（页脚结构缺失），退回 body 固定定位，
+             并把 bottom 抬到页脚之上，绝不压住「添加到桌面」。 */
           body > #mm-qq{position:fixed;left:max(18px,env(safe-area-inset-left,0px));bottom:calc(112px + env(safe-area-inset-bottom,0px));z-index:2147482000}
           #mm-qq{position:fixed;left:max(18px,env(safe-area-inset-left,0px));bottom:calc(82px + env(safe-area-inset-bottom,0px));z-index:2147482000;display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px solid #7ff0cf;border-radius:0;background:#35c79b;color:#061611;box-shadow:0 0 0 1px rgba(78,216,175,.18),0 4px 16px rgba(0,0,0,.28);letter-spacing:0;cursor:pointer;white-space:nowrap}
           #mm-qq:hover{background:#5ee0b9;border-color:#b6ffe9;color:#03110c}
@@ -2279,22 +2277,21 @@ const JOIN_COOKIE = (() => {
       }
       const foot = document.querySelector('.title-foot');
       if (foot) {
-        // 标题屏左下角：「添加到桌面」上方独占一行。页脚是 flex 换行容器，
-        // 用一行占位块把按钮顶到最左边单独一行，原按钮组位置保持不变。
+        // 标题屏：Q群按钮放在左下角「添加到桌面」的**正上方**。
+        //
+        // 页脚原有布局必须保持不动（版本号在右下角、「添加到桌面」在原位），
+        // 所以按钮绝对定位在 .title-foot 内，**不参与 flex 排版**：
+        // 量出「添加到桌面」按钮的实际矩形，把 Q群按钮贴到它的正上方（左对齐、留一行间距）。
+        // 用测量而不是猜像素，各屏幕尺寸 / 缩放 / 手机端都能对齐。
         let row = foot.querySelector('.mm-qq-row');
         if (!row) {
           row = document.createElement('span');
           row.className = 'mm-qq-row';
           row.setAttribute('aria-hidden', 'false');
         }
-        // 插到页脚**最前面**：页脚是 flex-wrap，这样 Q群这一行排在最上面，
-        // 「添加到桌面」等按钮保留在下面，互不重叠。
-        if (row.parentElement !== foot || row !== foot.firstElementChild) {
-          foot.insertBefore(row, foot.firstElementChild);
-        }
+        if (row.parentElement !== foot) foot.appendChild(row);
         if (btn.parentElement !== row) row.appendChild(btn);
-        // 关键：清掉 fixed 定位留下的所有行内样式，让 CSS 的 `position:static!important` 生效。
-        // 以前只清了 position/left/bottom，若浏览器保留了其它 fixed 相关属性仍会飘在页面上。
+        // 清掉 fixed 定位留下的行内样式，位置改由下面按实际布局算出
         btn.style.position = 'static';
         btn.style.left = '';
         btn.style.right = '';
@@ -2302,6 +2299,22 @@ const JOIN_COOKIE = (() => {
         btn.style.bottom = '';
         btn.style.transform = '';
         btn.style.zIndex = '';
+        // 量「添加到桌面」的位置，把 Q群那一行放到它上方
+        try {
+          const install = foot.querySelector('[data-testid="pwa-install"]')
+            || [...foot.querySelectorAll('button')].find((b) => /添加到桌面|Add to Home|ホーム/.test(b.textContent || ''));
+          const footRect = foot.getBoundingClientRect();
+          if (install && footRect.height > 0) {
+            const ir = install.getBoundingClientRect();
+            const qr = row.getBoundingClientRect();
+            // 左对齐到「添加到桌面」的左缘，垂直方向贴到它的上边再留 6px
+            const left = Math.max(0, Math.round(ir.left - footRect.left));
+            const bottom = Math.round(footRect.bottom - ir.top + 6);
+            if (row.style.left !== left + 'px') row.style.left = left + 'px';
+            if (row.style.bottom !== bottom + 'px') row.style.bottom = bottom + 'px';
+            void qr;
+          }
+        } catch { /* 测量失败：保持 CSS 的默认位置（页脚上方），也不会遮挡 */ }
         return;
       }
       // 页脚结构不存在（极少数情况）：退回 body 固定定位，但 CSS 已把 bottom 抬到
