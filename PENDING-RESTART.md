@@ -816,3 +816,20 @@ node-3, node-9, node-11, node-12, node-13, node-16, node-27
 
 那 16 个节点上的对局结束后，重启它们，再把节点号加进 nginx 的两处配置即可开放。
 无需改 ecosystem。
+
+---
+
+## 2026-10-26 19:40 核实：名片立绘不按版本隔离（保持原作者设计）
+
+维护者问「立绘保存是否分版本」。核实结论：**不分，全局单值**，与原作者设计一致，未做改动。
+
+| 设置 | 存储 key | 按版本 |
+|---|---|---|
+| 名片立绘 `room.card` | `sp.pref.room.card` | 否 |
+| 干员调配 `diy` | `sp.pref.diy` / `sp.pref.diy.<slug>` | 是 |
+| 编队 | 同上按 slug | 是 |
+
+`ui/seatArt.js` 里 `CARD_PREF = 'room.card'` 不含 version；`loadoutSync.js` 的
+`installCardSync` 把它作为 `room.card { charId }` 同步到云端，跨设备一致。
+
+> 结论：切换版本时名片立绘沿用同一个。若原作者以后加了版本隔离，再跟随修改。
