@@ -853,12 +853,29 @@ const transientFetch = (err) => {
  *           wait?: (ms: number) => Promise<void>, timers?: { set, clear },
  *           cosmetics?: ReturnType<typeof createCosmeticLayers> | null }} [opts]
  */
-const LOCAL_ASSET_PREFIX = '/assets-cdn/';
+// 资源地址的三种形态：
+//   源站    https://assets.luobomiao.love/assets/x   ← 最慢（单文件可达 3.4 s）
+//   本机    /assets/x                                ← 最快（nginx 直接读磁盘）
+//   代理    /assets-cdn/x                            ← 回源后本地缓存
+//
+// 本服的 nginx 对 /assets/ 做了「本机优先 + 缺失回源」：
+//   磁盘上有 → 直接读（实测冷缓存 15 个文件 194 ms）
+//   磁盘上没有 → 自动回源资源站并缓存（客户端不会看到 404）
+// 所以客户端统一用 /assets/ 即可，不必再判断本机有没有。以前一律改写成
+// /assets-cdn/，等于把就近的磁盘副本让给外网代理，这是「加载了完整资源包
+// 还是很慢」的主因（冷缓存 895 ms vs 194 ms）。
+const LOCAL_ASSET_PREFIX = '/assets/';
 const REMOTE_ASSET_RE = __spRemoteAssetRe();
 
-/** Route manifest art through this server's cached /assets-cdn/ proxy instead of the slow external host. */
+/** 源站 URL → 本机路径。只有源站地址会被改写，其它地址原样返回。 */
+function localizeOne(url) {
+  if (typeof url !== 'string') return url;
+  return REMOTE_ASSET_RE.test(url) ? LOCAL_ASSET_PREFIX + url.replace(REMOTE_ASSET_RE, '') : url;
+}
+
+/** Route manifest art through this server's own /assets/ (disk first, origin as the nginx-side fallback). */
 function localizeAssetUrls(value, seen = new Set()) {
-  if (typeof value === 'string') return REMOTE_ASSET_RE.test(value) ? LOCAL_ASSET_PREFIX + value.replace(REMOTE_ASSET_RE, '') : value;
+  if (typeof value === 'string') return localizeOne(value);
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
   seen.add(value);
   if (Array.isArray(value)) {

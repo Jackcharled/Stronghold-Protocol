@@ -569,10 +569,12 @@ export async function pruneImportedAssets({ fetch: doFetch = (...args) => global
 /** The cache keys of one served URL: itself, plus the `/media/~hash/…` alias when playback would request it. */
 export function cacheUrlsFor(url) {
   const out = [];
-  // The game localizes external art to this server's /assets-cdn/ proxy; cache the same URL
-  // so the service worker can actually answer the request the game makes.
+  // The game localizes external art to this server's own /assets/ (nginx reads it from disk
+  // first and falls back to the origin); cache the same URL so the service worker can answer
+  // the request the game actually makes. Must stay in step with public/js/assets.js
+  // (LOCAL_ASSET_PREFIX) — a mismatch means the imported pack never serves anything.
   const remote = __spRemoteAssetRe();
-  const local = typeof url === 'string' && remote.test(url) ? '/assets-cdn/' + url.replace(remote, '') : url;
+  const local = typeof url === 'string' && remote.test(url) ? '/assets/' + url.replace(remote, '') : url;
   if (typeof local === 'string' && local) out.push(local);
   const media = mediaUrl(local);
   if (typeof media === 'string' && media && media !== local) out.push(media);
