@@ -1163,7 +1163,12 @@ export class Lobby {
         ? '游客不能开始独立模拟，请先登录'
         : '游客不能创建同盟模拟房间，请先登录');
     }
-    const conflict = this.accountRoomConflict(session);
+    let conflict = this.accountRoomConflict(session);
+    // 遗留座位（刷新页面 / 换设备后的旧会话）不再是拦路石：清掉它即可建房。
+    if (conflict && conflict.stale) {
+      this.dropStaleAccountSeats(session);
+      conflict = this.accountRoomConflict(session);
+    }
     if (conflict && conflict.room !== this.roomOf(session)) {
       return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
     }
@@ -1257,7 +1262,12 @@ export class Lobby {
     // idempotent for members; a spectator of this room goes on below: it may take a free player seat (header)
     if (cur === room && !room.spectatorOf(session.playerId)) { this.sendState(room, session); return OK; }
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
-    const conflict = this.accountRoomConflict(session);
+    let conflict = this.accountRoomConflict(session);
+    // 同账号的遗留座位（刷新/换设备后的旧会话）先清掉，不再挡加入房间。
+    if (conflict && conflict.stale) {
+      this.dropStaleAccountSeats(session);
+      conflict = this.accountRoomConflict(session);
+    }
     if (conflict) return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
     if (room.match) return fail(ERR.ROOM_STARTED);
     if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
@@ -1307,7 +1317,12 @@ export class Lobby {
     // 静默退出原房间后才进观战席。现在与 join 一致：已在别的房间就先离开。
     // 隐藏观战（adminWatch，管理员隐身）是例外：它不占观战席、不算房间成员。
     if (!wantHidden) {
-      const conflict = this.accountRoomConflict(session);
+      let conflict = this.accountRoomConflict(session);
+      // 同账号的遗留座位（刷新/换设备后的旧会话）先清掉，不再挡观战。
+      if (conflict && conflict.stale) {
+        this.dropStaleAccountSeats(session);
+        conflict = this.accountRoomConflict(session);
+      }
       if (conflict) return fail(ERR.BAD_MSG, '该账号已在其他房间中，请先离开原房间');
     }
     if (!wantHidden && room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
@@ -2748,7 +2763,19 @@ export class Lobby {
    * @param {number} idx @param {any} session @param {Room} room
    * @returns {Seat}
    */
-  /** The account may hold at most one seat (player or spectator) across all rooms. */
+  /**
+   * The account may hold at most one seat (player or spectator) across all rooms.
+   *
+   * 遗留座位（stale）处理：玩家刷新页面 / 换设备 / 断线重连后会拿到**新的 playerId**，
+   * 而旧房间里的座位还挂着同一个 accountId 和旧的 playerId。以前这里只比 playerId，
+   * 于是把自己遗留的座位当成「别人的房间」拒绝建房，可玩家界面上根本看不到那个房间，
+   * 也没有入口离开 —— 表现就是「对局结束 / 中途退出后不能再创建房间」，怎么点都失败，
+   * 只能等 15 分钟房间超时解散。（玩家雾灯等人反馈的就是这个。）
+   *
+   * 现在：同一账号的座位如果是**旧会话**（playerId 不同）且那个会话已经断线/不存在，
+   * 就当作遗留座位，交给调用方清理掉再继续，不再拦截。
+   * `stale` 在返回值里标明，方便调用方决定怎么处理。
+   */
   accountRoomConflict(session) {
     const accountId = session.accountId;
     if (!accountId) return null;
@@ -2756,13 +2783,57 @@ export class Lobby {
       if (!room || room.disposed) continue;
       for (const seat of room.seats) {
         if (!seat || seat.isBot || seat.left) continue;
-        if (seat.accountId === accountId && seat.playerId !== session.playerId) return { room, kind: 'player' };
+        if (seat.accountId !== accountId || seat.playerId === session.playerId) continue;
+        // 同一账号的另一处座位：判断是不是「已经没人的旧会话」
+        const old = this.registry.byId(seat.playerId);
+        const stale = !old || old.connected !== true;
+        return { room, kind: 'player', seat, stale };
       }
       for (const spec of room.spectators) {
-        if (spec && spec.accountId === accountId && spec.playerId !== session.playerId) return { room, kind: 'spectator' };
+        if (!spec || spec.accountId !== accountId || spec.playerId === session.playerId) continue;
+        const old = this.registry.byId(spec.playerId);
+        const stale = !old || old.connected !== true;
+        return { room, kind: 'spectator', seat: spec, stale };
       }
     }
     return null;
+  }
+
+  /**
+   * 清掉同一账号遗留的旧座位（刷新页面 / 换设备 / 断线后残留）。
+   * 返回被清理的房间码列表，便于日志。房间因此变空就照常解散。
+   * 只在冲突座位属于「已断线的旧会话」时调用，不动正在别处游玩的账号。
+   */
+  dropStaleAccountSeats(session) {
+    const accountId = session.accountId;
+    if (!accountId) return [];
+    const cleaned = [];
+    for (const room of [...this.rooms.values()]) {
+      if (!room || room.disposed) continue;
+      for (let i = 0; i < room.seats.length; i++) {
+        const seat = room.seats[i];
+        if (!seat || seat.isBot || seat.left) continue;
+        if (seat.accountId !== accountId || seat.playerId === session.playerId) continue;
+        const old = this.registry.byId(seat.playerId);
+        if (old && old.connected === true) continue;   // 别处还在线：不动
+        room.seats[i] = null;
+        cleaned.push(room.code);
+        this.log.info(`[lobby] ${room.code} 清理账号 ${accountId} 的遗留座位（旧会话 ${seat.playerId}）`);
+        if (room.hostId === seat.playerId || !room.hostId) this.migrateHost(room);
+        if (room.activeHumans().length === 0 && room.spectators.length === 0) this.disposeRoom(room, 'empty');
+        else this.broadcastState(room);
+      }
+      for (let i = room.spectators.length - 1; i >= 0; i--) {
+        const spec = room.spectators[i];
+        if (!spec || spec.accountId !== accountId || spec.playerId === session.playerId) continue;
+        const old = this.registry.byId(spec.playerId);
+        if (old && old.connected === true) continue;
+        room.spectators.splice(i, 1);
+        if (!cleaned.includes(room.code)) cleaned.push(room.code);
+        if (!room.disposed) this.broadcastState(room);
+      }
+    }
+    return cleaned;
   }
 
   humanSeat(idx, session, room) {
