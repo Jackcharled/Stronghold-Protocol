@@ -298,8 +298,22 @@ export class Net {
     this._sendHello();
   }
 
-  _onOpen() {
-    this._openedAt = this.now();
+  /**
+   * 重新握手：把当前的 __SP_ACCOUNT_TOKEN / __SP_ADMIN_TOKEN 重新带给服务端。
+   *
+   * 页面启动时 WebSocket 常常比账号接口先连上，那时 hello 里没有账号令牌，
+   * 服务端的 session.admin 就会一直是 false —— 表现是管理员建房没有
+   * 「不自动销毁」、维护开关也拦管理员。账号令牌到达后必须重发一次 hello，
+   * 服务端接受同一连接上的重复 hello 并重新同步身份。
+   * @returns {boolean} 是否真的发了 hello
+   */
+  rehandshake() {
+    if (!this.ws || this.ws.readyState !== WS_OPEN || !this.name) return false;
+    this._sendHello();
+    return true;
+  }
+
+  _onOpen() {    this._openedAt = this.now();
     this._lastRx = this._openedAt;
     this._unansweredSince = null;
     this.retryAt = 0;
@@ -382,7 +396,13 @@ export class Net {
     const rid = this._nextRid();
     // `delta` says this build decodes `m.state` frames (shared/stateDelta.js). A server that does not speak it ignores
     // the field, and the client then keeps receiving the plain m.public / m.private frames it always got.
-    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, delta: STATE_DELTA_VERSION, guest: !window.__SP_ACCOUNT_USER };
+    // guest 的判定不要只看 __SP_ACCOUNT_USER：它是账号脚本 render() 时才写的，
+    // 而 hello 往往先发出去。若此时账号名还没到、但令牌已经在了，old 逻辑会把
+    // 管理员标成游客，服务端 lobby 的「游客不能建房」会直接拦掉他。
+    // 有 accountToken/adminToken 就是已登录，不是游客。
+    const hasTok = (typeof window.__SP_ACCOUNT_TOKEN === 'string' && window.__SP_ACCOUNT_TOKEN.length > 0)
+      || (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0);
+    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, delta: STATE_DELTA_VERSION, guest: !window.__SP_ACCOUNT_USER && !hasTok };
     try {
       if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) msg.adminToken = window.__SP_ADMIN_TOKEN;
       if (typeof window.__SP_ACCOUNT_TOKEN === 'string' && window.__SP_ACCOUNT_TOKEN.length > 0) msg.accountToken = window.__SP_ACCOUNT_TOKEN;

@@ -70,9 +70,13 @@ const RIDGE_KEYS = ['titleRidges', 'entry/bg_mountains_tiled'];
  */
 export function findUiAsset(assets, names) {
   if (!assets || typeof assets !== 'object') return null;
+  // 本服：清单里的资源是资源站的绝对地址。统一改写到 /assets-cdn/ 代理，
+  // 与游戏内其它美术保持一致（同源、可缓存、不受 CSP 影响）。
+  const REMOTE = /^https?:\/\/assets\.luobomiao\.love\/assets\//i;
+  const toProxy = (u) => (typeof u === 'string' && REMOTE.test(u) ? '/assets-cdn/' + u.replace(REMOTE, '') : u);
   const asUrl = (v) => {
-    if (typeof v === 'string') return v;
-    if (v && typeof v === 'object') return v.url || v.path || v.src || null;
+    if (typeof v === 'string') return toProxy(v);
+    if (v && typeof v === 'object') return toProxy(v.url || v.path || v.src || null);
     return null;
   };
   const ui = assets.ui;

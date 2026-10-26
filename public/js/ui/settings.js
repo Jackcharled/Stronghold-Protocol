@@ -470,7 +470,10 @@ export function SettingsModal({ open, onClose }) {
     return () => { live = false; off(); };
   }, [open]);
   const fxTier = resolveOfficialFx(s.officialFx, true);
-  return html`<${Modal} open=${open} onClose=${onClose} title=${t('设置')} micro="SETTINGS" width="7.4rem"
+  // 宽度用 CSS 变量而不是内联 width：手机横屏下 1rem≈40px，7.4rem≈296px 放不下
+  // 「标签 + 滑条 + 数值」三列，会把控件挤成竖条。交给 CSS（styles 里按视口收窄）。
+  return html`<${Modal} open=${open} onClose=${onClose} title=${t('设置')} micro="SETTINGS" width="var(--set-modal-w, 7.4rem)"
+                        class="set-modal"
                         actions=${html`<${Button} variant="secondary" icon="book" class="set-guide" onClick=${() => openGuide(0)}>${t('玩法说明')}<//>
                         <${Button} variant="primary" icon="check" onClick=${onClose}>${t('完成')}<//>`}>
     <div class="set-list">

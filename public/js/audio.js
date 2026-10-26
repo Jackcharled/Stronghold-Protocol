@@ -86,6 +86,24 @@ import { PHASE } from '../../shared/constants.js';
 import { mediaUrl } from './media.js';
 import { unhashedUrl } from '../../shared/assetPaths.js';
 
+/**
+ * 把资源站的绝对地址改写成本服的 /assets-cdn/ 代理地址。
+ *
+ * 站点 CSP 是 `media-src 'self'; connect-src 'self'`（server/http/csp.js），只允许同源资源；
+ * 而清单里的音频是 https://assets.luobomiao.love/assets/... 这样的绝对地址。
+ * 不改写的话音频会被浏览器按 CSP 拦掉，玩家听不到任何声音。
+ * nginx 的 `location ^~ /assets-cdn/` 会把请求转发到资源站并本地缓存，
+ * 图片（ui/gameComponents.js、assetPack.js）用的就是同一条路径。
+ * @param {string} url
+ * @returns {string}
+ */
+const REMOTE_ASSET_RE = /^https?:\/\/assets\.luobomiao\.love\/assets\//i;
+function externalToProxy(url) {
+  if (typeof url !== 'string') return url;
+  if (REMOTE_ASSET_RE.test(url)) return '/assets-cdn/' + url.replace(REMOTE_ASSET_RE, '');
+  return url;
+}
+
 const MAX_VOICES = 8;
 // [ASSUMED] Remake anti-spam intervals, retained at high game speeds; not official audio pool parameters (#680).
 const UNIT_COOLDOWN_MS = 160;
@@ -829,13 +847,18 @@ export class AudioManager {
           if (!own || url !== LOCAL_BGM + own.id) return null;
           ab = await own.read();
         } else {
+          // 本服：美术与音频都托管在资源站（assets.luobomiao.love），而站点 CSP 是
+          // media-src 'self'; connect-src 'self'，直接 fetch 远程地址会被浏览器拒绝
+          // （Refused to connect … violates Content Security Policy），表现为完全没有声音。
+          // 因此和图片一样改写到本服的 /assets-cdn/ 代理：同源、满足 CSP，并享受 nginx 缓存。
+          const src = externalToProxy(url);
           // Extension-less URL first so download managers leave the BGM alone; a host without /media/ still works.
-          const media = mediaUrl(url);
+          const media = mediaUrl(src);
           let res = await fetch(media);
-          if (media !== url && !isAudioResponse(res)) {
+          if (media !== src && !isAudioResponse(res)) {
             // Drop the unusable response (404, or a 200 that is really index.html) before trying the original URL.
             try { await res.body?.cancel?.(); } catch { /* the fallback request matters more than draining this one */ }
-            res = await fetch(url);
+            res = await fetch(src);
           }
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           ab = await res.arrayBuffer();
