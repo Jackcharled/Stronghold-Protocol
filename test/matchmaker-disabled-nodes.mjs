@@ -41,7 +41,7 @@ ok('pickNodeFor 对实验节点也判断禁用',
 ok('/api/state 的节点列表带 disabled 字段', /disabled: DISABLED_NODES\.has\(n\)/.test(src));
 
 // 启动日志
-ok('启动时打印被禁用的节点', /暂停接收新对局的节点/.test(src));
+ok('启动时打印被禁用的节点', /暂停接收新玩家的节点/.test(src));
 
 // 空值不炸
 const emptyCase = "'', '  ', 'abc', '0', '31', '5'".split(',');

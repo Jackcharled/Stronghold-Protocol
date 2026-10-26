@@ -41,9 +41,10 @@ const DIFF_NAMES = { FUNNY: '标准模拟', NORMAL: '险境模拟', HARD: '绝�
 const TICKET_TTL_MS = 15 * 60 * 1000;
 const MATCH_TTL_MS = 5 * 60 * 1000;
 /**
- * 停止对外接收新对局的节点（逗号分隔节点号）。
- * 用途：这些节点上还有未结束的对局，不能重启；先让它们不再被调度，
- * 等在打的局自然结束后再重启。已被分配过去的玩家不受影响。
+ * 暂停接收新玩家的节点（逗号分隔节点号）。
+ * 用途：这些节点上还有未结束的对局，不能重启；先让匹配器不再把新玩家调度过去，
+ * 等在打的局自然结束后再重启。已经在房间里的人完全不受影响 ——
+ * 他们能打完、能继续开局、能被邀请进房，这里只拦「匹配分配到哪个节点」这一步。
  */
 const DISABLED_NODES = new Set(
   String(process.env.MM_DISABLED_NODES || '')
@@ -900,7 +901,7 @@ account.ensureSchema()
 server.listen(PORT, HOST, () => {
   console.log(`[mm] matchmaking on http://${HOST}:${PORT}/`);
   if (DISABLED_NODES.size) {
-    console.log(`[mm] 暂停接收新对局的节点: ${[...DISABLED_NODES].sort((a, b) => a - b).join(',')}`);
+    console.log(`[mm] 暂停接收新玩家的节点: ${[...DISABLED_NODES].sort((a, b) => a - b).join(',')}`);
   }
 });
 
