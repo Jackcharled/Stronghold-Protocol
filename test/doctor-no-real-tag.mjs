@@ -13,7 +13,7 @@
 //   node test/doctor-no-real-tag.mjs
 //
 // 注意：这个测试读部署目录（node-1/...）而不是仓库，因为要验证"线上那份代码"。
-//       在部署根目录运行：cd D:/Stronghold-Protocol && node repo-sync/test/doctor-no-real-tag.mjs
+//       在部署根目录运行：node <仓库目录>/test/doctor-no-real-tag.mjs
 import fs from 'node:fs';
 
 let fail = 0;
