@@ -34,7 +34,7 @@
 //   * Disconnect in LOBBY: the seat shows connected=false and is freed after `lobbyGraceMs` (60 s); a
 //     session that comes back after that gets `room.closed {reason:'timeout'}`.
 //     Disconnect in a match: the seat is kept and match.onDisconnect(playerId) is called.
-//   * Reconnect: `hello` with a known token (reconnect window, 10 min, see net.js) rebinds the session;
+//   * Reconnect: `hello` with a known token (reconnect window, 15 min — aligned with the room TTL, see net.js) rebinds the session;
 //     the lobby then broadcasts room.state and, in a match, calls match.onReconnect(playerId).
 //     Solo runs (下半: "休整期及机变阶段没有时间限制…24小时内随时返回", research 01 §1 / 06 §17): a session that drops
 //     while its solo room's match runs stays resumable for the official `config.constants.singleReconnectTime`
@@ -462,9 +462,11 @@ export class Room {
     this.experimental = experimental || null;
     /** 5–20 人房间：座位数由实验选项决定 */
     this.capacity = roomCapacity(mode, this.experimental);
-    /** 15 分钟未开始对局解散（管理员房可 noExpire） */
+    /** 15 分钟未开始对局解散（管理员房**房主在线时**才 noExpire） */
     this.ttlMs = roomTtlMs();
     this.noExpire = false;
+    /** 管理员房主离线时刻：人不在就从这时起走普通超时规则，回来清零（sweepOldRooms） */
+    this.adminLeftAt = 0;
     /** the official version the room plays (shared/versions.js id; header "Official versions") */
     this.version = version;
     /**
@@ -881,6 +883,10 @@ export class Lobby {
     // live socket) answers the requester alone, so hello spam cannot amplify into room-wide traffic.
     let changed = !seat.connected;
     seat.connected = true;
+    // 有人回来了：卡死对局的回收计时作废（房间重新有活人，sweepOldRooms 不会再碰它）
+    if (room.lastHumanLeftAt) room.lastHumanLeftAt = 0;
+    // 管理员房主回来了：恢复「永久保留」，管理员房重新不计时
+    if (room.adminLeftAt && room.hostId === session.playerId) room.adminLeftAt = 0;
     if (!room.match && seat.name !== session.name) { seat.name = session.name; changed = true; }
     if (!room.hostId) { this.migrateHost(room); changed = true; }
     if (changed) this.broadcastState(room);
@@ -900,7 +906,31 @@ export class Lobby {
   sweepOldRooms() {
     const now = this.now();
     for (const room of [...this.rooms.values()]) {
-      if (!room || room.disposed || room.match) continue;
+      if (!room || room.disposed) continue;
+      // 「永久保留」只在房主（管理员/服主）本人**在线**时才成立。
+      // 以前 noExpire 一旦为 true 就无条件跳过所有过期判定，于是管理员断线后再不回来，
+      // 房间就永远挂在那里 —— 比普通玩家的卡死房更糟，连 15 分钟 TTL 都不走。
+      // 管理员房也要有回收出口：人不在，就按普通房间的规则计时回收。
+      const forever = room.noExpire === true && this.adminOwnerOnline(room);
+      // 对局进行中的房间：正常情况下不碰它（玩家在打，绝不能因为计时器被解散）。
+      // 但必须能回收「卡死的对局」——以前这里直接 `continue`，于是只要 room.match 还在，
+      // 房间就永远不会过期。node-19 的 DTTW 就是这样卡了 5 个半小时：
+      // 房主 08:20 断线再没回来，对局停在 BAND_DRAFT（liveRound=0）永远推不动，
+      // 而 sweepOldRooms 看到 room.match 就跳过，15 分钟 TTL 形同虚设。
+      //
+      // 判据只有一条：房间里的真人都已经断线（没有在线玩家）。这时对局不可能再推进，
+      // 保留它只会占着房间、挡住建房、让后台显示一个假「对局中」。
+      // 只要还有任何一个真人连着，就照旧跳过 —— 不影响正常对局。
+      if (room.match) {
+        if (forever) continue;
+        if (room.activeHumans().some((s) => s && s.connected)) continue;
+        // 从「最后一个人断线」的时刻起算宽限期，避免对局刚开的瞬间被误判
+        const since = Math.max(Number(room.lastHumanLeftAt) || 0, Number(room.createdAt) || now);
+        if (now - since < (room.ttlMs || roomTtlMs())) continue;
+        this.log?.info?.(`[lobby] ${room.code} 对局已无人在线超过 ${Math.round((room.ttlMs || roomTtlMs()) / 60000)} 分钟，回收卡死房间`);
+        try { this.disposeRoom(room, 'expired'); } catch { /* ignore */ }
+        continue;
+      }
       if (room.matchmaking) {
         const started = Number(room.matchmakingAt) || now;
         if (now - started >= MATCHMAKING_TIMEOUT_MS) {
@@ -908,12 +938,31 @@ export class Lobby {
         }
         continue;
       }
-      if (room.noExpire) continue;
-      const base = Math.max(Number(room.createdAt) || now, Number(room.lastMatchEndAt) || 0);
+      if (forever) continue;
+      // 普通房间：从建房 / 上一局结束算起。
+      // 管理员房（noExpire 但人已离线）：从「管理员离线」算起 —— 他人在的时候房间一直保留，
+      // 人一走才开始走 15 分钟倒计时，回来续上。
+      const base = room.noExpire === true
+        ? Math.max(Number(room.adminLeftAt) || Number(room.createdAt) || now)
+        : Math.max(Number(room.createdAt) || now, Number(room.lastMatchEndAt) || 0);
       if (now - base < (room.ttlMs || roomTtlMs())) continue;
-      this.log?.info?.('[lobby] ' + room.code + ' expired (15 min without a match)');
+      this.log?.info?.(`[lobby] ${room.code} expired (${room.noExpire === true ? '管理员离线，' : ''}15 min without a match)`);
       try { this.disposeRoom(room, 'expired'); } catch { /* ignore */ }
     }
+  }
+
+  /**
+   * 房间的房主是不是一个**在线**的管理员/服主。「永久保留」（noExpire）只在这种时候生效。
+   * 管理员建完房就走、再也不回来时，房间必须能按超时规则回收，否则就是僵尸房。
+   * @param {Room} room
+   */
+  adminOwnerOnline(room) {
+    if (!room || !room.hostId) return false;
+    const host = room.hostId ? room.seatOf?.(room.hostId) || room.watcherOf?.(room.hostId) : null;
+    // 房主座位还在，但人没连着：不算在线
+    if (host && host.connected !== true) return false;
+    const session = this.registry?.byId ? this.registry.byId(room.hostId) : null;
+    return !!(session && session.admin === true && session.connected === true);
   }
 
   /** 匹配队友 2 分钟没凑满：按当前人数直接开局，并通知匹配器移出队列。 */
@@ -1062,6 +1111,12 @@ export class Lobby {
     seat.contentGen = (seat.contentGen || 0) + 1;
     // a voter's socket dropped: the version vote is void (header "Official versions")
     if (player && room.versionVote?.voters.includes(session.playerId)) this.voidVersionVote(room, 'members');
+    // 记下「最后一个真人断线」的时刻：sweepOldRooms 用它来回收
+    //  —— 卡死的对局房间（对局推不动，onMatchEnd 永远不来）
+    //  —— 管理员房（noExpire，人在时永久保留，人走了才开始计时）
+    if (!room.activeHumans().some((s) => s && s.connected)) room.lastHumanLeftAt = this.now();
+    // 管理员房主本人离线：从这一刻起让房间走普通超时规则（人回来会清零）
+    if (room.noExpire === true && room.hostId === session.playerId) room.adminLeftAt = this.now();
     // a spectator's seat is kept like a player's (nothing to tell the match: it plays no field)
     if (room.match) {
       if (player) {
@@ -2675,8 +2730,10 @@ export class Lobby {
       this.removeMember(room, session.playerId);
       return OK;
     }
-    // a spectator only watches (header): nothing else of it ever reaches the match
-    if (msg.t !== 'g.watch' && !(room.test && msg.t === 'g.test') && room.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR);
+    // a spectator only watches (header): nothing else of it ever reaches the match.
+    // 隐身观战（hiddenSpectators）同样是「只能看」：以前只拦了 spectators，
+    // 隐身观战者的其它 g.* 会被直接转发给对局，等于能替玩家操作。
+    if (msg.t !== 'g.watch' && !(room.test && msg.t === 'g.test') && room.watcherOf(session.playerId)) return fail(ERR.SPECTATOR);
     let res;
     try {
       res = room.match.handle(session.playerId, msg);
@@ -2753,6 +2810,11 @@ export class Lobby {
     const room = this.rooms.get(session.roomCode);
     const seat = room ? room.seatOf(session.playerId) : null;
     if (room && !seat && room.spectatorOf(session.playerId)) return room; // a spectator seat
+    // 隐身观战（adminWatch）：只存在于 hiddenSpectators，既不是座位也不在 spectators 里。
+    // 以前这里漏了它，roomCode 会被当成「无效」清成 null —— 于是 g.watch 走进
+    // routeGameNow → roomOf → NOT_IN_ROOM，观战者看到的画面就永远停在自动打开的 P1 上，
+    // 点谁都不换（玩家反馈「隐身观战不能切换观战目标」）。
+    if (room && !seat && room.hiddenSpectatorOf(session.playerId)) return room;
     if (!room || !seat || seat.left || seat.isBot) { session.roomCode = null; return null; }
     return room;
   }
@@ -2802,7 +2864,18 @@ export class Lobby {
   /**
    * 清掉同一账号遗留的旧座位（刷新页面 / 换设备 / 断线后残留）。
    * 返回被清理的房间码列表，便于日志。房间因此变空就照常解散。
-   * 只在冲突座位属于「已断线的旧会话」时调用，不动正在别处游玩的账号。
+   *
+   * ★ 判定必须保守，否则会误删正在使用的房间：
+   *   之前只看 registry.byId(seat.playerId) 是否为 null/已断线，
+   *   但 registry 查不到 ≠ 这个座位真的没人用了（会话可能还没登记、或刚重连）。
+   *   实测踩过：WS 建好 4 个房、同一批账号又建 4 个房时，
+   *   旧房被误判为「遗留」直接解散，而匹配池里还记着旧房号，
+   *   于是成局后玩家进不去 —— 表现就是「卡在匹配界面」。
+   *
+   * 现在要求同时满足才算遗留：
+   *   ① 座位自己标记为未连接（seat.connected === false，由断线处理写入）
+   *   ② registry 里确实查不到这个会话，或该会话已断开
+   * 任何一条不成立就当作「还在用」，不动它。
    */
   dropStaleAccountSeats(session) {
     const accountId = session.accountId;
@@ -2814,13 +2887,17 @@ export class Lobby {
         const seat = room.seats[i];
         if (!seat || seat.isBot || seat.left) continue;
         if (seat.accountId !== accountId || seat.playerId === session.playerId) continue;
+        // ① 座位仍然标记为连接中：这个人还在用，绝不清理
+        if (seat.connected !== false) continue;
+        // ② 会话仍然存活：也不清理
         const old = this.registry.byId(seat.playerId);
-        if (old && old.connected === true) continue;   // 别处还在线：不动
+        if (old && old.connected === true) continue;
         room.seats[i] = null;
         cleaned.push(room.code);
-        this.log.info(`[lobby] ${room.code} 清理账号 ${accountId} 的遗留座位（旧会话 ${seat.playerId}）`);
+        this.log.info(`[lobby] ${room.code} 清理账号 ${accountId} 的遗留座位（旧会话 ${seat.playerId}，未连接）`);
         if (room.hostId === seat.playerId || !room.hostId) this.migrateHost(room);
-        if (room.activeHumans().length === 0 && room.spectators.length === 0) this.disposeRoom(room, 'empty');
+        // 同 removeMember：没有注册玩家了（空房或只剩游客）就解散
+        if (!room.activeHumans().some((s) => s && s.guest !== true)) this.disposeRoom(room, 'empty');
         else this.broadcastState(room);
       }
       for (let i = room.spectators.length - 1; i >= 0; i--) {
@@ -2886,7 +2963,10 @@ export class Lobby {
     }
     if (room.disposed) return; // onLeave may have ended the match and emptied the room
     if (room.hostId === playerId) this.migrateHost(room);
-    if (room.activeHumans().length === 0) this.disposeRoom(room, 'empty');
+    // 没有注册玩家了（空房，或只剩游客）：解散。
+    // 只剩游客时必须解散 —— migrateHost 不再把房主给游客，
+    // 留着就是一间没有房主、谁也开不了局的僵尸房。
+    if (!room.activeHumans().some((s) => s && s.guest !== true)) this.disposeRoom(room, 'empty');
     else this.broadcastState(room);
   }
 
@@ -2909,20 +2989,29 @@ export class Lobby {
 
   /**
    * Lowest-seat connected human becomes host (else lowest-seat human, else null).
-   * 游客不继承房主：游客只能游玩/旁观，不能创建同盟模拟房间，自然也不该成为房主
-   * （以前这里直接取第一个在线玩家，普通房主退出后房主会落到游客头上 ——
-   *  玩家反馈「游客成了房主」）。只有房间里全是游客时才退回给他们，
-   * 避免出现「没有房主、房间卡住」的情况。
+   * 游客永远不继承房主：游客只能游玩/旁观，不能创建同盟模拟房间，自然也不该成为房主
+   * （玩家反馈「游客成了房主」）。
+   *
+   * 以前的写法是：房主退出后房主落到第一个非游客；如果房里只剩游客，
+   * 就退回给游客（日志标记 all guests, fallback），理由是「避免房间无主卡住」。
+   * 但这样一来游客就拿到了开始对局、调实验选项、踢人、解散房间等房主权限，
+   * 违背设计。而且「房间无主会卡住」本来就不成立 —— 房间里已经没有任何注册玩家，
+   * 没有人会继续玩，直接解散才是正确的收尾。
+   *
+   * 现在：房里只剩游客 → 房主置空，房间随即解散（调用方负责）。
    */
   migrateHost(room) {
     const humans = room.activeHumans();
     const nonGuest = humans.filter((s) => s && s.guest !== true);
-    const pool = nonGuest.length ? nonGuest : humans;
-    const pick = pool.find((s) => s.connected) || pool[0] || null;
+    const pick = nonGuest.find((s) => s.connected) || nonGuest[0] || null;
     const prev = room.hostId;
     room.hostId = pick ? pick.playerId : null;
     if (pick && prev !== pick.playerId) {
-      this.log.info(`[lobby] ${room.code} host → ${pick.name}${pick.guest === true ? ' (all guests, fallback)' : ''}`);
+      this.log.info(`[lobby] ${room.code} host → ${pick.name}`);
+    }
+    if (!pick && humans.length) {
+      // 只剩游客：不给房主，房间由调用方解散，别让游客拿到房主权限
+      this.log.info(`[lobby] ${room.code} 只剩游客，不给房主（房间将解散）`);
     }
     // 房主换人后重新判定「不自动销毁」：noExpire 只在房主本人是管理员/服主时成立。
     // 管理员建房后离开、房主交给普通玩家，房间必须恢复 15 分钟销毁计时，
@@ -2955,6 +3044,11 @@ export class Lobby {
     // 从「不销毁」切回「计时」时，把起点重置为现在：否则会拿很久以前的 createdAt
     // 去比 15 分钟，房间可能在切回的瞬间就被判定过期直接删掉。
     if (before && !isAdmin) room.createdAt = this.now();
+    // adminLeftAt 跟着房主身份走：
+    //  —— 新房主是在线管理员：清掉（永久保留生效）
+    //  —— 新房主不是管理员（或管理员但不在线）：从现在起计时，否则会拿旧的 adminLeftAt 立刻判定过期
+    if (isAdmin && session && session.connected === true) room.adminLeftAt = 0;
+    else if (!room.adminLeftAt) room.adminLeftAt = this.now();
     if (before !== isAdmin) {
       this.log?.info?.(`[lobby] ${room.code} noExpire ${before} -> ${isAdmin}`);
     }

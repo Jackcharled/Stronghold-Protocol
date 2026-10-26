@@ -34,7 +34,7 @@
 //   * Disconnect in LOBBY: the seat shows connected=false and is freed after `lobbyGraceMs` (60 s); a
 //     session that comes back after that gets `room.closed {reason:'timeout'}`.
 //     Disconnect in a match: the seat is kept and match.onDisconnect(playerId) is called.
-//   * Reconnect: `hello` with a known token (reconnect window, 10 min, see net.js) rebinds the session;
+//   * Reconnect: `hello` with a known token (reconnect window, 15 min — aligned with the room TTL, see net.js) rebinds the session;
 //     the lobby then broadcasts room.state and, in a match, calls match.onReconnect(playerId).
 //     Solo runs (下半: "休整期及机变阶段没有时间限制…24小时内随时返回", research 01 §1 / 06 §17): a session that drops
 //     while its solo room's match runs stays resumable for the official `config.constants.singleReconnectTime`

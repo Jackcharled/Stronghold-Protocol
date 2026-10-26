@@ -58,3 +58,69 @@ npm run golden                              # golden results
 Browser suites are off by default and need Chrome: `SP_E2E=1` (UI), `SP_REAL_E2E=1` (real match, needs assets),
 `RENDER_E2E=1`, `SIM_E2E=1` — see CONTRIBUTING.md §2. Battle tests are easiest with the helpers described in
 docs/SIM.md (the test harness section) and the patterns in `test/content/op_siege.test.js`.
+
+## 这是本服的生产仓库：更新 GitHub 前的必查清单
+
+这个仓库同时是**萝卜喵公益服**的生产代码库（不只是上游的 fork）。它对应线上 30 个节点 + 匹配器 +
+管理后台 + nginx。**每次要更新 GitHub（提交/推送）之前，逐条走完下面的检查**，不要跳步。
+
+详细的背景、命令与例外说明见 [MAINTENANCE.md](MAINTENANCE.md) 的「更新 GitHub 前必查」一节。
+
+### 1. 补丁完整性（最容易出事的一条）
+
+本服相对上游的每一处改动都必须进 `patcher/features/`，否则上游发新版本时按
+`restore → 升级 → apply` 走会**全部丢失**。
+
+```bash
+node patcher/check-coverage.mjs
+```
+
+必须输出 `未进补丁: 0`。**改了任何 `server/`、`public/`、`shared/`、`data/` 下的文件之后都要跑**；
+它同时会检查「违规入库」（被 `.gitignore` 排除却仍被 Git 跟踪的文件）。
+
+### 2. 不能提交的内容
+
+| 禁止 | 原因 |
+|---|---|
+| `public/vendor/`、`public/fonts/`、`public/assets/` | AGENTS.md「No game art in git」；上游整包替换 |
+| `.secrets/`（令牌、测试账号、数据库口令） | 凭据 |
+| `*.key`、`privkey.pem`、`*.pem`、`*.pfx` | 私钥 |
+| `node_modules/`、`logs/`、`.cache/`、`backups/` | 依赖与产物 |
+| 明文 GitHub PAT / 数据库密码 | 一律走 `.secrets/` 或环境变量 |
+| 本机绝对路径、Windows 用户名 | 仓库是**公开**的 |
+
+**新增文件前先想一遍它属于哪一类。** `git add -A` 之后、`commit` 之前，检查一次
+`git diff --cached --name-only` 有没有混进上面的东西。
+
+### 3. 敏感信息不能写死在代码里
+
+仓库公开，因此：
+
+- 部署根目录用 `process.env.SP_ROOT || __dirname`（参考 `ecosystem.config.cjs`）
+- pm2 / PM2_HOME 用 `APPDATA` / `USERPROFILE` 推导，不要写 `C:\Users\<用户名>\...`
+- 资源站域名读 `data/config.json` 的 `assetOrigin` 或环境变量 `SP_ASSET_ORIGIN`，
+  不要在前端硬编码域名字面量
+- 站点相关的密钥一律走 `.secrets/` 或环境变量
+
+### 4. 改到运行时代码时：区分「刷新生效」与「重启生效」
+
+| 改动位置 | 生效方式 |
+|---|---|
+| `public/js`、`public/css`、`shared/`、`data/`、`mm/client.js` | 玩家刷新页面即可 |
+| `server/**`（含 `server/net.js`、`server/match/**`） | **必须重启节点** |
+
+`healthz` 的 `build` 字段**只覆盖** `public/index.html`、`public/js`、`public/css`、`server/sim`、
+`shared`、`data`——**不包含 `server/net.js`、`server/lobby.js`、`server/match/**`**。
+所以「所有节点 build 相同」**不能**证明服务端代码已更新，要用进程启动时间对比文件 mtime。
+
+线上重启有硬约束：**正在对局的节点一律不动**（见 MAINTENANCE.md「重启纪律」）。
+
+### 5. 提交前
+
+```bash
+git rev-list --left-right --count origin/custom/production...HEAD   # 必须是 0  0
+node patcher/check-coverage.mjs                                     # 未进补丁: 0
+git status --short                                                  # 无意外文件
+```
+
+`git diff --cached --name-only | Select-String '\.key$|privkey|\.pem$|\.secrets'` 必须为空。

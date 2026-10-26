@@ -3,7 +3,7 @@
 // Every rule the final documentation sweep corrected is checked twice: the code still behaves as the docs now say, and
 // the stale wording does not come back. Topics: combat / boss clocks in REAL seconds (overtime after 150 real s,
 // m.public.overtimeAt), 联防 helper order (unite.helperOrder, research 08 §5), boss results handed over instead of a
-// synthetic zero, reconnect windows (co-op 10 min, solo singleReconnectTime 24 h), g.equip replaceUid + equipped items
+// synthetic zero, reconnect windows (co-op 15 min — this fork aligns it with the room TTL, upstream 10 min; solo singleReconnectTime 24 h), g.equip replaceUid + equipped items
 // locked, battleId unique per match, solo pause (g.pause / m.public.paused), road-over-floor lanes, module icons from
 // local art, 标准 = 战场#01 only; user playtest #3 (DESIGN §17): temp overflow kept until the first prep its player can
 // act in (never wiped at the round start), the 回环射手 boomerang and 蕾缪安's shells one by one, the live LP, the detail
@@ -139,8 +139,8 @@ test('boss results: no synthetic zero for a running boss field (docs), handover 
   assert.match(META, /hands the field to the partner's replica or the server/);
 });
 
-test('reconnect windows: co-op 10 min, solo singleReconnectTime 24 h (code, data, every doc)', () => {
-  assert.equal(NET_DEFAULTS.reconnectWindowMs, 10 * 60_000);
+test('reconnect windows: co-op 15 min (this fork; upstream 10 min), solo singleReconnectTime 24 h (code, data, every doc)', () => {
+  assert.equal(NET_DEFAULTS.reconnectWindowMs, 15 * 60_000);   // 本服：与房间清理 TTL 对齐
   assert.equal(SOLO_RECONNECT_FALLBACK_SEC, 86_400);
   assert.equal(DATA.config.constants.singleReconnectTime, 86_400);
   assert.match(DESIGN, /singleReconnectTime/);
@@ -149,7 +149,7 @@ test('reconnect windows: co-op 10 min, solo singleReconnectTime 24 h (code, data
   assert.match(dataRow('constants'), /singleReconnectTime/);
   for (const [name, text] of [['README', README], ['DEPLOY', DEPLOY], ['PLAYING', PLAYING]]) {
     assert.match(text, /24 小时/, `${name}: solo resume window`);
-    assert.match(text, /10 分钟/, `${name}: co-op window`);
+    assert.match(text, /15 分钟/, `${name}: co-op window`);
   }
   assert.ok(!/断线 10 分钟内可重连，掉线期间 AI 托管/.test(README), 'README: a dropped seat is not AI-played unless 暂离');
 });

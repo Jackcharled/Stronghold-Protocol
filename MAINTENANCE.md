@@ -1,7 +1,10 @@
 # 卫戍协议 · 运维维护手册（2026-10-26）
 
-> 新会话接手必读。本文件覆盖：整体架构、30 节点、管理后台、数据库、控制台、日常运维、故障排查。
-> 配套文档：`docs/HANDOFF-2026-10-20.md`（开发交接）、`docs/GITHUB-RULES.md`（上传规则）。
+> 新会话接手必读。本文件覆盖：整体架构、30 节点、管理后台、数据库、控制台、日常运维、故障排查，
+> 以及**更新 GitHub 前的必查清单**（第九章）。
+> 配套文档：[AGENTS.md](AGENTS.md)（AI 助手入口 + 硬性规则）、[patcher/README.md](patcher/README.md)（补丁体系）、
+> [patcher/REPO-SYNC.md](patcher/REPO-SYNC.md)（仓库与运行目录的同步关系）、
+> [PENDING-RESTART.md](PENDING-RESTART.md)（待重启记录）。
 
 ---
 
@@ -384,11 +387,147 @@ curl --resolve stronghold.luobomiao.love:443:127.0.0.1 -o NUL -s -w "%{http_code
 
 ---
 
-## 九、安全与红线
+## 九、更新 GitHub 前必查（每次提交/推送都要走一遍）
 
-1. `.secrets/`、`admin.html`、`account.cjs` 不上传 GitHub（见 `GITHUB-RULES.md`）；
-2. 代码与文档不写明文密码；
+> 这个仓库是**公开**的，同时是**生产代码库**。下面每一条都是踩过的坑。
+
+### 9.1 补丁完整性：最容易出事的一条
+
+本服相对上游的每一处改动，都必须进 `patcher/features/`，否则上游发新版本时按
+`restore-patch.bat → 升级 → apply-patch.bat` 走会**全部丢失**。
+
+```powershell
+cd D:\Stronghold-Protocol\repo-sync
+node patcher/check-coverage.mjs
+```
+
+**必须输出 `未进补丁: 0`**，否则先补补丁再提交。
+
+**什么时候必须跑**：改了 `server/`、`public/`、`shared/`、`data/`、`matchmaker/`、`mm/` 下任何文件之后。
+
+**背景（2026-10-26 的事故）**：`patcher/README.md` 一直写着「涉及的游戏文件只有两个」，
+是体系初建时的状态。之后功能不断扩张而补丁没跟着加，一度有 **138 个功能代码文件**
+不在任何补丁里——5–20 人大厅、并发草稿、悬赏计时、跳过按钮、联防分段、重连窗口、
+恢复对局、代号规则全都在内。上游一升级就会全丢。现已补齐并加了自动检查。
+
+补丁覆盖策略见 `patcher/README.md`；哪些路径不纳入补丁也在那里的忽略规则里
+（`public/vendor/`、`test/`、`tools/`、`schemas/`、`packs/`、`nginx/`、`package*.json`、
+图片、以及上游 gitignore 禁止提交的 `matchmaker/public/admin.html`）。
+
+### 9.2 不能提交的内容
+
+| 禁止 | 原因 |
+|---|---|
+| `public/vendor/`、`public/fonts/`、`public/assets/` | AGENTS.md「No game art in git」；上游整包替换 |
+| `.secrets/`（GitHub 令牌、测试账号、数据库口令、watch-secret） | 凭据 |
+| `*.key`、`privkey.pem`、`*.pem`、`*.pfx`（含 `nginx/conf/ssl/`） | 私钥 |
+| `node_modules/`、`logs/`、`.cache/`、`backups/`、`dist/` | 依赖与产物 |
+| 明文 GitHub PAT / 数据库密码 | 一律走 `.secrets/` 或环境变量 |
+| 本机绝对路径、Windows 用户名 | 仓库公开 |
+
+**事故回顾**：
+
+- `public/vendor/`（9 个）、`public/fonts/`（7 个）、`data/local-fx.json`、`packs/index.json`
+  在 `733982fe`「同步 node-1 游戏本体」时被 `git add -f` **强制**加进了仓库，
+  绕过了 `.gitignore`，共 4.9 MB。已于 2026-10-26 用 `git rm --cached` 移除
+  （本地文件保留）。`check-coverage.mjs` 现在会自动检查这类「被忽略却仍被跟踪」的文件。
+- `deploy/_push-maintenance.ps1` 里曾**硬编码 GitHub PAT 明文**（未提交，但留在磁盘就有风险）。
+  已改为从 `.secrets/github-token.txt` 读取。
+
+**提交前的自检**：
+
+```powershell
+git add -A
+git diff --cached --name-only | Select-String '\.key$|privkey|\.pem$|\.pfx$|\.secrets|public/(vendor|fonts|assets)/'
+# 必须为空
+```
+
+### 9.3 敏感信息不能写死在代码里
+
+仓库公开，所以路径和域名都要可配置：
+
+| 项目 | 正确写法 | 参考文件 |
+|---|---|---|
+| 部署根目录 | `process.env.SP_ROOT \|\| __dirname` | `ecosystem.config.cjs` |
+| dashboard 根目录 | `process.env.SP_ROOT \|\| path.resolve(__dirname, '..')` | `dashboard/server.js` |
+| pm2 可执行文件 | `process.env.SP_PM2 \|\| path.join($env:APPDATA, 'npm\pm2.cmd')` | `deploy/server-watchdog.ps1` |
+| PM2_HOME | `process.env.PM2_HOME \|\| Join-Path $env:USERPROFILE '.pm2'` | `deploy/_stack-watchdog.ps1` |
+| PM2 CLI JS | `process.env.SP_PM2_JS \|\| path.join(APPDATA,'npm/node_modules/pm2/bin/pm2')` | `dashboard/server.js` |
+| nginx 目录 | `process.env.SP_NGINX_ROOT \|\| import.meta.dirname` | `nginx/run-nginx.mjs` |
+| 资源站域名（前端） | `data/config.json` 的 `assetOrigin`，经 `__spRemoteAssetRe()` 读取 | `public/js/assets.js` 等 6 个文件 |
+| 资源站域名（服务端） | `process.env.SP_ASSET_ORIGIN \|\| config.assetOrigin` | `server/http/csp.js` |
+
+**不要**写 `D:\Stronghold-Protocol`、`C:\Users\<用户名>\...`、`https://<你的域名>` 到代码里。
+
+### 9.4 「刷新生效」还是「重启生效」
+
+| 改动位置 | 生效方式 |
+|---|---|
+| `public/js`、`public/css`、`shared/`、`data/`、`mm/client.js`、`matchmaker/public/` | 玩家**刷新页面**即可 |
+| `server/**`（含 `server/net.js`、`server/lobby.js`、`server/match/**`） | **必须重启节点** |
+| `dashboard/server.js`、`ecosystem.config.cjs`、`nginx/conf/nginx.conf` | 重启对应进程 / `nginx -s reload` |
+
+**关键陷阱**：`healthz` 的 `build` 字段只覆盖
+`public/index.html`、`public/js`、`public/css`、`server/sim`、`shared`、`data`，
+**不包含 `server/net.js`、`server/lobby.js`、`server/match/**`**。
+所以「所有节点 build 相同」**不能**证明服务端代码已更新。
+
+判断节点是否跑着最新服务端代码，要用**进程启动时间对比 `server/` 目录文件 mtime**：
+
+```powershell
+# 进程启动时间
+$h = Invoke-RestMethod http://127.0.0.1:3001/healthz
+(Get-Date).AddSeconds(-$h.uptimeSec)
+# 对照
+(Get-ChildItem D:\Stronghold-Protocol\node-1\server -Recurse -Include *.js | Measure-Object LastWriteTime -Maximum).Maximum
+```
+
+现成脚本：`tools\_restart-stale.ps1`（只重启 `matches=0` 的旧代码节点）。
+
+### 9.5 重启纪律（线上 30 节点）
+
+**硬约束：正在对局的节点一律不动。**
+
+| 判定 | 动作 |
+|---|---|
+| `matches > 0` | **禁止重启**，等对局结束 |
+| `matches = 0`（含开着房间未开局、只有停留页面连接） | 可以重启 |
+| 单人局在跑 | 视同有对局，不动 |
+
+重启后要校验 `healthz.ok === true` 且 `uptimeSec` 很小。
+
+**开放列表**由 nginx 的 `split_clients` / `$sp_cookie_open` 决定：只开放「已重启到最新代码」的节点，
+其余关闭。用 `tools\_set-open-nodes.ps1` 重建（会自动校验百分比合计 = 100%）。
+
+**绝不能**因为节点不在开放列表就把 `sp_route` cookie 改派走——那会让正在对局的玩家断线重连后
+回不到原节点，表现为「回不到对局」。`sp_route` 必须无条件尊重，开放列表只管没有 cookie 的新访客。
+
+### 9.6 提交前最终检查
+
+```powershell
+cd D:\Stronghold-Protocol\repo-sync
+git rev-list --left-right --count origin/custom/production...HEAD   # 必须是 0  0
+node patcher/check-coverage.mjs                                     # 未进补丁: 0
+git status --short                                                  # 无意外文件
+```
+
+推送后必须**重新 fetch**，否则本地跟踪引用会过期：
+
+```powershell
+$tok = (Get-Content D:\Stronghold-Protocol\.secrets\github-token.txt -Raw).Trim()
+$url = "https://x-access-token:$tok@ghfast.top/https://github.com/Jackcharled/Stronghold-Protocol.git"
+git push   $url refs/heads/custom/production:refs/heads/custom/production --force
+git fetch  $url refs/heads/custom/production:refs/remotes/origin/custom/production --force
+git rev-list --left-right --count origin/custom/production...HEAD   # 再确认一次 0  0
+```
+
+## 十、安全与红线
+
+1. `.secrets/`、`matchmaker/public/admin.html` 不上传 GitHub（`admin.html` 已被上游 `.gitignore` 排除）；
+2. 代码与文档不写明文密码、不写明文 GitHub PAT；
 3. 管理后台必须走邮箱二次验证，不要绕过；
 4. 审计日志只追加不修改；
-5. 重启节点前先在控制台确认在线人数，避免影响对局；
-6. 改 `lobby.js` 前先备份（历史上批量删除曾误伤 5 处）。
+5. 重启节点前先确认 `matches = 0`，避免影响对局；
+6. 改 `lobby.js` 前先备份（历史上批量删除曾误伤 5 处）；
+7. **仓库是公开的**：提交前确认没有本机绝对路径、Windows 用户名、真实凭据；
+8. 发现凭据曾进入过 Git 历史时，先撤销该凭据再谈清理历史（重写历史会改变 commit 哈希）。
