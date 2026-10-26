@@ -54,7 +54,12 @@ export const NET_DEFAULTS = Object.freeze({
   abuseDropsPerSec: 400,        // rate-limited messages within one second before the socket is closed (1008)
   heartbeatMs: 30_000,          // ping interval; a socket that missed one full interval is terminated
   helloTimeoutMs: 30_000,       // sockets that never say hello are closed (4002)
-  reconnectWindowMs: 10 * 60_000, // disconnected sessions stay resumable this long
+  // 断线会话可恢复的时长。**必须与房间清理的 TTL（lobby.roomTtlMs，默认 15 分钟）对齐**：
+  // 会话一旦过期，lobby.onExpire → removeMember 会把座位从房间里删掉、对局按「中途退出」处理，
+  // 这时房间还在（15 分钟才销毁），但玩家已经回不去了 —— 出现「房间还在、人已被踢出对局」
+  // 的空窗期，且「恢复对局」按钮也会因为 seatOf() 找不到座位而失效。
+  // 用 15 分钟让两条线同时存活、同时失效，不留中间地带。
+  reconnectWindowMs: 15 * 60_000,
   snapDropBytes: 1 << 20,       // skip b.snap while bufferedAmount exceeds this
   hardBufferBytes: 16 << 20,    // terminate a socket whose send queue exceeds this
   maxConnections: 2000,         // concurrent sockets (enforced by index.js at upgrade time)
