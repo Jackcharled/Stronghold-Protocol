@@ -54,6 +54,10 @@ const CHECKS = [
       ['server/lobby.js', /spectatorLimit\(\)\s*\{[\s\S]{0,160}Math\.max\(MAX_SPECTATORS/, '服务端动态上限'],
       ['server/lobby.js', /room\.hiddenSpectatorOf\(playerId\)/, '★ sendToPlayer 认隐身观战者'],
       ['server/lobby.js', /\.\.\.\(Array\.isArray\(room\.hiddenSpectators\)/, '★ 广播覆盖隐身观战者'],
+      // 隐身观战者不在 seats 也不在 spectators 里：roomOf() 漏了它的话，roomCode 会被清空，
+      // g.watch 直接回 NOT_IN_ROOM —— 表现就是「观战画面永远停在 P1，点谁都不换」。
+      ['server/lobby.js', /if \(room && !seat && room\.hiddenSpectatorOf\(session\.playerId\)\) return room;/, '★ roomOf 认隐身观战者（否则无法切换观战目标）'],
+      ['server/lobby.js', /msg\.t !== 'g\.watch'[\s\S]{0,200}room\.watcherOf\(session\.playerId\)/, '★ 隐身观战者只能 watch，不能替玩家操作'],
       ['server/match/match/watch.js', /addSpectator\(playerId, hidden = false\)/, 'Match.addSpectator 支持 hidden'],
     ],
   },

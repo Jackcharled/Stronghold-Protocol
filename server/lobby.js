@@ -2675,8 +2675,10 @@ export class Lobby {
       this.removeMember(room, session.playerId);
       return OK;
     }
-    // a spectator only watches (header): nothing else of it ever reaches the match
-    if (msg.t !== 'g.watch' && !(room.test && msg.t === 'g.test') && room.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR);
+    // a spectator only watches (header): nothing else of it ever reaches the match.
+    // 隐身观战（hiddenSpectators）同样是「只能看」：以前只拦了 spectators，
+    // 隐身观战者的其它 g.* 会被直接转发给对局，等于能替玩家操作。
+    if (msg.t !== 'g.watch' && !(room.test && msg.t === 'g.test') && room.watcherOf(session.playerId)) return fail(ERR.SPECTATOR);
     let res;
     try {
       res = room.match.handle(session.playerId, msg);
@@ -2753,6 +2755,11 @@ export class Lobby {
     const room = this.rooms.get(session.roomCode);
     const seat = room ? room.seatOf(session.playerId) : null;
     if (room && !seat && room.spectatorOf(session.playerId)) return room; // a spectator seat
+    // 隐身观战（adminWatch）：只存在于 hiddenSpectators，既不是座位也不在 spectators 里。
+    // 以前这里漏了它，roomCode 会被当成「无效」清成 null —— 于是 g.watch 走进
+    // routeGameNow → roomOf → NOT_IN_ROOM，观战者看到的画面就永远停在自动打开的 P1 上，
+    // 点谁都不换（玩家反馈「隐身观战不能切换观战目标」）。
+    if (room && !seat && room.hiddenSpectatorOf(session.playerId)) return room;
     if (!room || !seat || seat.left || seat.isBot) { session.roomCode = null; return null; }
     return room;
   }
@@ -2802,7 +2809,18 @@ export class Lobby {
   /**
    * 清掉同一账号遗留的旧座位（刷新页面 / 换设备 / 断线后残留）。
    * 返回被清理的房间码列表，便于日志。房间因此变空就照常解散。
-   * 只在冲突座位属于「已断线的旧会话」时调用，不动正在别处游玩的账号。
+   *
+   * ★ 判定必须保守，否则会误删正在使用的房间：
+   *   之前只看 registry.byId(seat.playerId) 是否为 null/已断线，
+   *   但 registry 查不到 ≠ 这个座位真的没人用了（会话可能还没登记、或刚重连）。
+   *   实测踩过：WS 建好 4 个房、同一批账号又建 4 个房时，
+   *   旧房被误判为「遗留」直接解散，而匹配池里还记着旧房号，
+   *   于是成局后玩家进不去 —— 表现就是「卡在匹配界面」。
+   *
+   * 现在要求同时满足才算遗留：
+   *   ① 座位自己标记为未连接（seat.connected === false，由断线处理写入）
+   *   ② registry 里确实查不到这个会话，或该会话已断开
+   * 任何一条不成立就当作「还在用」，不动它。
    */
   dropStaleAccountSeats(session) {
     const accountId = session.accountId;
@@ -2814,11 +2832,14 @@ export class Lobby {
         const seat = room.seats[i];
         if (!seat || seat.isBot || seat.left) continue;
         if (seat.accountId !== accountId || seat.playerId === session.playerId) continue;
+        // ① 座位仍然标记为连接中：这个人还在用，绝不清理
+        if (seat.connected !== false) continue;
+        // ② 会话仍然存活：也不清理
         const old = this.registry.byId(seat.playerId);
-        if (old && old.connected === true) continue;   // 别处还在线：不动
+        if (old && old.connected === true) continue;
         room.seats[i] = null;
         cleaned.push(room.code);
-        this.log.info(`[lobby] ${room.code} 清理账号 ${accountId} 的遗留座位（旧会话 ${seat.playerId}）`);
+        this.log.info(`[lobby] ${room.code} 清理账号 ${accountId} 的遗留座位（旧会话 ${seat.playerId}，未连接）`);
         if (room.hostId === seat.playerId || !room.hostId) this.migrateHost(room);
         // 同 removeMember：没有注册玩家了（空房或只剩游客）就解散
         if (!room.activeHumans().some((s) => s && s.guest !== true)) this.disposeRoom(room, 'empty');

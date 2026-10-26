@@ -35,7 +35,6 @@
 这些改动在磁盘上都已就位，只是进程还在跑旧代码，**必须重启才生效**。
 
 ### 0. 5–20 人房对所有玩家开放 + 匹配支持任意人数
-
 **现状问题**：
 - 前端建房时**只有 owner/admin** 能开多人大厅（`experimentalForCreator` 里
   `if (!role || role === 'player') return null`），普通玩家建房永远是 4 人
@@ -49,6 +48,7 @@
 | `public/js/screens/lobby.js` | 去掉角色限制；同盟选择页加「同盟人数」下拉（4/5/6…20）；记住上次选择 | 刷新即生效 |
 | `public/css/screens/lobby.css` | 下拉样式 | 刷新即生效 |
 | `server/persist/lobbyState.js` | ★ 房间文档补存 `capacity` | 需重启 |
+| `server/persist/lobbyState.js` | ★ 房间文档补存 `version`（见下面「版本隔离」） | 需重启 |
 | `matchmaker/server.js` | ★ 容量解析兜底读 `experimental.playerCapacity` | 需重启 matchmaker |
 | `ecosystem.config.cjs` | ★ `SP_EXPERIMENTAL: '1'` 给所有节点 | 需重启 |
 
@@ -101,8 +101,31 @@ node test\matchmaking-mechanism.mjs   14/14
 
 ---
 
-### 2. 隐身观战加载不出来
+### 1b. 不同版本被配进同一局（版本隔离失效）
 
+**病根**：`lobbyState.js` 的 `roomDoc()` 存房间时**没有存 `room.version`**，
+Redis 里的房间文档只有 `code, mode, capacity, experimental…`。
+matchmaker 的 `roomInfo()` 读的是 `doc.version`（`sp:nN:lobby:rooms` 这个哈希），
+读不到就退回客户端上报值 —— 而客户端排队时不总带这个值，
+于是**所有房间在匹配池里都被当成第二期下半**，第二期上半的房会被配进第二期下半的局。
+
+以前只查了 matchmaker 的 `groups` 分组逻辑（`normVersion` 那段本身是对的），
+所以看起来「已经按版本隔离了」。真正缺的是数据源这一环。
+
+**改了什么**：
+- `roomDoc()` 增加 `version: room.version`
+- `roomFrom()` / `fallbackRoom()` 恢复房间时把 `r.version` 传给 `new Room(...)`
+  （否则节点重启后房间会被恢复成默认版本，版本隔离又失效）
+
+**涉及文件**：`server/persist/lobbyState.js`
+
+**验证**：`node test\e2e-version-match.mjs 3002` —— 全部通过。
+修之前是 4 项失败（旧版 8 人房的队列版本被记成 `act2autochess`、
+`byVersion` 里看不到第二期上半），修之后旧版正确登记为 `act2autochess@V2_1`。
+
+---
+
+### 2. 隐身观战加载不出来
 **病根**：`Lobby.sendToPlayer()` 只认 `seatOf()` / `spectatorOf()`，
 而隐身观战者只存在于 `hiddenSpectators`，两者都查不到，
 于是 `addSpectator → _resync` 的补发帧被直接 `return false` 丢掉，
@@ -114,6 +137,30 @@ node test\matchmaking-mechanism.mjs   14/14
 **涉及文件**：`server/lobby.js`（`sendToPlayer` 加 `room.hiddenSpectatorOf(playerId)`）
 
 **验证**：`node test\e2e-hidden-watch-live.mjs 3001` —— 真实进程 10/10 通过。
+
+#### 2b. 隐身观战不能切换观战目标（玩家后续反馈）
+
+**病根**：`Lobby.roomOf(session)` 只认 `seatOf()` / `spectatorOf()`，和上面的
+`sendToPlayer()` 是同一个漏网之鱼。隐身观战者两者都查不到，于是
+`session.roomCode` 被当成「无效」清成 `null` 并 `return null`，
+`routeGameNow()` 直接回 `NOT_IN_ROOM`。
+
+表现：观战画面永远停在进入时自动打开的 P1，点任何队友都没有反应。
+（自动打开 P1 是 `game.js` 的 `autoP1Ref`，只跑一次；因为它只设了本地
+`watching`，本地看着像「已经切过去了」，实际服务端一次都没收到成功的 `g.watch`。）
+
+**顺带补的一个口子**：`routeGameNow()` 里「观战者只能 watch」这道拦截只判了
+`room.spectatorOf()`，隐身观战者的其它 `g.*` 会被直接转发给对局，等于能替玩家操作。
+现在改成 `room.watcherOf()`（= 普通观战席 + 隐身观战席）。
+
+**涉及文件**：`server/lobby.js`（`roomOf` 加 `hiddenSpectatorOf` 分支；
+`routeGameNow` 的 SPECTATOR 拦截改用 `watcherOf`）
+
+**验证**：`node test\e2e-hidden-watch-switch.mjs 3001` ——
+真实进程上依次 `g.watch` 到 3 个不同玩家，全部收到对应的 `m.field`（3/3）。
+
+`patcher\check-features.mjs`（`client-room-spectator`）已加两条断言，
+故意删掉那行修复会 FAIL（破坏性测试已验证），避免以后升级再丢。
 
 ---
 

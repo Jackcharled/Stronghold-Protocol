@@ -78,6 +78,11 @@ export function roomDoc(room, matchRef, sessionOf) {
     // 以前这里只有 experimental（里面虽有 playerCapacity，但 matchmaker 不认这个字段），
     // 于是所有房间在匹配池里都被当成默认 4 人 —— 5–20 人房会混进 4 人局一起被配走。
     capacity: room.capacity,
+    // 房间的游戏版本（第二期下半 / 第二期上半 / 第一期…）也必须单独存一份：
+    // matchmaker 的 roomInfo() 读的是 doc.version，用来按版本隔离匹配池。
+    // 以前这里没有 version，matchmaker 读不到就退回客户端上报值 —— 而客户端在
+    // 排队时并不总会带上，于是不同版本的房间会被配进同一局。
+    version: room.version,
     experimental: room.experimental, source: room.source, ownerKey: room.ownerKey, ownerKeys: room.ownerKeys ? [...room.ownerKeys] : null,
     matchKey: room.matchKey, matchKeys: room.matchKeys ? [...room.matchKeys] : null, matchCount: room.matchCount | 0, createdAt: room.createdAt,
     ttlMs: room.ttlMs, noExpire: room.noExpire === true, adminCreated: room.adminCreated === true,
@@ -183,7 +188,8 @@ export function restoreLobby({ doc, registry, lobby, now = Date.now(), log = nul
 function roomFrom(r, sessions, lobby, now) {
   if (!plain(r) || !ROOM_RE.test(String(r.code)) || lobby.rooms.has(r.code) || !['solo', 'coop'].includes(r.mode)
     || !DIFFICULTIES.includes(r.difficulty) || !isExperimental(r.experimental) || !Array.isArray(r.seats)) return null;
-  const room = new Room(r.code, r.mode, r.difficulty, Number.isFinite(r.createdAt) ? r.createdAt : now, experimentalOptions(r.experimental));
+  const room = new Room(r.code, r.mode, r.difficulty, Number.isFinite(r.createdAt) ? r.createdAt : now,
+    typeof r.version === 'string' && r.version ? r.version : undefined, experimentalOptions(r.experimental));
     room.ttlMs = Number.isFinite(r.ttlMs) ? r.ttlMs : null;
     room.adminCreated = r.adminCreated === true;
     room.noExpire = room.adminCreated;
@@ -231,7 +237,8 @@ function roomFrom(r, sessions, lobby, now) {
 /** 参考版的 roomFrom 校验太严：这里用最少字段重建房间，保证重启后能回到原房间。 */
 function fallbackRoom(r, lobby, now) {
   try {
-    const room = new Room(r.code, r.mode, r.difficulty, Number.isFinite(r.createdAt) ? r.createdAt : now);
+    const room = new Room(r.code, r.mode, r.difficulty, Number.isFinite(r.createdAt) ? r.createdAt : now,
+      typeof r.version === 'string' && r.version ? r.version : undefined);
     room.content = lobby.vanilla;
     room.adminCreated = r.adminCreated === true;
     room.noExpire = room.adminCreated;
