@@ -739,3 +739,32 @@ foreach ($n in 1..30) { try { (Invoke-WebRequest -Uri "http://127.0.0.1:$(3000+$
 2. 如果之后还有新的待生效改动，追加到第一部分
 3. **维护开关**：目前 `content/game-gate.json` 与各节点 `create-room.json` 仍是开启状态，
    正式开放前要决定是否关回
+
+---
+
+## 2026-10-26 17:05 nginx 分流同步：新玩家不再登录进受限节点
+
+### 问题
+
+MM_DISABLED_NODES 只管匹配器「挑哪个节点」，管不到**新玩家首次访问**：
+nginx 的 split_clients 是静态权重表，会把访客随机分到 1-30 全部节点，
+包括正在维护的那些。玩家 cookie 里的 sp_route 同样会把已访问过的人粘回去。
+
+### 改了什么（nginx/conf/nginx.conf）
+
+1. split_clients \ 只保留开放的 12 个节点（2,4,5,6,7,8,15,21,22,24,26,30），
+   权重按 12 等分。
+2. 新增 map \ \：cookie 指向开放节点记 1，指向维护节点记 0。
+3. location / 的优先级（后面的 if 覆盖前面的）：
+   - cookie 指向开放节点 -> 粘住
+   - ?room=CODE / n= / adminWatch=1 -> 强制回原节点（正在玩的人不受影响）
+
+### 实测
+
+- sp_route=1/3/9/10/13/19/20/23/29（全受限）：全部重新分流到开放节点
+- sp_route=2/5/22/30（开放）：全部粘住原节点
+- ?n=20 且 cookie=2：仍回 node-20，房间上下文优先
+
+> 可开放节点变了要改两处：ecosystem.config.cjs 的 MM_DISABLED_NODES
+> 和 nginx/conf/nginx.conf 的 split_clients + \ 映射表。
+> nginx 那份不在 git 仓库里（本机运维配置），改完执行 nginx -t 然后 -s reload。
