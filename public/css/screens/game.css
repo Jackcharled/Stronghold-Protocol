@@ -554,6 +554,10 @@
 .team__chev { transform: rotate(90deg); transition: transform var(--t-fast); }
 .team.is-folded .team__chev { transform: rotate(0); }
 .team--many { bottom: 2.9rem; max-height: none; overflow-y: auto; overflow-x: hidden; padding-right: .08rem; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: var(--mint-800) transparent; pointer-events: auto; }
+/* 选中框 (.team__frame) 用 inset: -.07rem 向行外扩，而 .team--many 的 overflow-y: auto 会把这个
+   外扩裁掉：第一行的框上沿被裁、相邻两行的框互相压住（4 人房是 overflow: visible，所以看不出来）。
+   给滚动容器补上下内边距，外扩部分才有地方画。 */
+.team--many { padding-block: .07rem; }
 .team--many::-webkit-scrollbar { width: .05rem; }
 .team--many::-webkit-scrollbar-thumb { background: var(--mint-800); border-radius: 1rem; }
 .team__pool { display: inline-flex; align-items: center; height: .21rem; padding: 0 .05rem; border: 1px solid rgba(78, 216, 175, .3); border-radius: .04rem; color: var(--mint-400); font-size: .12rem; line-height: 1; white-space: nowrap; }
