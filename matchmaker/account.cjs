@@ -68,7 +68,11 @@ const MAIL = {
 
 const SESSION_COOKIE = 'sp_sid';
 const SESSION_DAYS = 30;
-const DOMAINS = new Set(['identity', 'loadout', 'ownership', 'diy', 'skins', 'cosmetics', 'notices', 'annSeen', 'stats']);
+const DOMAINS = new Set(['identity', 'loadout', 'ownership', 'diy', 'skins', 'cosmetics', 'notices', 'annSeen', 'stats',
+  // 名片干员（ui/seatArt.js 的 CARD_PREF 'room.card'）：玩家选的立绘。
+  // 前端 account-title.js 的 PREF_MAP 早就有 card 这一项，但这里忘了加 —— 于是 PUT /api/prefs/card
+  // 一直回 404 unknown_domain，立绘永远存不进账号，换设备/清缓存就丢（2026-10-27 实测确认）。
+  'card']);
 
 // ---------------- 管理员权限组（最高管理员可配置 admin 能用哪些功能） ----------------
 const ADMIN_PERMISSIONS = [
@@ -118,11 +122,26 @@ function adminCan(me, key) {
 }
 // 云端数据 schema：按域校验结构，并提供版本迁移入口（未来加字段时在此补 migrate）
 const PREF_SCHEMA_VERSION = 1;
+/**
+ * 读取 user_prefs.payload。
+ *
+ * 历史上这里一律 `JSON.parse(row.payload)`，前提是写端总用 `JSON.stringify` 存。
+ * 但字符串型域（card 的 charId）若以**裸字符串**落库，`JSON.parse('char_291_aglina')`
+ * 会直接抛异常，整个 GET /api/prefs 变成 500 —— 所有域一起挂掉。
+ * 这里兜住两种形态：能 parse 就用结果，parse 不了就把原文当字符串。
+ */
+function decodePrefPayload(raw) {
+  if (typeof raw !== 'string') return raw;
+  try { return JSON.parse(raw); } catch { return raw; }
+}
 function validatePrefPayload(domain, payload) {
   if (domain === 'identity') {
     return typeof payload === 'string' ? payload.length <= 64 : (payload && typeof payload === 'object');
   }
   if (domain === 'annSeen') return payload === null || typeof payload === 'object';
+  // 名片干员：payload 是一个 charId 字符串（'' = 默认立绘），不是对象。
+  // 下面「非对象一律 false」的通用规则会把它拒掉，所以单独放行。
+  if (domain === 'card') return typeof payload === 'string' && payload.length <= 64;
   if (payload === null || typeof payload !== 'object') return false;
   if (Array.isArray(payload)) return domain === 'notices' || domain === 'annSeen' || domain === 'stats';
   return true;
@@ -1277,7 +1296,7 @@ async function handle(req, res, pathname) {
     if (method === 'GET' && pathname === '/api/prefs') {
       const [rows] = await db().query('SELECT domain, payload, version, updated_at FROM user_prefs WHERE user_id = ?', [u.id]);
       const domains = {};
-      for (const r of rows) domains[r.domain] = { payload: typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload, version: Number(r.version), updatedAt: r.updated_at };
+      for (const r of rows) domains[r.domain] = { payload: typeof r.payload === 'string' ? decodePrefPayload(r.payload) : r.payload, version: Number(r.version), updatedAt: r.updated_at };
       return sendJson(res, 200, { ok: true, domains });
     }
 
@@ -1311,7 +1330,7 @@ async function handle(req, res, pathname) {
         const [rows] = await db().query('SELECT payload, version, updated_at FROM user_prefs WHERE user_id = ? AND domain = ?', [u.id, domain]);
         if (!rows[0]) return sendJson(res, 404, { ok: false, error: 'empty' });
         const r = rows[0];
-        return sendJson(res, 200, { ok: true, payload: typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload, version: Number(r.version), updatedAt: r.updated_at });
+        return sendJson(res, 200, { ok: true, payload: typeof r.payload === 'string' ? decodePrefPayload(r.payload) : r.payload, version: Number(r.version), updatedAt: r.updated_at });
       }
       if (method === 'PUT') {
         // 写入限流：正常 800ms 防抖最多约 75 次/分钟，这里放宽到 120 次/分钟防刷
@@ -1326,13 +1345,13 @@ async function handle(req, res, pathname) {
         const cur = rows[0] ? Number(rows[0].version) : 0;
         if (cur > 0 && base !== cur) {
           const [now] = await db().query('SELECT payload, version, updated_at FROM user_prefs WHERE user_id = ? AND domain = ?', [u.id, domain]);
-          return sendJson(res, 409, { ok: false, error: 'version_conflict', server: { payload: typeof now[0].payload === 'string' ? JSON.parse(now[0].payload) : now[0].payload, version: Number(now[0].version) } });
+          return sendJson(res, 409, { ok: false, error: 'version_conflict', server: { payload: typeof now[0].payload === 'string' ? decodePrefPayload(now[0].payload) : now[0].payload, version: Number(now[0].version) } });
         }
         // 防误覆盖：调配条目大幅减少时要求显式确认
         if (domain === 'loadout' && cur > 0 && body.force !== true) {
           try {
             const [op] = await db().query('SELECT payload FROM user_prefs WHERE user_id = ? AND domain = ?', [u.id, domain]);
-            const oldP = typeof op[0].payload === 'string' ? JSON.parse(op[0].payload) : op[0].payload;
+            const oldP = typeof op[0].payload === 'string' ? decodePrefPayload(op[0].payload) : op[0].payload;
             const oldN = Object.keys((oldP && oldP.entries) || {}).length;
             const newN = Object.keys((body.payload && body.payload.entries) || {}).length;
             if (oldN >= 4 && newN < Math.ceil(oldN / 2)) {
