@@ -1,7 +1,10 @@
 $ErrorActionPreference = 'SilentlyContinue'
-$root = 'D:\Stronghold-Protocol'
-$pm2 = 'C:\Users\Administrator\AppData\Roaming\npm\pm2.cmd'
-$env:PM2_HOME = 'C:\Users\Administrator\.pm2'
+# 根目录：优先环境变量 SP_ROOT，否则由脚本位置推导（deploy/ 的上一级）。
+# 不写死盘符和用户名，仓库公开时不会泄露部署机的账号与目录结构。
+$root = if ($env:SP_ROOT) { $env:SP_ROOT } else { Split-Path -Parent $PSScriptRoot }
+# pm2 / PM2_HOME：优先环境变量，否则按当前用户的 npm 全局目录推导。
+$pm2 = if ($env:SP_PM2) { $env:SP_PM2 } else { Join-Path $env:APPDATA 'npm\pm2.cmd' }
+$env:PM2_HOME = if ($env:PM2_HOME) { $env:PM2_HOME } else { Join-Path $env:USERPROFILE '.pm2' }
 $log = Join-Path $root 'logs\stack-watchdog.log'
 New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
 function Write-Log([string]$text) {
@@ -38,8 +41,9 @@ function Invoke-HiddenOut([string]$exe, [string]$argLine) {
   }
 }
 $null = Invoke-HiddenOut 'cmd.exe' ('/c ""' + $pm2 + '" jlist > "' + $tmp + '" 2>nul"')
-$nodeExe = 'D:\nodejs\node.exe'
-if (-not (Test-Path $nodeExe)) { $nodeExe = 'node' }
+# node 可执行文件：优先环境变量 SP_NODE，否则依次尝试常见安装位置，最后退回 PATH 上的 node。
+$nodeExe = if ($env:SP_NODE) { $env:SP_NODE } else { (Get-Command node -ErrorAction SilentlyContinue).Source }
+if (-not $nodeExe -or -not (Test-Path $nodeExe)) { $nodeExe = 'node' }
 $r = Invoke-HiddenOut $nodeExe ('"' + (Join-Path $root 'deploy\_pm2-online.cjs') + '" "' + $tmp + '"')
 $onlineRaw = $r.out
 if ($r.code -ne 0) {

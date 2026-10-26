@@ -1,7 +1,11 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 
-const root = 'D:\\Stronghold-Protocol\\nginx';
-const child = spawn('D:\\Stronghold-Protocol\\nginx\\nginx.exe', ['-p', 'D:\\Stronghold-Protocol\\nginx\\', '-g', 'daemon off;'], {
+// 路径由脚本位置推导（本文件就在 nginx/ 下），不写死盘符。
+// 需要时可用环境变量 SP_NGINX_ROOT 覆盖。
+const root = process.env.SP_NGINX_ROOT || import.meta.dirname;
+const exe = path.join(root, 'nginx.exe');
+const child = spawn(exe, ['-p', root + path.sep, '-g', 'daemon off;'], {
   cwd: root,
   stdio: 'inherit',
   windowsHide: true,

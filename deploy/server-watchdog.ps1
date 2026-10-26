@@ -1,7 +1,9 @@
 $ErrorActionPreference = 'Continue'
-$root = 'D:\Stronghold-Protocol'
+# 根目录：优先 SP_ROOT，否则由脚本位置推导（deploy/ 的上一级）。不写死盘符与用户名。
+$root = if ($env:SP_ROOT) { $env:SP_ROOT } else { Split-Path -Parent $PSScriptRoot }
 $log = Join-Path $root 'logs\server-watchdog.log'
-$pm2 = 'C:\Users\Administrator\AppData\Roaming\npm\pm2.cmd'
+# pm2：优先 SP_PM2，否则按当前用户的 npm 全局目录推导。
+$pm2 = if ($env:SP_PM2) { $env:SP_PM2 } else { Join-Path $env:APPDATA 'npm\pm2.cmd' }
 $nginx = Join-Path $root 'nginx\nginx.exe'
 
 # One-click stop creates this flag; do not fight an intentional shutdown.

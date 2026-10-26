@@ -8,18 +8,18 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const updateFile = require('D:/Stronghold-Protocol/guard/update-file.cjs');
+const updateFile = require(path.join(BASE, 'guard\\update-file.cjs'));
 const path = require('node:path');
 const { execFile, spawn } = require('node:child_process');
 
 // 防护 / 补丁相关的本地路径（面板只监听 127.0.0.1，这些操作不会被外网触发）
 const GUARD = {
-  heartbeat: 'D:\\Stronghold-Protocol\\guard\\heartbeat.txt',
-  state: 'D:\\Stronghold-Protocol\\guard\\state.json',
+  heartbeat: path.join(BASE, '\guard\\heartbeat.txt'),
+  state: path.join(BASE, '\guard\\state.json'),
   task: 'SP-Nginx-AutoBan',
 };
 const SCHTASKS = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'schtasks.exe');
-const GATE_PATH = 'D:\\Stronghold-Protocol\\content\\game-gate.json';
+const GATE_PATH = path.join(BASE, '\content\\game-gate.json');
 function readGameGate() {
   try {
     const j = JSON.parse(fs.readFileSync(GATE_PATH, 'utf8'));
@@ -51,7 +51,9 @@ function protectionSnapshot() {
   return snap;
 }
 
-const BASE = 'D:\\Stronghold-Protocol';
+// 部署根目录：优先环境变量 SP_ROOT，否则由本文件位置推导（dashboard/ 的上一级）。
+// 不写死盘符与用户名，仓库公开时不会泄露部署机的目录结构。
+const BASE = process.env.SP_ROOT || require('node:path').resolve(__dirname, '..');
 const NODES = 30;
 
 // ---- 节点一致性检查（只读）：对比 node-2..30 与 node-1 的关键服务端文件 ----
@@ -122,7 +124,7 @@ const nodeUrl = (n, host) => `http://${host}:${nodePort(n)}/`;
 
 let snapshot = { ts: 0, nodes: [], summary: { online: 0, total: NODES, players: 0, rooms: 0, mem: 0 }, error: null };
 // ---- 指标历史（点线图用）：30 秒采样一次，保留 24 小时 ----
-const HISTORY_FILE = 'D:/Stronghold-Protocol/content/metrics-history.json';
+const HISTORY_FILE = path.join(BASE, 'content\\metrics-history.json');
 const HISTORY_STEP_MS = 30_000;
 const HISTORY_MAX = 2880; // 24h / 30s
 let history = [];
@@ -142,7 +144,9 @@ function pushHistory(s) {
 let refreshing = false;
 
 // 直接调用 pm2 的 node 入口，避免 shell:true（Node 24 会报 DEP0190，也避免参数拼接风险）
-const PM2_JS = 'C:\\Users\\Administrator\\AppData\\Roaming\\npm\\node_modules\\pm2\\bin\\pm2';
+// PM2 CLI 位置：优先 SP_PM2_JS，否则按当前用户的 npm 全局目录推导（不写死用户名）。
+const PM2_JS = process.env.SP_PM2_JS
+  || require('node:path').join(process.env.APPDATA || '', 'npm', 'node_modules', 'pm2', 'bin', 'pm2');
 
 function pm2Jlist() {
   return new Promise((resolve) => {
@@ -400,7 +404,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (pathname === '/api/announcements' && req.method === 'GET') {
     try {
-      const raw = fs.readFileSync('D:/Stronghold-Protocol/content/announcements.json', 'utf8');
+      const raw = fs.readFileSync(path.join(BASE, 'content\\announcements.json'), 'utf8');
       return sendJson(res, 200, JSON.parse(raw));
     } catch { return sendJson(res, 200, []); }
   }
@@ -412,8 +416,8 @@ const server = http.createServer(async (req, res) => {
       try {
         const list = JSON.parse(body || '[]');
         if (!Array.isArray(list)) return sendJson(res, 400, { error: 'must be an array' });
-        fs.mkdirSync('D:/Stronghold-Protocol/content', { recursive: true });
-        fs.writeFileSync('D:/Stronghold-Protocol/content/announcements.json', JSON.stringify(list, null, 2), 'utf8');
+        fs.mkdirSync(path.join(BASE, 'content'), { recursive: true });
+        fs.writeFileSync(path.join(BASE, 'content\\announcements.json'), JSON.stringify(list, null, 2), 'utf8');
         return sendJson(res, 200, { ok: true, count: list.length });
       } catch (e) {
         return sendJson(res, 400, { error: e.message });
@@ -443,7 +447,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === '/api/create-room' && req.method === 'GET') {
-    try { return sendJson(res, 200, JSON.parse(fs.readFileSync('D:/Stronghold-Protocol/shared/data/create-room.json', 'utf8'))); }
+    try { return sendJson(res, 200, JSON.parse(fs.readFileSync(path.join(BASE, 'shared\\data\\create-room.json'), 'utf8'))); }
     catch { return sendJson(res, 200, { enabled: true }); }
   }
   if (pathname === '/api/create-room' && req.method === 'POST') {
@@ -454,8 +458,8 @@ const server = http.createServer(async (req, res) => {
       try { p = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
       const enabled = p.enabled === true;
       try {
-        fs.mkdirSync('D:/Stronghold-Protocol/shared/data', { recursive: true });
-        fs.writeFileSync('D:/Stronghold-Protocol/shared/data/create-room.json', JSON.stringify({ enabled }, null, 2), 'utf8');
+        fs.mkdirSync(path.join(BASE, 'shared\\data'), { recursive: true });
+        fs.writeFileSync(path.join(BASE, 'shared\\data\\create-room.json'), JSON.stringify({ enabled }, null, 2), 'utf8');
         return sendJson(res, 200, { ok: true, enabled });
       } catch (e) { return sendJson(res, 500, { error: String(e && e.message || e) }); }
     });
@@ -463,7 +467,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === '/api/room-ttl' && req.method === 'GET') {
-    try { return sendJson(res, 200, JSON.parse(fs.readFileSync('D:/Stronghold-Protocol/shared/data/room-ttl.json', 'utf8'))); }
+    try { return sendJson(res, 200, JSON.parse(fs.readFileSync(path.join(BASE, 'shared\\data\\room-ttl.json'), 'utf8'))); }
     catch { return sendJson(res, 200, { minutes: 15 }); }
   }
   if (pathname === '/api/room-ttl' && req.method === 'POST') {
@@ -475,8 +479,8 @@ const server = http.createServer(async (req, res) => {
       const m = Number(p.minutes);
       if (!Number.isFinite(m) || m < 1 || m > 1440) return sendJson(res, 400, { error: 'minutes 需为 1~1440' });
       try {
-        fs.mkdirSync('D:/Stronghold-Protocol/shared/data', { recursive: true });
-        fs.writeFileSync('D:/Stronghold-Protocol/shared/data/room-ttl.json', JSON.stringify({ minutes: Math.round(m) }, null, 2), 'utf8');
+        fs.mkdirSync(path.join(BASE, 'shared\\data'), { recursive: true });
+        fs.writeFileSync(path.join(BASE, 'shared\\data\\room-ttl.json'), JSON.stringify({ minutes: Math.round(m) }, null, 2), 'utf8');
       } catch (e) { return sendJson(res, 500, { error: e.message }); }
       return sendJson(res, 200, { ok: true, minutes: Math.round(m) });
     });
@@ -485,7 +489,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === '/api/announcement' && req.method === 'GET') {
     try {
-      const raw = fs.readFileSync('D:\\Stronghold-Protocol\\guard\\announcement.json', 'utf8');
+      const raw = fs.readFileSync(path.join(BASE, '\guard\\announcement.json'), 'utf8');
       return sendJson(res, 200, JSON.parse(raw));
     } catch { return sendJson(res, 200, { enabled: false, text: '' }); }
   }
@@ -498,8 +502,8 @@ const server = http.createServer(async (req, res) => {
       try { payload = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
       const doc = { enabled: payload.enabled === true, text: String(payload.text || "").slice(0, 2000), updatedAt: new Date().toISOString() };
       try {
-        fs.mkdirSync('D:\\Stronghold-Protocol\\guard', { recursive: true });
-        fs.writeFileSync('D:\\Stronghold-Protocol\\guard\\announcement.json', JSON.stringify(doc, null, 1));
+        fs.mkdirSync(path.join(BASE, '\guard'), { recursive: true });
+        fs.writeFileSync(path.join(BASE, '\guard\\announcement.json'), JSON.stringify(doc, null, 1));
       } catch (e) { return sendJson(res, 500, { error: e.message }); }
       return sendJson(res, 200, { ok: true, announcement: doc });
     });

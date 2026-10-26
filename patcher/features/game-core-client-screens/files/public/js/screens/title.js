@@ -19,6 +19,17 @@
 // (ui/pluginPanel.js InstalledPlugins, which fetches the catalogue when it opens); nothing on a server without any, which
 // the page never asks for its catalogue — and the title page loads none of the panel's code.
 
+// 资源站源：window.__SP_ASSET_ORIGIN 由服务端注入（换域名不必改代码），缺省用内置值。
+function __spRemoteAssetRe() {
+  // 优先级：服务端注入 > data/config.json 的 assetOrigin > 空（不匹配任何远程地址）
+  const origin = (typeof window !== 'undefined' && window.__SP_ASSET_ORIGIN)
+    || (typeof window !== 'undefined' && window.__SP__ && window.__SP__.data
+      && window.__SP__.data.get && (window.__SP__.data.get('config') || {}).assetOrigin)
+    || '';
+  const host = String(origin).replace(/^https?:\/\//, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('^https?:\\/\\/' + host + '\\/assets\\/');
+}
+
 import { ResumeMatchButton } from '../ui/resumeMatch.js';
 import { AssetDownloadButton } from '../ui/assetDownload.js';
 import { AssetImportButton } from '../ui/assetImport.js';
@@ -72,7 +83,7 @@ export function findUiAsset(assets, names) {
   if (!assets || typeof assets !== 'object') return null;
   // 本服：清单里的资源是资源站的绝对地址。统一改写到 /assets-cdn/ 代理，
   // 与游戏内其它美术保持一致（同源、可缓存、不受 CSP 影响）。
-  const REMOTE = /^https?:\/\/assets\.luobomiao\.love\/assets\//i;
+  const REMOTE = __spRemoteAssetRe();
   const toProxy = (u) => (typeof u === 'string' && REMOTE.test(u) ? '/assets-cdn/' + u.replace(REMOTE, '') : u);
   const asUrl = (v) => {
     if (typeof v === 'string') return toProxy(v);

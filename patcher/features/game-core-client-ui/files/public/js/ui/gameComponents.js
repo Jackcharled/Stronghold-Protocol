@@ -1,6 +1,17 @@
 // Shared in-match building blocks (Preact + htm): data hook, images with fallbacks, rich text,
 // unit thumbnails, LP tower, coin badge, official UI sprites. Styles: css/screens/game*.css.
 
+// 资源站源：window.__SP_ASSET_ORIGIN 由服务端注入（换域名不必改代码），缺省用内置值。
+function __spRemoteAssetRe() {
+  // 优先级：服务端注入 > data/config.json 的 assetOrigin > 空（不匹配任何远程地址）
+  const origin = (typeof window !== 'undefined' && window.__SP_ASSET_ORIGIN)
+    || (typeof window !== 'undefined' && window.__SP__ && window.__SP__.data
+      && window.__SP__.data.get && (window.__SP__.data.get('config') || {}).assetOrigin)
+    || '';
+  const host = String(origin).replace(/^https?:\/\//, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('^https?:\\/\\/' + host + '\\/assets\\/');
+}
+
 import { useState, useMemo } from '../../vendor/hooks.module.js';
 import { html, Icon, TierChip, Tooltip } from './components.js';
 import { data, useData, localAsset } from '../data.js';
@@ -14,7 +25,7 @@ import {
 } from './assetUrls.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
-const REMOTE_ASSET_RE = /^https?:\/\/assets\.luobomiao\.love\/assets\//i;
+const REMOTE_ASSET_RE = __spRemoteAssetRe();
 /** Route raw manifest art through the same /assets-cdn/ URLs the import cache and game use. */
 const localAssetSrc = (src) => (typeof src === 'string' && REMOTE_ASSET_RE.test(src)
   ? '/assets-cdn/' + src.replace(REMOTE_ASSET_RE, '')

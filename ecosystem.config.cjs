@@ -1,5 +1,5 @@
 // ecosystem.config.cjs — PM2 配置：node-1 … node-30，端口 3001 … 3030
-// 用法（在 D:\Stronghold-Protocol 下）：
+// 用法（在仓库根目录下）：
 //   pm2 start ecosystem.config.cjs     # 启动全部 30 个节点
 //   pm2 save                           # 保存进程列表（配合开机自启用）
 //   pm2 list                           # 查看状态
@@ -12,7 +12,10 @@
 // 启动会破坏这个判断：进程显示 online，但永远不监听端口、日志为空。因此统一经
 // pm2-run-node.cjs 显式调用 startServer()，端口由环境变量 PORT 传入。
 
-const BASE = 'D:\\Stronghold-Protocol';
+// 部署根目录：优先环境变量 SP_ROOT，否则由本文件的所在目录推导（不写死盘符）。
+// 这样换机器/换路径都不用改这个文件，仓库公开时也不会泄露部署机的目录结构。
+const path = require('node:path');
+const BASE = process.env.SP_ROOT || __dirname;
 const NODES = 30;
 
 const apps = Array.from({ length: NODES }, (_, i) => {

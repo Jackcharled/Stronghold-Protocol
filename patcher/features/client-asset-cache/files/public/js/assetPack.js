@@ -15,6 +15,17 @@
 // still match that URL. Paths are case-sensitive. Empty files are rejected. ZIP64 entry counts and offsets are
 // read; multi-disk archives are not. Caps: 500_000 entries, 64 MB central directory, 256 MB per entry.
 
+// 资源站源：window.__SP_ASSET_ORIGIN 由服务端注入（换域名不必改代码），缺省用内置值。
+function __spRemoteAssetRe() {
+  // 优先级：服务端注入 > data/config.json 的 assetOrigin > 空（不匹配任何远程地址）
+  const origin = (typeof window !== 'undefined' && window.__SP_ASSET_ORIGIN)
+    || (typeof window !== 'undefined' && window.__SP__ && window.__SP__.data
+      && window.__SP__.data.get && (window.__SP__.data.get('config') || {}).assetOrigin)
+    || '';
+  const host = String(origin).replace(/^https?:\/\//, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('^https?:\\/\\/' + host + '\\/assets\\/');
+}
+
 import { splitHashedPath } from '../../shared/assetPaths.js';
 import { mediaUrl } from './media.js';
 import { IMPORTED_ASSET_CACHE, addImportedPaths, putImportedAsset, pruneImportedPaths } from './assetCache.js';
@@ -560,7 +571,7 @@ export function cacheUrlsFor(url) {
   const out = [];
   // The game localizes external art to this server's /assets-cdn/ proxy; cache the same URL
   // so the service worker can actually answer the request the game makes.
-  const remote = /^https?:\/\/assets\.luobomiao\.love\/assets\//i;
+  const remote = __spRemoteAssetRe();
   const local = typeof url === 'string' && remote.test(url) ? '/assets-cdn/' + url.replace(remote, '') : url;
   if (typeof local === 'string' && local) out.push(local);
   const media = mediaUrl(local);

@@ -94,5 +94,24 @@ if (extra.length) {
   extra.slice(0, 20).forEach((f) => console.error('  ' + f));
 }
 
-if (!bad) console.log('\n✓ 全部改动都已被补丁覆盖');
+// 4) 违规入库检查：被 .gitignore 排除却仍被跟踪的文件。
+//    AGENTS.md: "No game art in git" —— public/vendor、public/fonts、public/assets 等一律不入库。
+//    这些文件在 733982fe「同步 node-1 游戏本体」时被 git add -f 强制加入过，已于 2026-10-26 移除。
+//
+//    性能：一次性用 `git ls-files -ci --exclude-standard` 取出「已跟踪但被忽略」的文件，
+//    比逐个 execFileSync 快几个数量级（300+ 文件逐个调用会卡住几分钟）。
+let banned = [];
+try {
+  banned = git(['ls-files', '-ci', '--exclude-standard']).split('\n').filter(Boolean);
+} catch { /* git 不支持时跳过这项检查 */ }
+
+if (banned.length) {
+  bad = true;
+  console.error(`\n✗ 有 ${banned.length} 个文件被 .gitignore 排除却仍被跟踪（违反 AGENTS.md「No game art in git」）：`);
+  banned.slice(0, 20).forEach((f) => console.error('  ' + f));
+  if (banned.length > 20) console.error(`  …还有 ${banned.length - 20} 个`);
+  console.error('  修复：git rm --cached <file>（保留本地文件）');
+}
+
+if (!bad) console.log('\n✓ 全部改动都已被补丁覆盖，且没有违规入库的文件');
 process.exit(bad ? 1 : 0);
