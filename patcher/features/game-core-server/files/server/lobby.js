@@ -1329,6 +1329,43 @@ export class Lobby {
       this.dropStaleAccountSeats(session);
       conflict = this.accountRoomConflict(session);
     }
+    // ★ 冲突的座位就在**目标房间**里（同一账号、同一房间、只是换了标签页/设备）：
+    //   这不是「在别的房间」，而是「回到自己的房间」，应当允许接管，不该拒绝。
+    //   以前只看 connected 就判成「正在使用」并回 SESSION_IN_USE，导致玩家用第二个
+    //   标签页或换设备后回不到自己正在对局的房间（表现为「恢复对局失败，回不去」）。
+    //   接管方式与 resumeAccount 一致：把座位换到当前会话，旧 socket 断开。
+    if (conflict && conflict.room === room && conflict.kind === 'player' && !room.match) {
+      this.dropStaleAccountSeats(session);
+      conflict = this.accountRoomConflict(session);
+    }
+    if (conflict && conflict.room === room && conflict.kind === 'player') {
+      // 对局进行中也允许：同账号接管自己的座位（旧设备让位）。
+      const oldSeatPid = conflict.seat.playerId;
+      const oldSess = this.registry.byId(oldSeatPid);
+      if (oldSess && oldSess.playerId !== session.playerId) {
+        if (oldSess.ws && oldSess.connected) {
+          try { sendSession(oldSess, { t: 'account.detached', roomCode: room.code, playerId: oldSeatPid }); } catch { /* ignore */ }
+          const oldWs = oldSess.ws;
+          setTimeout(() => { try { oldWs.close(4001, 'account moved'); } catch { /* ignore */ } }, 120);
+        }
+        oldSess.ws = null;
+        oldSess.connected = false;
+        oldSess.disconnectedAt = this.now();
+        oldSess.roomCode = null;
+      }
+      // 把座位交给当前会话
+      const seat = conflict.seat;
+      seat.playerId = session.playerId;
+      seat.name = session.name;
+      seat.connected = true;
+      if (room.hostId === oldSeatPid) room.hostId = session.playerId;
+      session.roomCode = room.code;
+      session.notice = null;
+      session.pendingResult = null;
+      this.broadcastState(room);
+      if (room.match) { try { this.callMatch(room, 'onReconnect', session.playerId); } catch { /* ignore */ } }
+      return OK;
+    }
     if (conflict) return fail(ERR.SESSION_IN_USE, '该账号已在其他房间中，请先离开原房间');
     if (room.match) return fail(ERR.ROOM_STARTED);
     if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
