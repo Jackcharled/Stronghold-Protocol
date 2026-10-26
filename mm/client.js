@@ -2724,23 +2724,17 @@ const JOIN_COOKIE = (() => {
       lastCode = code;
       if (!code) { removeBtn(); return; }
       if (existing()) return;
-      // 锚点优先级（要同时覆盖**标题页**和**大厅**两个界面）：
+      // 锚点：**只在联厅显示**（维护者明确要求：标题界面不要「恢复对局」）。
       //   1) 大厅：公告按钮（恢复对局排在它左边）
-      //   2) 标题页：右上角工具条 .title-corner__tools（「在线 N 人」/统计 + 语言切换那一行）
-      //      —— 玩家反馈「恢复对局只在联厅出现、标题页没有」，原因就是这里没列标题页的锚点，
-      //      一直落到最下面的兜底分支（固定定位在右下角，标题页上容易被忽略）。
-      //   3) 版本按钮（大厅/标题都可能出现）
-      //   4) 通用兜底
+      //   2) 大厅：版本按钮 / SWEEP 文字按钮
       const notice = document.getElementById('mm-notice-btn');
-      const titleTools = document.querySelector('.title-corner__tools');
-      // 标题页：插在「统计/在线」按钮前面
-      const titleAnchor = titleTools
-        ? (titleTools.querySelector('.title-stats') || titleTools.firstElementChild || null)
-        : null;
       const anchor = notice
-        || titleAnchor
         || document.querySelector('.verchip-wrap, button.verchip[data-testid="version-switch"]')
         || [...document.querySelectorAll('button')].find((b) => !b.id.startsWith('mm-') && /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
+      // ★ 标题界面一律不显示「恢复对局」（维护者 2026-10-26 明确要求）。
+      // 判定用「当前是否停在标题屏」，而不是「有没有公告按钮」—— 标题页上也可能存在
+      // 公告按钮，用锚点判断会漏。标题页只需展示账号/开始游戏，恢复入口属于联厅。
+      if (document.querySelector('.title-screen')) { removeBtn(); return; }
       // 所有锚点都找不到时（界面改版、按钮还没建出来、或玩家停在一个很简的页面），
       // 不能再直接 return —— 那样「恢复对局」就彻底没有入口了。
       // 退回一个固定定位的独立按钮，保证这条路任何时候都走得通。
