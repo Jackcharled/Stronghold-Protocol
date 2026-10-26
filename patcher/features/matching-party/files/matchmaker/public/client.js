@@ -369,10 +369,25 @@ const JOIN_COOKIE = (() => {
   // 它们都返回几十到一百多字节的小 JSON，合并成一个 /mm/api/pulse 只花一次往返。
   //
   // 策略：能合并就合并；pulse 不可用（老节点）时自动退回原来的三个端点，行为不变。
+  //
+  // ⚠ 订阅要能拿到「已经到达过」的数据：模块 A 可能在第一次 pulse 返回之后才 install，
+  //   只推送不缓存的话它就永远收不到（要等下一轮 5 秒，或干脆错过初始值）。
+  //   所以这里保存 lastPulse，订阅时立刻补发一次。
   let pulseOk = true;
+  let lastPulse = null;
   const pulseHooks = { gate: [], ttl: [], announcement: [] };
-  /** 注册某个数据变化时的回调（先注册先调用）。 */
-  function onPulse(kind, fn) { try { pulseHooks[kind].push(fn); } catch { /* ignore */ } }
+  /**
+   * 订阅某类数据的变化。
+   * 如果这一类数据已经到达过（lastPulse 里有），会立刻用当前值调用一次 ——
+   * 这样晚注册的模块不会漏掉初始值。
+   */
+  function onPulse(kind, fn) {
+    try {
+      pulseHooks[kind].push(fn);
+      const have = lastPulse && kind in lastPulse && lastPulse[kind] != null;
+      if (have) { try { fn(lastPulse[kind]); } catch { /* ignore */ } }
+    } catch { /* ignore */ }
+  }
   function emitPulse(kind, value) {
     for (const fn of pulseHooks[kind]) { try { fn(value); } catch { /* ignore */ } }
   }
@@ -383,13 +398,17 @@ const JOIN_COOKIE = (() => {
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (!j || !j.ok) { pulseOk = false; refreshGate(); return; }
-        applyGate(j.gate);
-        emitPulse('gate', j.gate);
-        emitPulse('ttl', j.roomTtl);
-        emitPulse('announcement', j.announcement);
+        const data = { gate: j.gate, ttl: j.roomTtl, announcement: j.announcement };
+        lastPulse = data;
+        applyGate(data.gate);
+        emitPulse('gate', data.gate);
+        emitPulse('ttl', data.ttl);
+        emitPulse('announcement', data.announcement);
       })
       .catch(() => { /* 断网时保持现状，下一轮再试 */ });
   }
+  /** 当前已到达的 pulse 数据（可能为 null：还没成功过一次）。供晚注册的模块主动取一次。 */
+  function getPulse() { return lastPulse; }
 
   function boot(sp) {
     // 合并轮询：一次拿到 gate / room-ttl / announcement，替代原来三个独立的 5 秒轮询。
@@ -1440,8 +1459,13 @@ const JOIN_COOKIE = (() => {
     };
     onPulse('ttl', applyTtl);
     // 兜底：pulse 不可用（老节点）时仍走原来的端点，行为与改造前一致。
+    // 已经有一次 pulse 数据时先用它，避免"刚装好却没有值、要等 5 秒"的空窗。
     const syncTtl = async () => {
-      if (pulseOk) return;
+      if (pulseOk) {
+        const have = getPulse();
+        if (have && have.ttl) applyTtl(have.ttl);
+        return;
+      }
       try {
         const r = await fetch('/mm/api/room-ttl', { cache: 'no-store' });
         applyTtl(await r.json());
@@ -2553,9 +2577,14 @@ const JOIN_COOKIE = (() => {
       enqueue(lines, key);
     };
     onPulse('announcement', applyAnnouncement);
-    // 兜底：pulse 不可用（老节点）时仍走原来的端点
+    // 兜底：pulse 不可用（老节点）时仍走原来的端点。
+    // 已有 pulse 数据时先用它，避免首次安装时的空窗（onPulse 的补发已经覆盖这种情况）。
     const poll = () => {
-      if (pulseOk) return;
+      if (pulseOk) {
+        const have = getPulse();
+        if (have && have.announcement) applyAnnouncement(have.announcement);
+        return;
+      }
       fetch('/mm/api/announcement', { cache: 'no-store' })
         .then((r) => r.json()).then(applyAnnouncement).catch(() => {});
     };

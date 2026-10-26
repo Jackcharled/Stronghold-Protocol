@@ -29,17 +29,26 @@ console.log('\n=== 前端：一次请求拿三份数据 ===\n');
 check('★ 有 refreshPulse', /function refreshPulse\(\)/.test(cli));
 check('★ 打的是 /mm/api/pulse', cli.includes("fetch('/mm/api/pulse'"));
 check('boot 里用 refreshPulse 替代 refreshGate', /try \{ refreshPulse\(\); setInterval\(refreshPulse, 5000\); \}/.test(cli));
-check('把 gate 应用到按钮状态', /applyGate\(j\.gate\)/.test(cli));
-check('把 ttl 派发给订阅者', /emitPulse\('ttl', j\.roomTtl\)/.test(cli));
-check('把 announcement 派发给订阅者', /emitPulse\('announcement', j\.announcement\)/.test(cli));
+check('把 gate 应用到按钮状态', /applyGate\(data\.gate\)/.test(cli));
+check('把 ttl 派发给订阅者', /emitPulse\('ttl', data\.ttl\)/.test(cli));
+check('把 announcement 派发给订阅者', /emitPulse\('announcement', data\.announcement\)/.test(cli));
 
 console.log('\n=== 兼容：pulse 不可用时自动回退 ===\n');
 check('★ 失败后把 pulseOk 置 false', /if \(!j \|\| !j\.ok\) \{ pulseOk = false; refreshGate\(\); return; \}/.test(cli));
 check('gate 回退到原端点', /if \(!pulseOk\) \{ refreshGate\(\); return; \}/.test(cli));
-check('ttl 回退到原端点', /const syncTtl = async \(\) => \{\s*\n\s*if \(pulseOk\) return;/.test(cli));
+check('ttl 回退到原端点', /const syncTtl = async \(\) => \{\s*\n\s*if \(pulseOk\) \{/.test(cli));
 check('announcement 回退到原端点',
-  /const poll = \(\) => \{\s*\n\s*if \(pulseOk\) return;/.test(cli));
+  /const poll = \(\) => \{\s*\n\s*if \(pulseOk\) \{/.test(cli));
 check('刷新页面（内存态重置）后能重新尝试 pulse', !/localStorage.*pulseOk/.test(cli));
+
+console.log('\n=== 订阅时序：晚注册的模块不能漏掉初始值 ===\n');
+check('★ 保存最后一次 pulse 结果（lastPulse）', /let lastPulse = null;/.test(cli));
+check('★ onPulse 订阅时若已有数据立刻补发',
+  /const have = lastPulse && kind in lastPulse && lastPulse\[kind\] != null;\s*\n\s*if \(have\) \{ try \{ fn\(lastPulse\[kind\]\); \} catch/.test(cli));
+check('★ 提供 getPulse() 给晚注册模块主动取', /function getPulse\(\) \{ return lastPulse; \}/.test(cli));
+check('syncTtl 在 pulse 模式下先用缓存值（避免 5 秒空窗）',
+  /if \(pulseOk\) \{\s*\n\s*const have = getPulse\(\);\s*\n\s*if \(have && have\.ttl\) applyTtl\(have\.ttl\);/.test(cli));
+check('announcement 同理', /if \(have && have\.announcement\) applyAnnouncement\(have\.announcement\);/.test(cli));
 
 console.log('\n=== 请求量估算 ===\n');
 {
