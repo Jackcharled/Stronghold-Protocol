@@ -5,6 +5,22 @@
 
   const state = { user: null, guest: false, busy: false, mode: 'login', cooldown: 0, timer: null, captchaId: '', authReady: false };
 
+  // 博士代号的规则：必须与服务端 matchmaker/account.cjs 里 /api/auth/set-name 的校验一致
+  //   nickname.length 1..7 且 /^[\p{L}\p{N}_\-·]+$/u
+  // 以前前端只查 1~8 字，8 个字会被服务端拒掉，玩家只看到「代号保存失败，请稍后重试」，
+  // 完全不知道是长度问题（GitHub 反馈：ZcElytra 8 个字符）。
+  const NICK_MAX = 7;
+  const NICK_RE = /^[\p{L}\p{N}_\-·]+$/u;
+  const NICK_RULE = `代号需 1~${NICK_MAX} 个字，只能使用中英文、数字、下划线、短横线和间隔号「·」`;
+  /** @returns {string|null} 一句可以直接给玩家看的原因；合规时返回 null */
+  function nickProblem(v) {
+    const s = String(v || '').trim();
+    if (!s) return `请输入博士代号（1~${NICK_MAX} 个字）`;
+    if ([...s].length > NICK_MAX) return `代号太长：最多 ${NICK_MAX} 个字，你输入了 ${[...s].length} 个`;
+    if (!NICK_RE.test(s)) return NICK_RULE;
+    return null;
+  }
+
   const api = async (path, opts) => {
     const o = { credentials: 'same-origin', cache: 'no-store', ...(opts || {}) };
     try {
@@ -189,10 +205,15 @@
     logged.querySelector('#mm-acc-rename').onclick = async (e) => {
       e.preventDefault();
       const cur = state.user ? (state.user.nickname || '') : '';
-      const v = prompt('输入新的博士代号（1~7 字）', cur);
+      const v = prompt(`输入新的博士代号（1~${NICK_MAX} 字，只能是中英文/数字/_/-/·）`, cur);
       if (!v) return;
-      const r = await api('/api/auth/set-name', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nickname: v.trim() }) });
-      if (!r.body || !r.body.ok) { alert('修改失败：代号需 1~7 个字'); return; }
+      const why = nickProblem(v);
+      if (why) { alert(why); return; }
+      const r = await api('/api/auth/set-name', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nickname: String(v).trim() }) });
+      if (!r.body || !r.body.ok) {
+        alert(r.body && r.body.error === 'invalid_nickname' ? NICK_RULE : '修改失败，请稍后重试');
+        return;
+      }
       state.user = { ...state.user, ...r.body.user };
       window.__SP_ACCOUNT_TOKEN = r.body.userToken || window.__SP_ACCOUNT_TOKEN || null;
       window.__SP_ADMIN_TOKEN = r.body.adminToken || window.__SP_ADMIN_TOKEN || null;
@@ -415,7 +436,7 @@
       if (!r.body || !r.body.ok) {
         const map = {
           bad_credentials: '邮箱或密码错误', email_taken: '该邮箱已注册', invalid_email: '邮箱格式不正确',
-          invalid_password: '密码需 8 位以上', invalid_nickname: '昵称不合法（1~16 字）', invalid_code: '验证码格式不正确',
+          invalid_password: '密码需 8 位以上', invalid_nickname: NICK_RULE, invalid_code: '验证码格式不正确',
           code_required: '请先获取验证码', code_expired: '验证码已过期，请重新获取', code_wrong: '邮箱验证码错误',
           code_attempts: '验证码错误次数过多，请重新获取', too_many_requests: '操作过于频繁，请稍后再试',
           captcha_wrong: '图形验证码错误',
@@ -788,11 +809,16 @@
       e.stopImmediatePropagation();
       const input = findCallsign();
       const val = (input && input.value ? input.value : '').trim();
-      if (val.length < 1 || val.length > 8) { alert('请输入 1~8 字的博士代号'); if (input) input.focus(); return; }
+      // 与服务端 matchmaker/account.cjs 的校验保持一致：1~7 字，且只允许 字母/数字/_/-/·
+      const bad = nickProblem(val);
+      if (bad) { alert(bad); if (input) input.focus(); return; }
       const r = await api('/api/auth/set-name', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nickname: val }),
       });
-      if (!r.body || !r.body.ok) { alert('代号保存失败，请稍后重试'); return; }
+      if (!r.body || !r.body.ok) {
+        alert(r.body && r.body.error === 'invalid_nickname' ? NICK_RULE : '代号保存失败，请稍后重试');
+        return;
+      }
       state.user = r.body.user;
       if (input) input.value = state.user.titleName || state.user.nickname || state.user.name;
       window.__SP_ACCOUNT_TOKEN = r.body.userToken || window.__SP_ACCOUNT_TOKEN || null;
