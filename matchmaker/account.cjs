@@ -230,6 +230,41 @@ function displayOf(u) { return u && (u.nickname || null); }
 // A tag is only a four-digit display discriminator, never an identity key. Duplicate tags are allowed.
 function freshTag() { return String(crypto.randomInt(1000, 10000)); }
 
+// ---- 博士代号（昵称）规则：按**显示宽度**计算，最多相当于 8 个汉字 ----
+// 一个汉字（全角/宽字符）记 2，一个英文/数字记 1，因此：
+//   8 个汉字 或 16 个英文/数字 或 4 汉字 + 8 英文 都可以。
+// 允许的字符：任意语言文字字符（\p{L}）、数字（\p{N}）、下划线、短横线、间隔号「·」。
+// 前端 matchmaker/public/account-title.js 的 nickProblem() 必须与这里保持一致。
+const NICK_W_MAX = 16;            // 8 个汉字 = 16 个宽度单位
+function nickWidth(s) {
+  let w = 0;
+  for (const ch of String(s || '')) {
+    const cp = ch.codePointAt(0);
+    // 全角/宽字符（CJK、假名、韩文、全角标点等）计 2，其余计 1
+    w += (cp >= 0x1100 && (
+      cp <= 0x115f ||                       // Hangul Jamo
+      cp === 0x2329 || cp === 0x232a ||
+      (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||   // CJK … Yi
+      (cp >= 0xac00 && cp <= 0xd7a3) ||     // Hangul Syllables
+      (cp >= 0xf900 && cp <= 0xfaff) ||     // CJK Compatibility Ideographs
+      (cp >= 0xfe30 && cp <= 0xfe6f) ||     // CJK Compatibility Forms
+      (cp >= 0xff00 && cp <= 0xff60) ||     // Fullwidth Forms
+      (cp >= 0xffe0 && cp <= 0xffe6) ||
+      (cp >= 0x20000 && cp <= 0x3fffd)      // CJK Ext B+
+    )) ? 2 : 1;
+  }
+  return w;
+}
+const NICK_RE = /^[\p{L}\p{N}_\-·]+$/u;
+/** @returns {null|{error:string, reason:string}} null 表示合法 */
+function checkNickname(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return { error: 'invalid_nickname', reason: 'empty' };
+  if (!NICK_RE.test(s)) return { error: 'invalid_nickname', reason: 'charset' };
+  if (nickWidth(s) > NICK_W_MAX) return { error: 'invalid_nickname', reason: 'too_long', width: nickWidth(s) };
+  return null;
+}
+
 async function currentUser(req) {
   // Cookie 优先；被浏览器拦截时退回 Authorization: Bearer <sid>
   let sid = parseCookies(req)[SESSION_COOKIE];
@@ -651,28 +686,16 @@ async function handle(req, res, pathname) {
     if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
     const body = await readBody(req, 8 * 1024);
     const nickname = String(body.nickname || '').trim();
-    if (nickname.length < 1 || nickname.length > 7 || !/^[\p{L}\p{N}_\-·]+$/u.test(nickname)) return sendJson(res, 400, { ok: false, error: 'invalid_nickname' });
+    const bad = checkNickname(nickname);
+    if (bad) return sendJson(res, 400, { ok: false, ...bad });
     const tag = freshTag();
     await db().query('UPDATE accounts SET nickname = ?, name = ?, tag = ? WHERE id = ?', [nickname, nickname + '#' + tag, tag, u.id]);
     const display = nickname + '#' + tag;
     const next = { ...u, nickname, tag, name: display, displayName: display, titleName: display };
     return sendJson(res, 200, { ok: true, userToken: userTokenFor(next), adminToken: adminTokenFor(next), user: next });
   }
-  // 首次设置/修改代号（昵称），自动带 #四位代码
-  if (method === 'POST' && pathname === '/api/auth/set-name') {
-    const u = await currentUser(req);
-    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
-    const body = await readBody(req, 8 * 1024);
-    const nickname = String(body.nickname || '').trim();
-    if (nickname.length < 1 || nickname.length > 7 || !/^[\p{L}\p{N}_\-·]+$/u.test(nickname)) {
-      return sendJson(res, 400, { ok: false, error: 'invalid_nickname' });
-    }
-    const tag = freshTag();
-    await db().query('UPDATE accounts SET nickname = ?, name = ?, tag = ? WHERE id = ?', [nickname, nickname, tag, u.id]);
-    // name/displayName 是玩家名（不带代码）；titleName 只给标题页显示 名字#代码
-    const next = { ...u, nickname, tag, name: nickname, displayName: nickname, titleName: `${nickname}#${tag}` };
-    return sendJson(res, 200, { ok: true, userToken: userTokenFor(next), adminToken: adminTokenFor(next), user: next });
-  }
+  // （这里原有一段重复的 /api/auth/set-name 分支，永远不可达——上面的同名路由已先行 return。
+  //   它写的是 name = nickname（不带 #代码），与实际生效的逻辑相反，容易误导，已删除。）
 
   if (method === 'POST' && pathname === '/api/auth/login') {
     const ip = ipOf(req) || '?';
@@ -1098,7 +1121,8 @@ async function handle(req, res, pathname) {
       if (mr[2] === 'nickname') {
         if (!adminCan(me2, 'accounts.rename')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
         const nick = String(body.nickname || '').trim();
-        if (!nick || nick.length > 7) return sendJson(res, 400, { ok: false, error: 'invalid_nickname' });
+        const bad = checkNickname(nick);
+        if (bad) return sendJson(res, 400, { ok: false, ...bad });
         const tag = freshTag();
         await db().query('UPDATE accounts SET nickname = ?, name = ?, tag = ? WHERE id = ?', [nick, nick, tag, id]);
         await audit({ id: me2.admin_id, email: me2.email }, 'set-nickname', id, nick, ipOf(req));

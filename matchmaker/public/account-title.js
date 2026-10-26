@@ -5,19 +5,40 @@
 
   const state = { user: null, guest: false, busy: false, mode: 'login', cooldown: 0, timer: null, captchaId: '', authReady: false };
 
-  // 博士代号的规则：必须与服务端 matchmaker/account.cjs 里 /api/auth/set-name 的校验一致
-  //   nickname.length 1..7 且 /^[\p{L}\p{N}_\-·]+$/u
-  // 以前前端只查 1~8 字，8 个字会被服务端拒掉，玩家只看到「代号保存失败，请稍后重试」，
-  // 完全不知道是长度问题（GitHub 反馈：ZcElytra 8 个字符）。
-  const NICK_MAX = 7;
+  // 博士代号的规则：必须与服务端 matchmaker/account.cjs 的 /api/auth/set-name 完全一致。
+  // 按**显示宽度**计算：一个汉字记 2、一个英文/数字记 1，上限 16 个宽度单位，
+  // 也就是 8 个汉字 或 16 个英文/数字（或任意混合，如 4 汉字 + 8 英文）。
+  // 以前前端只查 1~8 字、服务端只收 1~7 字，8 个字符的代号（ZcElytra）会被拒，
+  // 而玩家只看到「代号保存失败，请稍后重试」，完全不知道原因。
+  const NICK_W_MAX = 16;
   const NICK_RE = /^[\p{L}\p{N}_\-·]+$/u;
-  const NICK_RULE = `代号需 1~${NICK_MAX} 个字，只能使用中英文、数字、下划线、短横线和间隔号「·」`;
+  const NICK_RULE = '代号最多 8 个汉字或 16 个英文字母/数字（可混合），只能使用中英文、数字、下划线、短横线和间隔号「·」';
+  /** 显示宽度：全角/宽字符记 2，其余记 1（与服务端 nickWidth 同一套范围） */
+  function nickWidth(str) {
+    let w = 0;
+    for (const ch of String(str || '')) {
+      const cp = ch.codePointAt(0);
+      w += (cp >= 0x1100 && (
+        cp <= 0x115f ||
+        cp === 0x2329 || cp === 0x232a ||
+        (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+        (cp >= 0xac00 && cp <= 0xd7a3) ||
+        (cp >= 0xf900 && cp <= 0xfaff) ||
+        (cp >= 0xfe30 && cp <= 0xfe6f) ||
+        (cp >= 0xff00 && cp <= 0xff60) ||
+        (cp >= 0xffe0 && cp <= 0xffe6) ||
+        (cp >= 0x20000 && cp <= 0x3fffd)
+      )) ? 2 : 1;
+    }
+    return w;
+  }
   /** @returns {string|null} 一句可以直接给玩家看的原因；合规时返回 null */
   function nickProblem(v) {
     const s = String(v || '').trim();
-    if (!s) return `请输入博士代号（1~${NICK_MAX} 个字）`;
-    if ([...s].length > NICK_MAX) return `代号太长：最多 ${NICK_MAX} 个字，你输入了 ${[...s].length} 个`;
+    if (!s) return '请输入博士代号';
     if (!NICK_RE.test(s)) return NICK_RULE;
+    const w = nickWidth(s);
+    if (w > NICK_W_MAX) return `代号太长：最多 8 个汉字或 16 个英文字母/数字，当前相当于 ${Math.ceil(w / 2)} 个汉字宽`;
     return null;
   }
 
@@ -205,7 +226,7 @@
     logged.querySelector('#mm-acc-rename').onclick = async (e) => {
       e.preventDefault();
       const cur = state.user ? (state.user.nickname || '') : '';
-      const v = prompt(`输入新的博士代号（1~${NICK_MAX} 字，只能是中英文/数字/_/-/·）`, cur);
+      const v = prompt('输入新的博士代号（最多 8 个汉字或 16 个字母/数字）', cur);
       if (!v) return;
       const why = nickProblem(v);
       if (why) { alert(why); return; }
@@ -809,7 +830,7 @@
       e.stopImmediatePropagation();
       const input = findCallsign();
       const val = (input && input.value ? input.value : '').trim();
-      // 与服务端 matchmaker/account.cjs 的校验保持一致：1~7 字，且只允许 字母/数字/_/-/·
+      // 与服务端 matchmaker/account.cjs 的 checkNickname 保持一致（按显示宽度，8 汉字 / 16 英文）
       const bad = nickProblem(val);
       if (bad) { alert(bad); if (input) input.focus(); return; }
       const r = await api('/api/auth/set-name', {
