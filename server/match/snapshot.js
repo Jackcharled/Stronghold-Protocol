@@ -83,7 +83,7 @@ export const MATCH_FIELDS = Object.freeze({
     'BattleClass', 'battleContent', 'timerScale', 'gameSpeed', 'snapshotHz', 'localReplica', 'botRehearsal', 'botSliceMs',
     'botRehearsalDelegate', 'botRehearsalDelegateMs', 'hostId', 'ds', 'clientCombat', 'verifyMode', 'combatPool', 'trialPool',
     'headlessSliceMs', 'battlePrefix', 'experimental', 'revivalEnabled', 'disableSharedPool', 'playerCapacity',
-    'capacityExperiment', 'twentyPlayerMode', 'disableDuckLord', 'allowRepeat', 'players', 'order', 'spectators', 'botBands', 'stage', 'pool',
+    'capacityExperiment', 'twentyPlayerMode', 'disableDuckLord', 'allowRepeat', 'stackDuckLord', 'players', 'order', 'spectators', 'botBands', 'stage', 'pool',
     'playerPools', 'itemPool', 'ended', 'disposed',
     // 0.3.1: the content set's declared windows and the room's 测试 flag (both from the match options)
     'offers', 'test',

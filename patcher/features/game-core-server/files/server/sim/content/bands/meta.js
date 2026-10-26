@@ -545,14 +545,36 @@ export function duckReplace(ctx, spawns, p, ownerPlayerId, { routes = null, side
 const duckGlobal = {
   onBattleStart(ctx, ev) {
     if (!ev || !DUCK_KINDS.has(ev.kind) || !Array.isArray(ev.spawns)) return;
-    const holder = [ctx, ...ctx.teammates()].find(t => (t.gd.band(t.bandId())?.effectRef ?? t.bandId()) === DUCK_BAND);
-    if (!holder) return;
-    const p = duckParams(holder.bandId());
+    const holders = [ctx, ...ctx.teammates()]
+      .filter(t => (t.gd.band(t.bandId())?.effectRef ?? t.bandId()) === DUCK_BAND);
+    if (!holders.length) return;
+    const p = duckParams(holders[0].bandId());
     if (!p || ctx.round < int(p.round, 1)) return;
+    // 鸭爵叠加（本服新增，实验性开关 stackDuckLord）：上游是 find() 取第一个持有者，多个队友选鸭爵也只算 1 份。
+    // 开关打开时每个持有者各抽一份，用各自的随机流（带持有者序号），合并后统一去重 —— 同一只敌人只换一次。
+    // 只有一个持有者时走下面同一条路，随机流与上游逐字相同（`duck:<round>`），行为完全不变。
+    const stack = ctx.gd.stackDuckLord === true && holders.length > 1;
     // one draw per round for every player (GitHub #839): its own stream from the match seed — no player's meta stream,
     // the same in the stats preview and the bot rehearsals — on the wave before the player's bounties (ev.waveSpawns)
-    const rng = typeof ctx.seedFor === 'function' ? createRng(ctx.seedFor(`duck:${ctx.round}`)) : ctx.rng;
-    duckReplace(ctx, ev.spawns, p, ctx.playerId, { routes: ev.routes, side: ev.side, base: ev.waveSpawns, rng });
+    // 第 0 路必须与上游逐字相同（`duck:<round>`），否则叠加会偏离"单人时的抽取结果"——
+    // 实测会出现叠加后鸭爵反而变少甚至为 0 的情况。第 1 路起才加序号。
+    const streamOf = (i) => (i === 0 ? `duck:${ctx.round}` : `duck:${ctx.round}:${stack ? i : 0}`);
+    const rngFor = (i) => (typeof ctx.seedFor === 'function' ? createRng(ctx.seedFor(streamOf(i))) : ctx.rng);
+    if (!stack) {
+      duckReplace(ctx, ev.spawns, p, ctx.playerId, { routes: ev.routes, side: ev.side, base: ev.waveSpawns, rng: rngFor(0) });
+      return;
+    }
+    const base = Array.isArray(ev.waveSpawns) ? ev.waveSpawns : ev.spawns.filter((s) => !notOwn(s));
+    const bySlot = new Map();
+    // 第 0 路就是上游那一路（`duck:<round>`）：它单独决定了"至少换这么多"，保证叠加永远不弱于不叠加。
+    // 后面各持有者再往上叠，撞到已选格子就跳过。
+    for (let i = 0; i < holders.length; i++) {
+      for (const pk of duckPicks(ctx.gd, rngFor(i), base, p, { routes: ev.routes, side: ev.side })) {
+        const slot = `${pk.action}#${pk.k}`;
+        if (!bySlot.has(slot)) bySlot.set(slot, pk);
+      }
+    }
+    applyDuckPicks(ev.spawns, [...bySlot.values()], ctx.playerId);
   },
 };
 

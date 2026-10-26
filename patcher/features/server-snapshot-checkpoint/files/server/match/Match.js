@@ -342,7 +342,11 @@ export class Match {
     this.twentyPlayerMode = this.capacityExperiment && this.playerCapacity === 20;
     this.disableDuckLord = this.capacityExperiment && this.experimental.disableDuckLord === true;
     this.allowRepeat = this.capacityExperiment && this.experimental.allowRepeat === true;
+    // 鸭爵叠加（本服新增）：只有「允许重复选择策略」开着才有意义 —— 去重时一支队伍最多一个鸭爵，
+    // 叠不叠加都是 1 份。所以这里用 allowRepeat 做前置条件，而不只是 capacityExperiment。
+    this.stackDuckLord = this.allowRepeat && this.experimental.stackDuckLord === true;
     this.gd.disableDuckLord = this.disableDuckLord;
+    this.gd.stackDuckLord = this.stackDuckLord;
     if (opts.seats.length > this.playerCapacity) throw new RangeError('Match: seats exceed room capacity');
     /** SETTLE-only rescue state: { round, eligible: Set<playerId>, windowOpen, deadline }. */
     this._revival = null;
@@ -682,9 +686,17 @@ export class Match {
     return pool;
   }
 
-  /** Experimental expanded rooms draft every seat at once instead of waiting for a turn. */
+  /**
+   * Experimental expanded rooms draft every seat at once instead of waiting for a turn.
+   *
+   * 并发草稿只跟「允许重复选择策略」(allowRepeat) 这个实验开关绑定：
+   * 开了它才是「所有人同时选、可重复」——重复选本来就要求并发，顺序选里「队友已选」
+   * 的拦截没有意义；同时这也是「跳过」按钮唯一的开关（并发草稿没有人排在后面等你让位，
+   * 所以 skipBand 与前端 canSkip 都在并发时关掉跳过）。
+   * 5–20 人房但没开 allowRepeat：仍是顺序草稿，保留跳过。
+   */
   concurrentDraft() {
-    return !!this.capacityExperiment && !this.isSolo;
+    return !!this.capacityExperiment && !this.isSolo && this.allowRepeat;
   }
 
   /** Experimental room card-pool bucket number (1-based); ordinary rooms are always group 1. */

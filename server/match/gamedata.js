@@ -103,6 +103,12 @@ export class GameData {
     if (Object.keys(overrides).length) this.config = mergeData(this.config, overrides);
     /** Set by Match for an expanded co-op room: the 鸭爵 strategy is not offered. */
     this.disableDuckLord = false;
+    /**
+     * 鸭爵叠加（本服新增）：Set by Match when the room allows repeating strategies *and* the host turned
+     * stacking on. Several teammates holding 鸭爵 then each replace their share of the wave instead of the
+     * single winner-takes-all draw the upstream design does (server/sim/content/bands/meta.js duckGlobal).
+     */
+    this.stackDuckLord = false;
     this.economy = this.config.economy && typeof this.config.economy === 'object' ? this.config.economy : {};
     const chess = this.raw.chess && typeof this.raw.chess === 'object' ? this.raw.chess : {};
     this._chess = chess;

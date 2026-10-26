@@ -403,6 +403,8 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
   const [independent, setIndependent] = useState(false);
   const [noDuck, setNoDuck] = useState(false);
   const [repeat, setRepeat] = useState(false);
+  // 鸭爵叠加（本服新增）：只在「允许重复选择策略」打开时出现，见下方 showDuckStack。
+  const [stackDuck, setStackDuck] = useState(false);
   const wrapRef = useRef(null);
   // 实验性弹窗是挂在 .rs-opts 里的 position: fixed 整屏遮罩，而 .rs-opts 带 translateX(-50%)，
   // 会成为固定后代的包含块：弹窗于是相对那个小面板定位，被推到屏幕外，「应用」点不到。
@@ -419,6 +421,8 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
   const canEdit = isHost;
   const exp = room?.experimental || {};
   const currentCap = Number(room?.capacity) || Number(exp.playerCapacity) || 4;
+  /** 鸭爵叠加（本服新增）：没有「允许重复选择策略」就没有多个鸭爵可叠，所以跟着 repeat 一起显示/收起。 */
+  const showDuckStack = capacity > 4 && repeat;
   const toggle = () => {
     const next = !open;
     setOpen(next);
@@ -429,6 +433,7 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
       setIndependent(exp.disableSharedPool === true);
       setNoDuck(exp.disableDuckLord === true);
       setRepeat(exp.allowRepeat === true);
+      setStackDuck(exp.stackDuckLord === true);
     }
   };
   const apply = () => {
@@ -439,6 +444,7 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
       ...(capacity > 4 ? { playerCapacity: capacity } : {}),
       ...(capacity > 4 && noDuck ? { disableDuckLord: true } : {}),
       ...(capacity > 4 && repeat ? { allowRepeat: true } : {}),
+      ...(capacity > 4 && repeat && stackDuck ? { stackDuckLord: true } : {}),
     };
     setOpen(false);
     setCapOpen(false);
@@ -497,8 +503,15 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
       ${capacity > 4 ? html`<${Tooltip} text=${t('允许同一队伍中重复出现同一种策略')}>
         <button type="button" role="switch" aria-checked=${repeat ? 'true' : 'false'} data-testid="exp-repeat"
             class=${`dpick__opt ailast__opt${repeat ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
-            onClick=${() => { setCapOpen(false); canEdit && setRepeat(!repeat); }}>
+            onClick=${() => { setCapOpen(false); if (canEdit) { setRepeat(!repeat); if (repeat) setStackDuck(false); } }}>
           <${Icon} name="check" class=${repeat ? 'is-on' : ''} />${t('允许重复选择策略')}
+        </button>
+      <//>` : null}
+      ${showDuckStack ? html`<${Tooltip} text=${t('多名队友同时选择鸭爵策略时，各自替换一部分敌人')}>
+        <button type="button" role="switch" aria-checked=${stackDuck ? 'true' : 'false'} data-testid="exp-stack-duck"
+            class=${`dpick__opt ailast__opt${stackDuck ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
+            onClick=${() => { setCapOpen(false); canEdit && setStackDuck(!stackDuck); }}>
+          <${Icon} name="check" class=${stackDuck ? 'is-on' : ''} />${t('鸭爵策略可叠加')}
         </button>
       <//>` : null}
       </div>
