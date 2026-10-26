@@ -86,7 +86,8 @@ export class MatchSpDraft {
       if (ps && ps.alive && s.picks[ps.playerId] == null) break;
       s.idx++;
     }
-    const available = s.cards.filter(c => this.spCardAvailable(c)).map(c => c.idx);
+    const ps0 = this.players.get(s.order[s.idx]);
+    const available = s.cards.filter(c => this.spCardAvailable(c, ps0)).map(c => c.idx);
     if (s.idx >= s.order.length || !available.length) { this.setDeadline(0); this.later(0, () => this.finishSpDraft()); return; }
     const token = ++this._turnToken;
     if (!s.untimed) {
@@ -140,9 +141,14 @@ export class MatchSpDraft {
         this._concurrentSpStep();
       });
       s.turnDeadline = this.deadline;
-    } else {
-      this.setDeadline(0);
     }
+    // ⚠ 这里**不能**有 else { this.setDeadline(0) }：
+    // _applyCard() 每次都会调用 startSpTurn() → _concurrentSpStep()，而 s.armed 只在前
+    // 一次为 false。若在 else 里清零，那么**只要有任何一人选了卡**，整个阶段的倒计时就被
+    // 抹掉（前端不发 m.public.deadline），界面上的计时器随之消失；剩下还在犹豫的人
+    // 只能干等，掉线的人更是永远卡在这个界面 —— 玩家反馈的正是这个。
+    // 并发草稿的倒计时是「整个阶段共用一次性」的（与 _concurrentBandStep 一致：
+    // 那边也没有 else 分支），设置过一次之后必须一直保持到阶段结束。
     // AI / 托管座位立刻出手；真人各选各的
     const humansDeciding = deciding.some((p) => p && !p.isBot);
     for (const ps of deciding) {
