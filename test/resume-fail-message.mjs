@@ -38,6 +38,17 @@ check('★ 保留 15 秒防循环（跳过一次就停）',
   /if \(Date\.now\(\) - lastHop < 15000\)/.test(observer));
 check('★ 触发防循环时给出可操作的下一步', observer.includes('可回到大厅重新开始'));
 
+console.log('\n=== 两条提示不能自相矛盾 ===\n');
+// 现象：一次恢复里同时弹出「恢复对局失败：本局所在节点可能刚重启过，或对局已结束」
+//   和「模拟已开始」（服务端 ROOM_STARTED）。前者说对局没了，后者说对局在跑。
+//   真实情况是后者：房间还在、对局还在跑，joinFlow 正走「正在把你送回对局」那条路。
+//   ROOM_STARTED 说明房间存在，此时 observer 必须闭嘴，只留 joinFlow 那一条。
+check('★ ROOM_STARTED 时 observer 不再弹「对局已结束」',
+  /const started = \/ROOM_STARTED\|模拟已开始/.test(observer));
+check('★ 命中后直接 return，不走到 toast',
+  /if \(started\) \{[\s\S]{0,220}?return;/.test(observer));
+check('★ started 判定在 toast 之前', observer.indexOf('const started =') < observer.indexOf('可回到大厅重新开始'));
+
 console.log('\n=== 会话是否跨重启持久化（决定重启后能否恢复）===\n');
 const state = fs.readFileSync('node-1/server/persist/lobbyState.js', 'utf8');
 const persister = fs.readFileSync('node-1/server/persist/persister.js', 'utf8');

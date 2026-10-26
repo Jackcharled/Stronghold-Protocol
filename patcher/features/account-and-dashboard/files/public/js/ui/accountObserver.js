@@ -157,6 +157,19 @@ export function installAccountObserver() {
           if (Date.now() - lastHop < 15000) {
             autoWanted = false;
             try { window.__SP_ACCOUNT_RESUME_PENDING = false; } catch { /* ignore */ }
+            // 二次失败有两种完全相反的成因，不能用同一句话概括：
+            //   (a) 房间还在、对局还在跑 —— 刚跳过来的这一跳本身是有效的，只是这个节点内存里
+            //       还没有本账号的会话（registry.byAccount 只查本节点）。此时 matchmaker 的
+            //       joinFlow 正拿 ROOM_STARTED 走「正在把你送回对局」那条路，服务端 lobby 的
+            //       hello → resync → match.onReconnect 会把人拉回去。再弹「对局已结束」就是自相矛盾。
+            //   (b) 房间确实没了 —— 那种情况 joinFlow 给的是 ROOM_NOT_FOUND，不是 ROOM_STARTED。
+            const started = /ROOM_STARTED|模拟已开始|已开始|Simulation already started/i
+              .test(String((e && (e.code || e.message)) || ''));
+            if (started) {
+              // 交给 joinFlow 的唯一一条提示，这里不出声。
+              log('started-handoff');
+              return;
+            }
             // 「请关闭其他设备」这句话会误导：绝大多数失败并不是因为别的设备占着座位，
             // 而是这个节点重启过 / 对局已结束 / 会话过期。据实说明，并提示接下来怎么办。
             toast(t('恢复对局失败：本局所在节点可能刚重启过，或对局已结束。可回到大厅重新开始'), 'warn', { ttl: 8000 });

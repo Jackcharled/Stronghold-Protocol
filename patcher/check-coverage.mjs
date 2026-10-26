@@ -11,7 +11,7 @@ import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const FEATURES = path.join(ROOT, 'patcher', 'features');
-const GIT = process.env.GIT_EXE || 'git';
+const GIT = resolveGit();
 const LIST = process.argv.includes('--list');
 
 // 不纳入补丁管理的路径：
@@ -30,6 +30,21 @@ const IGNORE = [
   // 上游 .gitignore 明令禁止提交的后台页面（Server-only administration）
   /^matchmaker\/public\/admin\.html$/,
 ];
+
+// Windows 上 Git 常常不在 PATH（只装了 Git for Windows 的 cmd/git.exe）。先探测常见安装位置，
+// 免得把「找不到 git」误报成「缺少 upstream/master」，让人去怀疑远程分支。
+function resolveGit() {
+  if (process.env.GIT_EXE) return process.env.GIT_EXE;
+  const candidates = [
+    'C:/Program Files/Git/cmd/git.exe',
+    'C:/Program Files (x86)/Git/cmd/git.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Programs/Git/cmd/git.exe'),
+  ];
+  for (const c of candidates) {
+    try { if (c && fs.existsSync(c)) return c; } catch { /* ignore */ }
+  }
+  return 'git';
+}
 
 function git(args) {
   return execFileSync(GIT, args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20 });
@@ -56,8 +71,16 @@ if (fs.existsSync(FEATURES)) {
 let changed = [];
 try {
   changed = git(['diff', '--name-only', 'upstream/master', 'HEAD']).split('\n').filter(Boolean);
-} catch {
-  console.error('无法与 upstream/master 比对（缺少该远程分支？）');
+} catch (e) {
+  // 区分两种完全不同的原因：找不到 git 可执行文件 ≠ 没有 upstream/master 分支。
+  const why = String((e && (e.code || e.message)) || e);
+  if (/ENOENT|not recognized|不是内部或外部命令/i.test(why)) {
+    console.error('找不到 git 可执行文件：' + GIT);
+    console.error('  请安装 Git，或设置环境变量 GIT_EXE 指向 git.exe（例如 C:\\Program Files\\Git\\cmd\\git.exe）。');
+  } else {
+    console.error('无法与 upstream/master 比对（缺少该远程分支？）：' + why);
+    console.error('  可尝试：git remote add upstream <上游仓库地址> && git fetch upstream');
+  }
   process.exit(2);
 }
 const runtime = changed.filter((f) => /\.(js|mjs|cjs|json|css|html)$/.test(f) && !IGNORE.some((re) => re.test(f)));
