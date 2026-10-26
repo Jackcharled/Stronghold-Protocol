@@ -40,6 +40,18 @@ const DIFFICULTIES = ['FUNNY', 'NORMAL', 'HARD', 'ABYSS'];
 const DIFF_NAMES = { FUNNY: '标准模拟', NORMAL: '险境模拟', HARD: '绝境模拟', ABYSS: '终极模拟' };
 const TICKET_TTL_MS = 15 * 60 * 1000;
 const MATCH_TTL_MS = 5 * 60 * 1000;
+/**
+ * 暂停接收新玩家的节点（逗号分隔节点号）。
+ * 用途：这些节点上还有未结束的对局，不能重启；先让匹配器不再把新玩家调度过去，
+ * 等在打的局自然结束后再重启。已经在房间里的人完全不受影响 ——
+ * 他们能打完、能继续开局、能被邀请进房，这里只拦「匹配分配到哪个节点」这一步。
+ */
+const DISABLED_NODES = new Set(
+  String(process.env.MM_DISABLED_NODES || '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n >= 1 && n <= NODES),
+);
 const CODE_RE = /^[A-Za-z0-9]{4,8}$/;
 
 /**
@@ -84,7 +96,7 @@ async function refreshNodes() {
 
 /** 选人最少、其次房间最少的节点；并列随机，避免总是压同一个。 */
 function pickNode() {
-  const alive = [...nodeLoad.entries()].filter(([, v]) => v.ok);
+  const alive = [...nodeLoad.entries()].filter(([n, v]) => v.ok && !DISABLED_NODES.has(n));
   if (!alive.length) return null;
   const shuffled = alive.map(([n, v]) => ({ n, v, r: Math.random() })).sort((a, b) => a.r - b.r);
   shuffled.sort((a, b) => a.v.humans - b.v.humans || a.v.rooms - b.v.rooms);
@@ -96,7 +108,7 @@ const EXPERIMENTAL_NODE = Number(process.env.MM_EXPERIMENTAL_NODE || 4);
 function pickNodeFor(capacity) {
   if (capacity > SEATS) {
     const v = nodeLoad.get(EXPERIMENTAL_NODE);
-    if (v?.ok) return EXPERIMENTAL_NODE;
+    if (v?.ok && !DISABLED_NODES.has(EXPERIMENTAL_NODE)) return EXPERIMENTAL_NODE;
   }
   return pickNode();
 }
@@ -440,7 +452,13 @@ async function roomInfo(code, node) {
     const round = doc.matchLive ? (Number(doc.liveRound) || 0) : (doc.match && Number.isFinite(Number(doc.match.round)) ? Number(doc.match.round) : null);
     const maxSpectators = Number.isInteger(doc.maxSpectators) ? doc.maxSpectators
       : (mode === 'coop' ? Math.max(2, Math.ceil(humans / 2)) : 0);
-    const capacity = Number(doc.capacity);
+    // 房间容量：优先 doc.capacity（lobbyState 现在会存）。
+    // 兜底读 doc.experimental.playerCapacity —— 老版本的房间文档没有 capacity 字段，
+    // 只靠 capacity 会让 5–20 人房在匹配池里被当成 4 人，被 4 人局配走。
+    const capacity = Number(
+      doc.capacity
+      ?? (doc.experimental && typeof doc.experimental === 'object' ? doc.experimental.playerCapacity : NaN),
+    );
     return { full: seats.length > 0 && seats.every(Boolean), started: !!(doc.matchLive || doc.matchKey || doc.match), mode, difficulty: doc.difficulty || null, capacity: isSeatCount(capacity) ? capacity : SEATS, humans, bots, players, spectatorPlayers, round, seats: seats.length, spectators: spectatorPlayers.length, maxSpectators, adminCreated: doc.adminCreated === true,
       // 本服：房间的游戏版本（默认版本在房间状态里被省略）
       version: typeof doc.version === 'string' && doc.version ? doc.version : 'act2autochess' };
@@ -684,6 +702,26 @@ const server = http.createServer(async (req, res) => {
     } catch { return json(res, 200, { enabled: false, text: '' }); }
   }
 
+  // ---- 合并轮询（本服优化）----
+  // 真实访问日志统计：/api/gate、/api/room-ttl、/api/announcement 各自每 5 秒轮询一次，
+  // 三个端点合计约占全部请求的 55%——比素材请求（11.6%）多出近 5 倍。
+  // 它们返回的都是几十到一百多字节的小 JSON，合成的成本远低于三次往返。
+  // 这个端点一次返回三者，前端只打一个请求；老的三个端点保留（兼容已打开的旧页面）。
+  if (pathname === '/api/pulse') {
+    const readJson = (rel, fallback) => {
+      try { return JSON.parse(fs.readFileSync(path.join(ROOT_DIR, rel), 'utf8')); } catch { return fallback; }
+    };
+    const body = JSON.stringify({
+      ok: true,
+      gate: gameGate(),
+      roomTtl: readJson(path.join('shared', 'data', 'room-ttl.json'), { minutes: 15 }),
+      announcement: readJson(path.join('guard', 'announcement.json'), { enabled: false, text: '' }),
+    });
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(body);
+    return;
+  }
+
   if (pathname === '/api/announcements') {
     try {
       const raw = fs.readFileSync(path.join(ROOT_DIR, 'content', 'announcements.json'), 'utf8');
@@ -797,9 +835,13 @@ const roomDir = new Map(); // node -> { codes: string[], at: number }
       byDifficulty: Object.fromEntries(DIFFICULTIES.map((difficulty) => {
         const queued = [...tickets.values()].filter((t) => !t.matchId && t.difficulty === difficulty);
         const queuedParties = [...parties.values()].filter((p) => !p.matchId && p.difficulty === difficulty);
+        // 本服：按容量细分。★ capacities 必须把「正在排队的组队」也算进来，
+        // 否则只有 4 人房（SEATS）会被列出，5–20 人房的组队排队在后台/控制台看不见。
+        const partyCapacity = (p) => (isSeatCount(p.capacity) ? p.capacity : SEATS);
         const capacities = [...new Set([
           SEATS,
           ...[...tickets.values()].filter((t) => t.difficulty === difficulty).map((t) => t.capacity),
+          ...queuedParties.map(partyCapacity),
           ...[...matches.values()].filter((m) => m.difficulty === difficulty).map((m) => m.capacity == null ? SEATS : m.capacity),
         ])].sort((a, b) => a - b);
         return [difficulty, {
@@ -827,16 +869,22 @@ const roomDir = new Map(); // node -> { codes: string[], at: number }
               };
             });
           })(),
-          byCapacity: capacities.map((capacity) => ({
-            capacity,
-            waiting: queued.filter((t) => t.capacity === capacity).length,
-            parties: capacity === SEATS ? queuedParties.length : 0,
-            partyWaiting: capacity === SEATS ? queuedParties.reduce((n, p) => n + p.size, 0) : 0,
-            matches: [...matches.values()].filter((m) => m.difficulty === difficulty && (m.capacity == null ? SEATS : m.capacity) === capacity).length,
-          })),
+          // ★ 每个容量都统计组队排队。以前这里是 `capacity === SEATS ? … : 0`，
+          //   只有 4 人房有数据，5–20 人房永远显示 0 人排队 ——
+          //   后台与节点控制台的「匹配队列」对多人大厅完全失明。
+          byCapacity: capacities.map((capacity) => {
+            const qp = queuedParties.filter((p) => partyCapacity(p) === capacity);
+            return {
+              capacity,
+              waiting: queued.filter((t) => t.capacity === capacity).length,
+              parties: qp.length,
+              partyWaiting: qp.reduce((n, p) => n + p.size, 0),
+              matches: [...matches.values()].filter((m) => m.difficulty === difficulty && (m.capacity == null ? SEATS : m.capacity) === capacity).length,
+            };
+          }),
         }];
       })),
-      nodes: [...nodeLoad.entries()].map(([n, v]) => ({ n, ...v })),
+      nodes: [...nodeLoad.entries()].map(([n, v]) => ({ n, ...v, disabled: DISABLED_NODES.has(n) })),
     });
   }
 
@@ -870,7 +918,12 @@ account.ensureSchema()
   .then(() => console.log('[mm] account schema ready'))
   .catch((e) => console.warn('[mm] account schema init failed:', e && e.message));
 
-server.listen(PORT, HOST, () => console.log(`[mm] matchmaking on http://${HOST}:${PORT}/`));
+server.listen(PORT, HOST, () => {
+  console.log(`[mm] matchmaking on http://${HOST}:${PORT}/`);
+  if (DISABLED_NODES.size) {
+    console.log(`[mm] 暂停接收新玩家的节点: ${[...DISABLED_NODES].sort((a, b) => a - b).join(',')}`);
+  }
+});
 
 
 // ---------------------------------------------------------------- 账号接口

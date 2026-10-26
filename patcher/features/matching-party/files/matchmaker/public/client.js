@@ -10,7 +10,21 @@
 
 (function () {
   const q = new URLSearchParams(location.search);
-  const NAME = (q.get('name') || '').trim().slice(0, 12);
+  // 名字：优先 URL 参数（匹配/邀请链接会带），否则回退到本机记住的名字。
+  // 只认 URL 的话，老玩家直接打开域名（没有 ?name=）时 NAME 为空：
+  // 于是 net.setName 从不调用 → net.name 为空 → hello 不发、rehandshake 也返回 false
+  // → accountToken 送不上去 → 服务端 session.accountId 为空 → 有账号却被判成游客。
+  const NAME = (() => {
+    const fromUrl = (q.get('name') || '').trim();
+    if (fromUrl) return fromUrl.slice(0, 12);
+    try {
+      for (const k of ['sp.name', 'mm.name']) {
+        const v = (localStorage.getItem(k) || '').trim();
+        if (v) return v.replace(/#\d{4}\s*$/, '').slice(0, 12);   // 去掉「#四位代码」后缀
+      }
+    } catch { /* 隐私模式 */ }
+    return '';
+  })();
   const ROOM = q.get('room');
   const IS_HOST = q.get('mmhost') === '1';
   const MID = q.get('mid');
@@ -91,6 +105,48 @@ const JOIN_COOKIE = (() => {
     document.cookie = `sp_node=${node}; path=/; max-age=86400; SameSite=Lax`;
     document.cookie = `sp_route=${node}; path=/; max-age=86400; SameSite=Lax`;
   };
+  /**
+   * 跨节点切换「无感」版：不刷新页面，只把 WebSocket 重连到目标节点。
+   *
+   * 原理：nginx 的 location = /ws 支持 ?watchNode=N（见 nginx.conf），会用它覆盖
+   * $sp_node 选择上游；页面本身的资源继续由当前的 sp_route 提供，不必重新下载。
+   * 于是玩家看不到任何刷新/白屏，只是 socket 换了个节点。
+   *
+   * 注意：切换后必须重设 cookie，否则之后刷新页面会回到旧节点（那里没有这个房间）。
+   * @param {number} node @param {{sp:any, keepName?:string}} opts
+   */
+  function switchNodeLive(sp, node) {
+    try { console.info('[mm-debug] switchNodeLive', { node, net: sp && sp.net && sp.net.status }); } catch { /* ignore */ }
+    return new Promise((resolve, reject) => {
+      try {
+        const net = sp && sp.net;
+        if (!net || typeof net.connect !== 'function') { reject(new Error('net unavailable')); return; }
+        const base = net.url || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+        const u = new URL(base, location.href);
+        u.searchParams.set('watchNode', String(node));
+        // 先记下目标节点：重连成功前页面仍显示旧状态，但 cookie 已经是新的
+        setNodeCookie(node);
+        // 关旧 socket（不触发自动重连），换 url 再开
+        try { net._quietSwap = true; } catch { /* ignore */ }
+        net.close?.();
+        net.url = u.toString();
+        const done = () => {
+          net.off?.('welcome', onWelcome);
+          clearTimeout(timer);
+          resolve();
+        };
+        const fail = (e) => {
+          net.off?.('welcome', onWelcome);
+          clearTimeout(timer);
+          reject(e || new Error('switch timeout'));
+        };
+        const onWelcome = () => done();
+        const timer = setTimeout(() => fail(new Error('switch timeout')), 8000);
+        try { net.on?.('welcome', onWelcome); } catch { /* ignore */ }
+        net.connect?.();
+      } catch (e) { reject(e); }
+    });
+  }
   const seatsOf = (room) => (room && Array.isArray(room.seats) ? room.seats.filter(Boolean).length : 0);
 
   const TIPS = [
@@ -117,7 +173,8 @@ const JOIN_COOKIE = (() => {
     try {
       const u = new URL(location.href);
       const keepName = !(window.__SP__ && window.__SP__.store && window.__SP__.store.get().session.entered);
-      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'c', 'pmid', 'pcid', 'pd', 'mm', 'spectate'].forEach((k) => {
+      // boot/retry 是启动失败重试用的，成功进入后没有意义，留在地址栏只会难看
+      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'c', 'pmid', 'pcid', 'pd', 'mm', 'spectate', 'boot', 'retry'].forEach((k) => {
         if (k === 'name' && keepName) return;   // 还没进入大厅前保留名字，进房后再清
         u.searchParams.delete(k);
       });
@@ -257,45 +314,87 @@ const JOIN_COOKIE = (() => {
     el.addEventListener('click', () => setTimeout(mmTipHide, 0));
   }
 
+  /**
+   * 应用 /api/gate 的结果（也可能来自合并后的 /api/pulse.gate）。
+   * 从 refreshGate 里拆出来，供两条路径共用。
+   */
+  function applyGate(j) {
+    if (!j) return;
+    GATE = { start: j.start !== false, match: j.match !== false };
+    // 管理员/服主无视维护开关（服务端 session.admin 同样放行）。
+    // 角色变量由账号接口异步写入，也可能只有后台下发的 adminToken，两者任一即可。
+    const isAdmin = (() => {
+      try {
+        const r = window.__SP_ACCOUNT_ROLE;
+        if (r && r !== 'player') return true;
+        if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) return true;
+        return false;
+      } catch { return false; }
+    })();
+    if (GATE.start === false && !isAdmin) lastGateTip = true;
+    const b = [...document.querySelectorAll('button')].find((x) => /开始模拟/.test(x.textContent || ''));
+    if (!b) return;
+    if (GATE.start === false && !isAdmin) {
+      b.disabled = true;
+      b.dataset.mmGate = '1';
+      // 与新版同款悬停提示，而不是浏览器原生 title 气泡
+      b.dataset.mmTipText = '服务器暂时关闭了开始游戏，请稍后再试';
+      b.dataset.mmTipBound = '1';
+      b.removeAttribute('title');
+      mmTipBind(b, b.dataset.mmTipText);
+    } else if (b.dataset.mmGate) {
+      b.disabled = false;
+      delete b.dataset.mmGate;
+      b.dataset.mmTipText = '';
+      b.removeAttribute('title');
+    }
+  }
+
+  let lastGateTip = false;
+
   function refreshGate() {
     fetch('/mm/api/gate', { cache: 'no-store' })
       .then((r) => r.ok ? r.json() : null)
-      .then((j) => {
-        if (!j) return;
-        GATE = { start: j.start !== false, match: j.match !== false };
-        // 管理员/服主无视维护开关（服务端 session.admin 同样放行）
-        // 管理员/服主无视维护开关（服务端 session.admin 同样放行）。
-        // 角色变量由账号接口异步写入，也可能只有后台下发的 adminToken，两者任一即可。
-        const isAdmin = (() => {
-          try {
-            const r = window.__SP_ACCOUNT_ROLE;
-            if (r && r !== 'player') return true;
-            if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) return true;
-            return false;
-          } catch { return false; }
-        })();
-        const b = [...document.querySelectorAll('button')].find((x) => /开始模拟/.test(x.textContent || ''));
-        if (!b) return;
-        if (GATE.start === false && !isAdmin) {
-          b.disabled = true;
-          b.dataset.mmGate = '1';
-          // 与新版同款悬停提示，而不是浏览器原生 title 气泡
-          b.dataset.mmTipText = '服务器暂时关闭了开始游戏，请稍后再试';
-          b.dataset.mmTipBound = '1';
-          b.removeAttribute('title');
-          mmTipBind(b, b.dataset.mmTipText);
-        } else if (b.dataset.mmGate) {
-          b.disabled = false;
-          delete b.dataset.mmGate;
-          b.dataset.mmTipText = '';
-          b.removeAttribute('title');
-        }
-      })
+      .then(applyGate)
       .catch(() => {});
   }
 
+  // ---------------------------------------------------------------- 合并轮询（本服优化）
+  //
+  // 真实访问日志统计（1,192,827 条采样）：
+  //   /mm/api/gate          67,450 次
+  //   /mm/api/room-ttl      67,439 次
+  //   /mm/api/announcement  67,439 次
+  // 三个各自 5 秒轮询，合计约占全部请求的 55% —— 比素材请求（11.6%）多近 5 倍。
+  // 它们都返回几十到一百多字节的小 JSON，合并成一个 /mm/api/pulse 只花一次往返。
+  //
+  // 策略：能合并就合并；pulse 不可用（老节点）时自动退回原来的三个端点，行为不变。
+  let pulseOk = true;
+  const pulseHooks = { gate: [], ttl: [], announcement: [] };
+  /** 注册某个数据变化时的回调（先注册先调用）。 */
+  function onPulse(kind, fn) { try { pulseHooks[kind].push(fn); } catch { /* ignore */ } }
+  function emitPulse(kind, value) {
+    for (const fn of pulseHooks[kind]) { try { fn(value); } catch { /* ignore */ } }
+  }
+
+  function refreshPulse() {
+    if (!pulseOk) { refreshGate(); return; }
+    fetch('/mm/api/pulse', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!j || !j.ok) { pulseOk = false; refreshGate(); return; }
+        applyGate(j.gate);
+        emitPulse('gate', j.gate);
+        emitPulse('ttl', j.roomTtl);
+        emitPulse('announcement', j.announcement);
+      })
+      .catch(() => { /* 断网时保持现状，下一轮再试 */ });
+  }
+
   function boot(sp) {
-    try { refreshGate(); setInterval(refreshGate, 5000); } catch { /* ignore */ }
+    // 合并轮询：一次拿到 gate / room-ttl / announcement，替代原来三个独立的 5 秒轮询。
+    // 老节点没有 /mm/api/pulse 时 refreshPulse 会自动退回 refreshGate。
+    try { refreshPulse(); setInterval(refreshPulse, 5000); } catch { /* ignore */ }
     document.addEventListener('click', (e) => {
       if (GATE.start !== false) return;
       // 管理员/服主无视维护开关：服务端 start 分支按 session.admin 放行，
@@ -333,9 +432,24 @@ const JOIN_COOKIE = (() => {
     // 隐身观战保留完整 URL：手机刷新后仍能重新进入 hidden spectator。
     if (ROOM && !ADMIN_WATCH) cleanUrl();
     else if (PIN_NODE && !IS_HOST && !ADMIN_WATCH) cleanUrl();
+    // 地址栏兜底清理：匹配/组队参数（?mm=1&mid=…&t=…&tk=…&d=…&c=…）本来要等建房成功才清，
+    // 但玩家没进入大厅（未登录 / 只是在看首页）时那条路径不会跑到，参数就一直挂在域名后面。
+    // 这些值已经读进常量了，立刻抹掉不影响后续流程。
+    else if (!ADMIN_WATCH && (IS_HOST || PMID || q.get('mm') === '1' || MID || TICKET)) cleanUrl();
 
-    if (NAME && !store.get().session.entered) {
-      try { store.set((s) => ({ ...s, me: { ...s.me, name: NAME }, session: { ...s.session, entered: true } })); } catch (e) { /* ignore */ }
+    // 名字必须**无条件**设置到 net：它是 hello 的前置条件。
+    // 以前这里写着 `if (NAME && !store.get().session.entered)`，而 entered 是存在
+    // localStorage 里的「本机进过大堂」标记 —— 老玩家第二次及以后打开页面时它是 true，
+    // 于是 setName() 从未被调用，net.name 一直为空：
+    //   · _onOpen 里 `if (this.name)` 不成立 → 连 hello 都不发
+    //   · rehandshake() 里 `if (... || !this.name) return false` → 身份重发也被跳过
+    // 结果 accountToken 送不上去，服务端 session.accountId 为空，玩家在有账号的情况下
+    // 被 lobby 判成游客（dashboard 显示「游客」、房间游客标签、游客限制也一并触发）。
+    // setName 本身是幂等的（同名字不会重复握手），放心每次调用。
+    if (NAME) {
+      if (!store.get().session.entered) {
+        try { store.set((s) => ({ ...s, me: { ...s.me, name: NAME }, session: { ...s.session, entered: true } })); } catch (e) { /* ignore */ }
+      }
       try { net.setName(NAME); } catch (e) { /* ignore */ }
     }
 
@@ -361,10 +475,15 @@ const JOIN_COOKIE = (() => {
           }
         } catch { /* ignore */ }
       } else if (IS_HOST && MID && TICKET && SECRET && DIFF) hostFlow(sp);
-      else if (JOIN_COOKIE) resolveRoomNode(JOIN_COOKIE, () => joinFlow(sp, JOIN_COOKIE, false));
+      // 手输密钥/点「加入同盟」跨节点跳转时，目标房间记在 mm.pendingRoom 里。
+      // 它必须**排在 JOIN_COOKIE 之前**：刷新后 sp_join 里可能还留着上一次的邀请码，
+      // 若先走 JOIN_COOKIE 就会去解析旧码（甚至再跳一次节点），玩家就得多输一次密钥。
       else if (PENDING_JOIN) joinFlow(sp, PENDING_JOIN.code, PENDING_JOIN.spectate);
+      // sp_join 只带房号、不带观战意图，所以观战一律回到 PENDING_JOIN（它记了 spectate）。
+      // 走到这里说明是纯邀请链接，按加入处理。
+      else if (JOIN_COOKIE) resolveRoomNode(JOIN_COOKIE, () => joinFlow(sp, JOIN_COOKIE, false));
       else if (ROOM && ROOM_PINNED) joinFlow(sp, ROOM, SPECTATE);
-      else if (ROOM) resolveRoomNode(ROOM, () => joinFlow(sp, ROOM, SPECTATE));
+      else if (ROOM) resolveRoomNode(ROOM, () => joinFlow(sp, ROOM, SPECTATE), SPECTATE);
       roomUi(sp);
     }
     // 匹配成功的对局：不等房主手动点，自动准备 + 自动开始
@@ -566,16 +685,29 @@ const JOIN_COOKIE = (() => {
 
   const MODE_NAMES = { FUNNY: '标准模拟', NORMAL: '险境模拟', HARD: '绝境模拟', ABYSS: '终极模拟' };
 
-  /** 按房号查房间在哪个节点；不在本节点就写 cookie 切过去，同节点则继续本地加入。 */
-  function resolveRoomNode(code, onSameNode) {
+  /**
+   * 按房号查房间在哪个节点；不在本节点就写 cookie 切过去，同节点则继续本地加入。
+   * @param {string} code 房号
+   * @param {Function} onSameNode 已在本节点时继续
+   * @param {boolean} [spectate] 观战意图。跨节点跳转会把地址栏清成 `/`，`?spectate=1` 随之消失，
+   *   所以必须显式带上并写进 mm.pendingRoom —— 否则观战会退化成「加入」。
+   */
+  function resolveRoomNode(code, onSameNode, spectate = SPECTATE) {
     fetch('/mm/api/find-room?code=' + encodeURIComponent(code))
       .then((r) => r.json())
       .then((d) => {
         const cur = nodeOf();
         if (d && d.node && d.node !== cur) {
-          setNodeCookie(d.node);
-          try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: SPECTATE })); } catch { /* ignore */ }
-          location.replace('/');
+          // 跨节点：不刷新页面，直接把 socket 换到目标节点（玩家无感），随后本地加入/观战
+          const sp = window.__SP__;
+          switchNodeLive(sp, d.node)
+            .then(() => { onSameNode && onSameNode(); })
+            .catch(() => {
+              // 无感切换失败（例如 socket 起不来）才退回整页跳转
+              setNodeCookie(d.node);
+              try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: !!spectate })); } catch { /* ignore */ }
+              location.replace('/');
+            });
           return;
         }
         if (d && d.node === cur) { onSameNode && onSameNode(); return; }
@@ -631,10 +763,16 @@ const JOIN_COOKIE = (() => {
             if (spec && Number(d.spectators) >= 2) { showStyledToast('观战席位已满（2/2），请稍后再试'); return; }
             if (!spec && d.started) { showStyledToast('该同盟已开始对局，无法加入；可以点「观战」进入'); return; }
             if (!spec && d.full) { showStyledToast('该同盟人数已满，无法加入；可以点「观战」进入'); return; }
-            if (d.node === nodeOf()) { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); return; }
-            setNodeCookie(d.node);
-            try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: spec })); } catch { /* ignore */ }
-            location.replace('/');
+            const localGo = () => { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); };
+            if (d.node === nodeOf()) { localGo(); return; }
+            // 跨节点：socket 无感切过去，然后照常在本地点按钮（玩家看不到刷新）
+            switchNodeLive(window.__SP__, d.node)
+              .then(() => { localGo(); })
+              .catch(() => {
+                setNodeCookie(d.node);
+                try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: spec })); } catch { /* ignore */ }
+                location.replace('/');
+              });
             return;
           }
           if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec);
@@ -657,15 +795,20 @@ const JOIN_COOKIE = (() => {
       checkAndGo(code, spec, btn);
     }, true);
     // 回车提交同样先检查（游戏自己的 onEnter 会直接在当前节点加入，绕过按钮）
+    // 注意：回车**必须按实际意图**处理。这里原先写死 false（当作加入），
+    // 于是在「观战」模式下按回车会丢掉观战意图，跨节点后变成加入，甚至失败后要重输。
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' || bypass) return;
       const el = document.activeElement;
       if (!el || el.tagName !== 'INPUT' || !/密钥|邀请链接/.test(el.placeholder || '')) return;
       const code = codeFrom(el.value);
       if (!code) return;
+      // 当前是否处于观战模式：以界面上可见的观战按钮标签为准（与点击路径同一判据）
+      const specBtn = findBtn(true);
+      const specMode = !!specBtn && !/加入同盟/.test(specBtn.textContent || '');
       e.preventDefault();
       e.stopPropagation();
-      checkAndGo(code, false, null);
+      checkAndGo(code, specMode, specMode ? specBtn : findBtn(false));
     }, true);
   }
 
@@ -968,7 +1111,9 @@ const JOIN_COOKIE = (() => {
       }
       if (!code || polling) return;
       // matched 之后席位数量可能变化，但还要继续拿房间码用于跳转，不能因「满员」提前停下
-      if (!matched && seatsOf(room) >= 4) return;
+      // ★ 用房间自己的容量，不能写死 4：5–20 人房按真实人数判断，
+      //   否则 8 人房坐到 4 人就不再轮询状态，匹配成功后也永远拿不到结果、卡在搜寻界面。
+      if (!matched && seatsOf(room) >= (Number(room?.capacity) || 4)) return;
       // 房间里有 AI 队友时不参与匹配（AI 无法跨节点加入）
       if ((room && room.seats || []).some((x) => x && x.isBot)) {
         if (queued) {
@@ -1287,13 +1432,19 @@ const JOIN_COOKIE = (() => {
     const sp = window.__SP__;
     if (!sp || !sp.store || !sp.store.subscribe) return;
     let LIMIT = 15 * 60 * 1000;
-    // 同盟解散时间由后台配置（分钟），每 60 秒同步一次
+    // 同盟解散时间由后台配置（分钟）。数据来自合并轮询 /mm/api/pulse（见 refreshPulse），
+    // 不再自己每 5 秒打一次 /mm/api/room-ttl —— 那三个端点曾占全部请求的一半以上。
+    const applyTtl = (j) => {
+      const m = Number(j && j.minutes);
+      if (Number.isFinite(m) && m >= 1 && m <= 1440) { LIMIT = Math.round(m * 60000); window.__mmTtlMs = LIMIT; }
+    };
+    onPulse('ttl', applyTtl);
+    // 兜底：pulse 不可用（老节点）时仍走原来的端点，行为与改造前一致。
     const syncTtl = async () => {
+      if (pulseOk) return;
       try {
         const r = await fetch('/mm/api/room-ttl', { cache: 'no-store' });
-        const j = await r.json();
-        const m = Number(j.minutes);
-        if (Number.isFinite(m) && m >= 1 && m <= 1440) { LIMIT = Math.round(m * 60000); window.__mmTtlMs = LIMIT; }
+        applyTtl(await r.json());
       } catch { /* ignore */ }
     };
     syncTtl(); setInterval(syncTtl, 5000);
@@ -1917,13 +2068,19 @@ const JOIN_COOKIE = (() => {
         const st = document.createElement('style');
         st.id = 'mm-qq-css';
         st.textContent = `
-          /* 标题屏页脚：Q群按钮独占一行，贴着左下角，位于「添加到桌面」上方。
-             flex 容器里 flex-basis:100% 不会自动换行，所以用一个占满整行的
-             透明占位块（.mm-qq-row）把按钮顶到单独一行。 */
-          .title-foot > .mm-qq-row{flex:0 0 100%;display:flex;justify-content:flex-start;align-items:center;line-height:0}
-          .title-foot > .mm-qq-row ~ *{flex-grow:0}
-          .title-foot .mm-qq-row > #mm-qq{position:static!important;flex:0 0 auto!important;width:auto!important;max-width:fit-content!important;align-self:center!important;margin:0!important;padding:.05rem .2rem!important;height:max(.3rem,1.75em)!important;font-size:calc(.13 * var(--t))!important;line-height:1!important;box-sizing:border-box!important;justify-content:flex-start!important}
+          /* ★ 标题屏：Q群按钮放在左下角「添加到桌面」的正上方。
+             要求（维护者）：页脚原有布局不能变（版本号/项目仓库保持它本来的位置），
+             只是把 Q群按钮叠加在「添加到桌面」上面一行。
+             做法：按钮绝对定位在 .title-foot 内，**不参与 flex 排版**
+             （不撑高页脚、不推开任何原有元素）。
+             left / bottom 由脚本按「添加到桌面」的实际位置写进行内样式——
+             所以这里**不能**用 !important 锁死这两个值，否则会盖掉测量结果。 */
+          .title-foot > .mm-qq-row{position:absolute!important;right:auto!important;top:auto!important;flex:0 0 auto!important;width:auto!important;display:flex!important;justify-content:flex-start!important;align-items:flex-end!important;line-height:0!important;margin:0 0 .06rem 0!important;padding:0!important;pointer-events:none!important;left:0;bottom:100%}
+          .title-foot .mm-qq-row > #mm-qq{position:static!important;flex:0 0 auto!important;width:auto!important;max-width:fit-content!important;align-self:center!important;margin:0!important;padding:.05rem .2rem!important;height:max(.3rem,1.75em)!important;font-size:calc(.13 * var(--t))!important;line-height:1!important;box-sizing:border-box!important;justify-content:flex-start!important;pointer-events:auto!important}
           .title-foot .mm-qq-row > #mm-qq .mm-qq-penguin{width:1.05em!important;height:1.05em!important}
+          /* 兜底：万一按钮没进 .mm-qq-row（页脚结构缺失），退回 body 固定定位，
+             并把 bottom 抬到页脚之上，绝不压住「添加到桌面」。 */
+          body > #mm-qq{position:fixed;left:max(18px,env(safe-area-inset-left,0px));bottom:calc(112px + env(safe-area-inset-bottom,0px));z-index:2147482000}
           #mm-qq{position:fixed;left:max(18px,env(safe-area-inset-left,0px));bottom:calc(82px + env(safe-area-inset-bottom,0px));z-index:2147482000;display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px solid #7ff0cf;border-radius:0;background:#35c79b;color:#061611;box-shadow:0 0 0 1px rgba(78,216,175,.18),0 4px 16px rgba(0,0,0,.28);letter-spacing:0;cursor:pointer;white-space:nowrap}
           #mm-qq:hover{background:#5ee0b9;border-color:#b6ffe9;color:#03110c}
           #mm-qq .mm-qq-penguin{display:inline-flex;align-items:center;justify-content:center;width:1.15em;height:1.15em;line-height:1;font-size:1em;flex:none}
@@ -2167,23 +2324,48 @@ const JOIN_COOKIE = (() => {
       }
       const foot = document.querySelector('.title-foot');
       if (foot) {
-        // 标题屏左下角：「添加到桌面」上方独占一行。页脚是 flex 换行容器，
-        // 用一行占位块把按钮顶到最左边单独一行，原按钮组位置保持不变。
+        // 标题屏：Q群按钮放在左下角「添加到桌面」的**正上方**。
+        //
+        // 页脚原有布局必须保持不动（版本号在右下角、「添加到桌面」在原位），
+        // 所以按钮绝对定位在 .title-foot 内，**不参与 flex 排版**：
+        // 量出「添加到桌面」按钮的实际矩形，把 Q群按钮贴到它的正上方（左对齐、留一行间距）。
+        // 用测量而不是猜像素，各屏幕尺寸 / 缩放 / 手机端都能对齐。
         let row = foot.querySelector('.mm-qq-row');
         if (!row) {
           row = document.createElement('span');
           row.className = 'mm-qq-row';
           row.setAttribute('aria-hidden', 'false');
         }
-        if (row.parentElement !== foot || row !== foot.firstElementChild) {
-          foot.insertBefore(row, foot.firstElementChild);
-        }
+        if (row.parentElement !== foot) foot.appendChild(row);
         if (btn.parentElement !== row) row.appendChild(btn);
+        // 清掉 fixed 定位留下的行内样式，位置改由下面按实际布局算出
         btn.style.position = 'static';
         btn.style.left = '';
+        btn.style.right = '';
+        btn.style.top = '';
         btn.style.bottom = '';
+        btn.style.transform = '';
+        btn.style.zIndex = '';
+        // 量「添加到桌面」的位置，把 Q群那一行放到它上方
+        try {
+          const install = foot.querySelector('[data-testid="pwa-install"]')
+            || [...foot.querySelectorAll('button')].find((b) => /添加到桌面|Add to Home|ホーム/.test(b.textContent || ''));
+          const footRect = foot.getBoundingClientRect();
+          if (install && footRect.height > 0) {
+            const ir = install.getBoundingClientRect();
+            const qr = row.getBoundingClientRect();
+            // 左对齐到「添加到桌面」的左缘，垂直方向贴到它的上边再留 6px
+            const left = Math.max(0, Math.round(ir.left - footRect.left));
+            const bottom = Math.round(footRect.bottom - ir.top + 6);
+            if (row.style.left !== left + 'px') row.style.left = left + 'px';
+            if (row.style.bottom !== bottom + 'px') row.style.bottom = bottom + 'px';
+            void qr;
+          }
+        } catch { /* 测量失败：保持 CSS 的默认位置（页脚上方），也不会遮挡 */ }
         return;
       }
+      // 页脚结构不存在（极少数情况）：退回 body 固定定位，但 CSS 已把 bottom 抬到
+      // 112px 以上，不会压住页脚里的「添加到桌面」。
       if (btn.parentElement !== document.body) document.body.appendChild(btn);
       btn.style.left = '';
       btn.style.bottom = '';
@@ -2353,7 +2535,8 @@ const JOIN_COOKIE = (() => {
       showNext();
     };
 
-    const poll = () => fetch('/mm/api/announcement', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+    // 公告数据来自合并轮询 /mm/api/pulse（见 refreshPulse），不再单独每 5 秒轮询。
+    const applyAnnouncement = (d) => {
       const enabled = !!(d && d.enabled && d.text);
       if (!enabled) {
         // 关闭公告：停止当前这条并清空排队，不再显示
@@ -2368,7 +2551,14 @@ const JOIN_COOKIE = (() => {
       // New content replaces the previous reminder; the player can close each one.
       if (showing) closeTicker();
       enqueue(lines, key);
-    }).catch(() => {});
+    };
+    onPulse('announcement', applyAnnouncement);
+    // 兜底：pulse 不可用（老节点）时仍走原来的端点
+    const poll = () => {
+      if (pulseOk) return;
+      fetch('/mm/api/announcement', { cache: 'no-store' })
+        .then((r) => r.json()).then(applyAnnouncement).catch(() => {});
+    };
     startOverlayGuard();
     poll();
     setInterval(poll, 5000);
@@ -2531,16 +2721,38 @@ const JOIN_COOKIE = (() => {
     const ID = 'mm-resume-btn';
     const existing = () => document.getElementById(ID);
     const removeBtn = () => { const b = existing(); if (b) b.remove(); };
-    // 正在房间里 / 对局里：不需要入口
+    // 已经在目标对局里（并且连着）才不需要入口。
+    //
+    // ⚠ 不能只看 store 里有没有 room：玩家**掉线**时 socket 已经断了，但 store 里的
+    // room 还在（resume 失败或还没完成时也留着），于是这里会以为「他还在房间里」，
+    // 把「恢复对局」按钮移除掉 —— 玩家就再也找不到回对局的路了。
+    // 判据：socket 在线 **且** 服务端确实把对局状态推过来过（m.public）。
+    // 只是还残留一个房间号（掉线遗留）不算「在房间里」，恰恰是需要显示按钮的时候。
     const inRoom = () => {
       try {
         const sp = window.__SP__;
-        const room = sp && sp.store && sp.store.get ? sp.store.get().room : null;
-        return !!(room && room.code);
+        if (!sp || !sp.store || !sp.store.get) return false;
+        const s = sp.store.get();
+        const room = s && s.room;
+        if (!room || !room.code) return false;
+        const online = !!(sp.net && sp.net.status === 'online');
+        const inMatch = !!(s.match && (s.match.phase || s.match.public));
+        // 在线 + 确实在对局中 → 不需要恢复入口；其余情况都该显示
+        return online && inMatch;
       } catch { return false; }
     };
-    // 账号观察者已经在自动恢复中：别抢
-    const autoBusy = () => window.__SP_ACCOUNT_RESUME_PENDING === true;
+    // 账号观察者已经在自动恢复中：别抢。
+    // 但要加时间保护：__SP_ACCOUNT_RESUME_PENDING 如果因为异常没被清掉（比如页面
+    // 在自动恢复途中被切走），这个标记会让按钮永远不出现。超过 12s（自动恢复的
+    // 正常上限）就当作已结束，照常显示按钮 —— 手动入口本来就该是最后一道保底。
+    let pendingSince = 0;
+    const autoBusy = () => {
+      const pending = window.__SP_ACCOUNT_RESUME_PENDING === true;
+      if (!pending) { pendingSince = 0; return false; }
+      if (!pendingSince) pendingSince = Date.now();
+      if (Date.now() - pendingSince > 12000) { pendingSince = 0; return false; }
+      return true;
+    };
     let lastCode = null;
     let lastCheck = 0;
 
@@ -2568,14 +2780,37 @@ const JOIN_COOKIE = (() => {
       lastCode = code;
       if (!code) { removeBtn(); return; }
       if (existing()) return;
-      // 锚点：优先「公告」按钮（恢复对局排在它**左边**，与「管理后台」同一侧、管理后台更靠左）。
-      // 公告按钮偶发还没建出来（版本按钮未就绪的瞬间），这时退回到右上角工具条的锚点，
-      // 不让入口因为时序问题而消失。
+      // 锚点：**只在联厅显示**（维护者明确要求：标题界面不要「恢复对局」）。
+      //   1) 大厅：公告按钮（恢复对局排在它左边）
+      //   2) 大厅：版本按钮 / SWEEP 文字按钮
       const notice = document.getElementById('mm-notice-btn');
       const anchor = notice
         || document.querySelector('.verchip-wrap, button.verchip[data-testid="version-switch"]')
         || [...document.querySelectorAll('button')].find((b) => !b.id.startsWith('mm-') && /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
-      if (!anchor || !anchor.parentElement) return;
+      // ★ 标题界面一律不显示「恢复对局」（维护者 2026-10-26 明确要求）。
+      // 判定用「当前是否停在标题屏」，而不是「有没有公告按钮」—— 标题页上也可能存在
+      // 公告按钮，用锚点判断会漏。标题页只需展示账号/开始游戏，恢复入口属于联厅。
+      if (document.querySelector('.title-screen')) { removeBtn(); return; }
+      // 所有锚点都找不到时（界面改版、按钮还没建出来、或玩家停在一个很简的页面），
+      // 不能再直接 return —— 那样「恢复对局」就彻底没有入口了。
+      // 退回一个固定定位的独立按钮，保证这条路任何时候都走得通。
+      if (!anchor || !anchor.parentElement) {
+        const fb = document.createElement('button');
+        fb.id = ID;
+        fb.type = 'button';
+        fb.className = 'verchip mm-resume-fallback';
+        fb.textContent = '恢复对局';
+        fb.title = `返回进行中的对局（${code}）`;
+        fb.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;'
+          + 'padding:8px 16px;border-radius:999px;cursor:pointer;font:600 13px/1.4 system-ui,sans-serif;'
+          + 'background:#1c8f74;color:#fff;border:1px solid #2fbf99;box-shadow:0 4px 16px rgba(0,0,0,.4)';
+        fb.onclick = () => {
+          try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
+          window.location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');
+        };
+        (document.body || document.documentElement).appendChild(fb);
+        return;
+      }
       const btn = (notice || anchor).cloneNode(true);
       btn.id = ID;
       btn.type = 'button';
@@ -2715,8 +2950,40 @@ const JOIN_COOKIE = (() => {
 .server-status__table tr.off td{color:#c98b8b}
 `;
   // 管理员账号：仅在大厅（选择模拟协议）的「公告」旁加「管理后台」按钮
+  // 管理员/服主角色的缓存：不再只依赖 account-title.js 异步写的 window.__SP_ACCOUNT_ROLE。
+  // 那个变量由另一个脚本的 render() 赋值，时机/是否执行都不受这里控 —— 它一旦是空，
+  // 「管理后台」按钮就永远不出现（玩家反馈「我的管理后台按钮不见了，我变普通玩家了吗」，
+  // 而数据库里 role 一直是 owner）。这里改为：
+  //   1) 先用已知变量（若已有值）
+  //   2) 否则主动 GET /mm/api/auth/me 拿真实角色，缓存起来
+  // 两者都不会改变服务端权限，只是把入口正确地显示出来。
+  let __spRoleCache = null;      // 已确认的角色（'owner' / 'admin' / 'player' …）
+  let __spRoleProbe = null;      // 进行中的探测 Promise
+  function currentRole() {
+    const known = (typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE) || '';
+    if (known) return known;
+    if (__spRoleCache) return __spRoleCache;
+    if (!__spRoleProbe) {
+      __spRoleProbe = (async () => {
+        try {
+          const r = await fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' });
+          if (!r.ok) return '';
+          const j = await r.json();
+          const role = (j && j.user && j.user.role) || '';
+          if (role) {
+            __spRoleCache = role;
+            // 顺手补回全局变量，让依赖它的其它逻辑也能用
+            try { if (!window.__SP_ACCOUNT_ROLE) window.__SP_ACCOUNT_ROLE = role; } catch { /* ignore */ }
+          }
+          return role;
+        } catch { return ''; }
+      })().finally(() => { __spRoleProbe = null; });
+    }
+    return '';   // 本次先用空，下一轮（1.5s 后）缓存就绪
+  }
+
   function installAdminEntry() {
-    const role = (typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE) || '';
+    const role = currentRole();
     const notice = document.getElementById('mm-notice-btn');
     const old = document.getElementById('mm-admin-btn');
     const onTitle = !!document.querySelector('.title-screen');
@@ -2860,45 +3127,39 @@ const JOIN_COOKIE = (() => {
           // 每轮都确认归属：房间顶栏会随状态重渲染，节点状态可能被挪走，这里重新挂上
           if (el.parentElement !== pingRow) pingRow.appendChild(el);
           const force = (elm, props) => { for (const [k, v] of Object.entries(props)) elm.style.setProperty(k, v, 'important'); };
-          // 外观完全照搬「当前延迟」那个 PingPill 药丸。
-          // 注意：.rs-clock__ping 是「当前延迟 + 延迟药丸」这一组，字号是 calc(.15*var(--t))、
-          // 颜色是 #9aa19e；节点状态药丸要盖掉这些继承，否则会比延迟药丸大一圈、字色也发灰。
-          el.classList.add('ping');
+          // 外观交给全局规则 `#mm-nodes:not(.topbar) .chip`（黑底 + 薄荷绿描边 + 99px 圆角），
+          // 这里只做定位。以前在 .chip 上内联写了 padding/background/border/字号，
+          // 等于给房间顶栏另做一套外观，和标题页/大厅不一致。
           el.classList.remove('topbar');
           force(el, {
             display: 'inline-flex', 'align-items': 'center', position: 'static',
             left: 'auto', right: 'auto', top: 'auto', transform: 'none',
+            'z-index': 'auto',                 // 清掉全局的 46，别盖住上层的返回键
             height: 'auto',
-            // 手机（1rem 被钳在 40px）上 calc(.15*--t) 只有 6px、.32rem 只有 12.8px，
-            // 药丸被压成又宽又扁的一条（实测 134×11，旁边的延迟药丸 36×13），
-            // 玩家反馈「左上角节点状态按钮显示有点大」。这里给字高和行高都设像素下限，
-            // 小屏上按钮高度约 20px、字号 11px，和延迟药丸、返回键的比例才协调。
-            'min-height': 'max(.32rem, 20px)',
-            'max-height': 'none',
-            'padding-top': 'max(1px, .02rem)', 'padding-bottom': 'max(1px, .02rem)',
-            'padding-left': 'max(8px, .1rem)', 'padding-right': 'max(8px, .1rem)',
-            'border-radius': '99px', background: 'rgba(0,0,0,.5)',
-            border: '1px solid var(--line)', 'align-self': 'center', flex: 'none',
-            'font-family': 'var(--font-num)',
-            'font-size': 'max(calc(.15 * var(--t)), 11px)',
-            'font-weight': '700', 'line-height': '1.1', margin: '0',
-            color: 'var(--mint-400)',
+            'border-radius': '99px', background: 'transparent',
+            border: '0', 'align-self': 'center', flex: 'none',
+            margin: '0',
           });
           const chipEl = el.querySelector('.chip');
           if (chipEl) {
-            force(chipEl, {
-              display: 'inline-flex', 'align-items': 'center', 'justify-content': 'center',
-              height: 'auto', 'min-height': '0', 'max-height': 'none', 'box-sizing': 'border-box',
-              padding: '0', 'line-height': '1', margin: '0',
-              'background': 'transparent', 'border': '0', 'border-radius': '0',
-              'font-size': 'inherit', 'font-family': 'inherit', 'font-weight': 'inherit',
-              color: 'inherit',
-            });            // 药丸内的小色点沿用延迟药丸图标的尺寸，避免撑大高度
-            for (const dot of chipEl.querySelectorAll('i, svg')) {
-              force(dot, { width: 'max(.15rem, 6px)', height: 'max(.15rem, 6px)', 'margin-right': 'max(.03rem, 3px)' });
+            // 清掉历史遗留的内联覆盖，让全局 .chip 规则重新生效
+            for (const k of ['padding', 'font-size', 'font-weight', 'background', 'border',
+              'border-radius', 'box-sizing', 'line-height', 'color', 'white-space', 'justify-content', 'min-height']) {
+              chipEl.style.removeProperty(k);
+            }
+            for (const dot of chipEl.querySelectorAll('i')) {
+              dot.style.removeProperty('width');
+              dot.style.removeProperty('height');
+              dot.style.removeProperty('margin-right');
+              dot.style.removeProperty('border-radius');
             }
           }
           // 药丸之间的间距交给 .rs-clock__ping 的 gap，这里不留外边距
+          // ★ 防遮挡：顶栏被塞进第三个药丸后，窄屏（手机横屏）会把它挤到
+          // 「回合 / LP / 兵力」那一栏上面去。这里让它可收缩、可裁切，
+          // 永远不撑破所在的行；同时给父行加 flex-wrap:nowrap + min-width:0。
+          force(el, { 'max-width': 'min(24rem, 38vw)', overflow: 'hidden', 'flex-shrink': '1' });
+          if (pingRow) force(pingRow, { 'flex-wrap': 'nowrap', 'min-width': '0', 'max-width': '100%' });
           if (!pingRow.dataset.mmCal) {
             pingRow.dataset.mmCal = '1';
             setTimeout(place, 120);
@@ -2912,8 +3173,18 @@ const JOIN_COOKIE = (() => {
       if (staleMeter) staleMeter.remove();
       el.classList.remove('ping');
       for (const k of ['min-height', 'max-height', 'padding-top', 'padding-bottom', 'border-radius',
-        'background', 'border', 'font-family', 'font-weight', 'font-size']) {
+        'background', 'border', 'font-family', 'font-weight', 'font-size',
+        'z-index', 'max-width', 'overflow', 'flex-shrink']) {
         el.style.removeProperty(k);
+      }
+      // .chip 上的药丸样式也要撤掉，否则回到大厅/标题页时会带着对局的框和底色
+      {
+        const c = el.querySelector('.chip');
+        if (c) {
+          for (const k of ['background', 'border', 'border-radius', 'padding', 'min-height', 'box-sizing']) {
+            c.style.removeProperty(k);
+          }
+        }
       }
 
       if (onTitle || (start && start.getClientRects().length)) {
@@ -3002,6 +3273,61 @@ const JOIN_COOKIE = (() => {
         return;
       }
       if (!ping || !ping.getClientRects().length) { if (el.style.display !== 'none') el.style.display = 'none'; return; }
+
+      // ★ 对局中（.gtop 顶栏）：只作为一个安静的小药丸待在延迟旁边，
+      //   **绝不改动它父容器的布局**。
+      //   以前这里会无条件把父容器设成 display:flex + gap:10px，
+      //   而 .gtop__net 里除了延迟还并排放着 .gtop__meta 下的「难度标签」（截图里的「维多利亚 正常」）。
+      // ★ 对局中（.gtop 顶栏）：**只做定位，不改外观**。
+      //   胶囊的外观由 `#mm-nodes:not(.topbar) .chip` 这条全局规则统一决定
+      //   （黑底、薄荷绿 1px 描边、99px 圆角）—— 标题页、大厅、房间、对局中
+      //   应该是同一个样子，只有里面的字在不同界面显示不同内容
+      //   （大厅显示「30/30 · 正常 · N 人在线」，对局中显示「当前节点名 · 状态」）。
+      //
+      //   之前这里写死了 padding / font-size / background / border / color，
+      //   等于给对局中另做了一套外观，和别处不一致 —— 玩家反馈
+      //   「电脑端的节点状态按钮外观直接跟原来不一样了」。
+      //
+      //   真正需要修的只有布局：以前无条件把父容器改成 display:flex + gap:10px，
+      //   把「难度标签」挤到了右边、压住「回合」进度条。现在只把胶囊放进
+      //   .gtop__net，不动父容器，并清掉 #mm-nodes 全局的 position:fixed / z-index:46
+      //   残留（否则会盖住顶栏按钮）。
+      if (ping.closest('.gtop')) {
+        const net = ping.parentElement;                 // .gtop__net
+        if (net && el.parentElement !== net) net.appendChild(el);
+        const s = (k, v) => { if (el.style.getPropertyValue(k) !== v) el.style.setProperty(k, v); };
+        s('position', 'static');
+        s('left', 'auto'); s('right', 'auto'); s('top', 'auto');
+        s('transform', 'none');
+        s('display', 'inline-flex');
+        s('align-items', 'center');
+        s('z-index', 'auto');                            // 清掉全局的 46，别盖住顶栏
+        s('margin', '0 0 0 8px');                        // 与延迟药丸的间距
+        s('flex', '0 1 auto');
+        s('max-width', 'min(24rem, 42vw)');              // 窄屏不撑破那一行
+        s('overflow', 'hidden');
+        // 用非 topbar 的那套统一外观（和标题页/大厅/房间一致）
+        if (el.classList.contains('topbar')) el.classList.remove('topbar');
+        // ★ 清掉历史上可能残留的内联覆盖（旧版本写过 padding/background/border/字号），
+        //   让全局规则重新生效。只清这几个，不动布局相关的。
+        {
+          const chipEl = el.querySelector('.chip');
+          if (chipEl) {
+            for (const k of ['padding', 'font-size', 'font-weight', 'background', 'border', 'border-radius', 'box-sizing', 'line-height', 'color', 'white-space', 'justify-content']) {
+              chipEl.style.removeProperty(k);
+            }
+            // 内部小圆点也交回全局规则
+            for (const dot of chipEl.querySelectorAll('i')) {
+              dot.style.removeProperty('width');
+              dot.style.removeProperty('height');
+              dot.style.removeProperty('margin-right');
+              dot.style.removeProperty('border-radius');
+            }
+          }
+        }
+        return;
+      }
+
       // 其它界面：插到延迟后面作为行内元素。大厅里 Q群按钮和节点状态同处一行，
       // 顺序固定为 [延迟] [Q群] [节点状态] | [工具组]；
       // 注意不能每轮都把节点状态硬插到 ping 后面 —— 那会把 Q群挤到后面，
@@ -3339,37 +3665,120 @@ const JOIN_COOKIE = (() => {
   }
 
   function joinFlow(sp, code, spectate) {
+    // 诊断：玩家反馈「跨节点后还要再输一次房间号」。每次调用都留痕，便于事后从控制台定位。
+    try {
+      console.info('[mm-debug] joinFlow', { code, spectate, route: (document.cookie.match(/sp_route=(\d+)/) || [])[1] });
+    } catch { /* ignore */ }
     // Hidden admin watch is not a player deep-link: joining as a player would fail
     // with ROOM_FULL on a full room. A tab opened just after the watch closes must
     // discard its stale deep-link/pending join instead of surfacing an error.
     if (adminWatchActive() || watchExitRecent()) {
+      try { console.info('[mm-debug] joinFlow 放弃：adminWatch 或刚退出观战'); } catch { /* ignore */ }
       try { sp.store.patch('ui', { pendingJoin: null, pendingSpectate: false }); } catch { /* ignore */ }
       try { sessionStorage.removeItem('mm.pendingRoom'); } catch { /* ignore */ }
       return;
     }
     const { store, net } = sp;
-    let inFlight = false, joined = false;
+    let inFlight = false, joined = false, retries = 0;
+    // 刷新页面重连时，服务端会先在 hello 的 resume 里把玩家送回原房间/对局（lobby.onHello → resync
+    // → 对局 match.onReconnect），这条路径**不需要** room.join。
+    // 以前这里一 tick 就抢发 room.join：若此时 room.state 还没到、或服务端已按别的路径处理了会话，
+    // 已开局的对局就回 ROOM_STARTED，于是提示「加入失败：模拟已开始」并把房间痕迹全清掉
+    // —— 玩家看到的就是「掉线刷新后回不到对局」。
+    // 现在先给 resume 一个宽限窗口：这段时间内若 room.state 到达并显示已在房间里，就静默完成。
+    const startedAt = Date.now();
+    const RESUME_GRACE_MS = 5000;
+    // 给「恢复账号对局」让路的上限：accountObserver 的自动恢复含 4 次重试（每次间隔 700ms）
+    // 与 3.5s 超时，正常 5s 内必出结果；留到 12s 只是防止标记异常残留把玩家永久挡在门外。
+    const ACCOUNT_RESUME_YIELD_MS = 12000;
     try { store.patch('ui', { pendingJoin: null }); } catch (e) { /* ignore */ }
     const tick = () => {
       if (adminWatchActive() || watchExitRecent()) { joined = true; return; }
+      // 「恢复账号对局」正在接管（ui/accountObserver.js 的 requestAccountResume）：
+      // 它会把旧设备的座位 token 换到本机，这时若我们抢先发 room.join，
+      // 服务端可能给本机新开一个座位（同一账号两个座位），而 resumeAccount
+      // 随后又要把座位换过来 —— 两边打架。
+      // accountObserver 用 window.__SP_ACCOUNT_RESUME_PENDING 标记这段窗口，
+      // joinFlow 必须让路，等它结束（成功或失败都会清掉这个标记）。
+      // 兜底：标记若因异常没清掉，最多让路 ACCOUNT_RESUME_YIELD_MS，之后照常加入，
+      // 不能因为一个残留标记让玩家永远进不去房间。
+      if (window.__SP_ACCOUNT_RESUME_PENDING === true
+        && Date.now() - startedAt < ACCOUNT_RESUME_YIELD_MS) return;
       const s = store.get();
-      if (joined || inFlight || !s.session.entered || net.status !== 'online') return;
-      if (s.room) { joined = true; return; }
+      // 跨节点跳转后不要卡在 `session.entered` 上：
+      // entered 由 localStorage 里的「本机进入过」标记决定，跳到一个新节点后页面是全新上下文，
+      // 它可能是 false，于是这里一直 return，room.join / room.spectate 一条都不发，
+      // 玩家看到的就是「跳到新节点后又得重输一次房间号」。
+      // 只要 socket 已连上（net.status === 'online'）就允许发请求；服务端会按会话状态自行处理。
+      if (joined || inFlight || net.status !== 'online') return;
+      // 已经在**目标房间**里才算加入完成。以前这里只判 `if (s.room)`：
+      // 玩家手输密钥 → 跨节点刷新 → store 里还留着刷新前的房间（或另一个房间），
+      // 于是立刻 joined = true，room.join 根本没发出去，表现为「要输第二次密钥才能进」。
+      //
+      // 观战还要看**席位**：自己已经在同一个房间里当玩家时，房间号相同，
+      // 但 room.spectate 必须照发（否则点「观战」没有任何反应）。
+      // 已经在这个房间的观战席上才算完成。
+      const roomCode = s.room ? String(s.room.code).toUpperCase() : '';
+      const targetCode = String(code).toUpperCase();
+      const sameRoom = roomCode === targetCode;
+      // 观战席的判定与游戏本体一致（store.js isSpectating）：room.spectators 里有自己
+      const myId = (s.session && s.session.playerId) || null;
+      const onSpectatorSeat = !!s.room && myId != null && Array.isArray(s.room.spectators)
+        && s.room.spectators.some((x) => x && x.playerId === myId);
+      if (sameRoom && (!spectate || onSpectatorSeat)) { joined = true; cleanUrl(); return; }
+      // 服务端的 resume 已经把我放回这个房间了（对局中），只是 room.state 还没到或还在路上：
+      // 等它一帧，不要抢发 room.join 去撞 ROOM_STARTED。
+      const inMatchNow = !!(s.match && (s.match.phase || s.match.public));
+      if (inMatchNow && Date.now() - startedAt < RESUME_GRACE_MS) return;
+      // 刚刷新：给 resume 一个宽限窗口（服务端 onHello → resync 可能比第一个 tick 慢）
+      const freshPage = Date.now() - startedAt < RESUME_GRACE_MS;
+      const sessionResumed = !!(s.session && s.session.entered);
+      if (freshPage && !sessionResumed) return;
       inFlight = true;
+      try {
+        console.info('[mm-debug] joinFlow 发请求', {
+          api: spectate ? 'room.spectate' : 'room.join', code,
+          sameRoom, onSpectatorSeat, myId, roomCode,
+        });
+      } catch { /* ignore */ }
       net.request(spectate ? 'room.spectate' : 'room.join', { code })
         .then(() => { joined = true; cleanUrl(); })
         .catch((e) => {
-          joined = true;
           const msg = String((e && e.message) || '');
           const code2 = String((e && e.code) || '');
+          try { console.warn('[mm-debug] joinFlow 失败', { api: spectate ? 'room.spectate' : 'room.join', code2, msg, retries }); } catch { /* ignore */ }
           // 确定性失败：重试多少次结果都一样，而且继续留着房号只会让玩家反复被弹提示。
           //   ROOM_STARTED  对局已经打起来了
           //   ROOM_FULL     房间满了
           //   ROOM_NOT_FOUND 房间根本不存在（已解散 / 换房 / 账号残留的旧房号）
-          // 这类错误要把 /r/CODE 从地址里抹掉，并把所有"待加入"记录清空，
-          // 否则玩家退回大厅或刷新时 joinFlow 会被再次触发，表现为反复提示加入失败。
-          const terminal = code2 === 'ROOM_STARTED' || code2 === 'ROOM_FULL' || code2 === 'ROOM_NOT_FOUND'
-            || /模拟已开始|房间已满|未找到该同盟密钥|不存在|已开始|Simulation already started|Room full|room is full|not found/i.test(msg);
+          //
+          // ⚠ ROOM_STARTED 不能像另外两个那样清场：房间还在、对局还在跑，玩家很可能是
+          //   掉线刷新后由 resume 送回对局的（服务端 lobby.onHello → resync → match.onReconnect）。
+          //   以前这里把它当终态，清掉 mm.pendingRoom / sp_join / URL 并弹「模拟已开始」，
+          //   结果玩家明明该自动回到对局，却被踢回大厅。现在只提示一次，保留一切可能
+          //   让服务端继续完成 resume 的痕迹。
+          const startedCode = code2 === 'ROOM_STARTED' || /模拟已开始|已开始|Simulation already started/i.test(msg);
+          const terminal = !startedCode && (code2 === 'ROOM_FULL' || code2 === 'ROOM_NOT_FOUND'
+            || /房间已满|未找到该同盟密钥|不存在|Room full|room is full|not found/i.test(msg));
+          // 非终态失败（跨节点跳转后 socket 刚连上、会话还没就绪之类）先重试几次，
+          // 不要一次失败就放弃 —— 那会让玩家以为「还得再输一次房间号」。
+          if (!terminal && !startedCode && retries < 6) {
+            retries++;
+            return; // 交给下面的 setInterval 再 tick 一次
+          }
+          if (startedCode) {
+            // 对局进行中：不再反复发 room.join，也不清痕迹。房间状态由 resume 推过来。
+            joined = true;
+            // 主动要一次完整重同步（服务端 lobby 的 state.resync → resyncNow →
+            // 对局中走 match.onReconnect），把玩家自己拉回对局，而不是干等 resume。
+            try { net.request('state.resync', {}).catch(() => {}); } catch { /* ignore */ }
+            const tagKey2 = 'mm.joinStarted:' + code;
+            let shown2 = false;
+            try { shown2 = sessionStorage.getItem(tagKey2) === '1'; sessionStorage.setItem(tagKey2, '1'); } catch { /* ignore */ }
+            if (!shown2) showStyledToast('该同盟的对局已经开始；正在把你送回对局…');
+            return;
+          }
+          joined = true;
           if (terminal) {
             try { store.patch('ui', { pendingJoin: null, pendingSpectate: false }); } catch { /* ignore */ }
             // 清空所有可能让页面再次尝试加入的痕迹

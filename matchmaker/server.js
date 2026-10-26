@@ -702,6 +702,26 @@ const server = http.createServer(async (req, res) => {
     } catch { return json(res, 200, { enabled: false, text: '' }); }
   }
 
+  // ---- 合并轮询（本服优化）----
+  // 真实访问日志统计：/api/gate、/api/room-ttl、/api/announcement 各自每 5 秒轮询一次，
+  // 三个端点合计约占全部请求的 55%——比素材请求（11.6%）多出近 5 倍。
+  // 它们返回的都是几十到一百多字节的小 JSON，合成的成本远低于三次往返。
+  // 这个端点一次返回三者，前端只打一个请求；老的三个端点保留（兼容已打开的旧页面）。
+  if (pathname === '/api/pulse') {
+    const readJson = (rel, fallback) => {
+      try { return JSON.parse(fs.readFileSync(path.join(ROOT_DIR, rel), 'utf8')); } catch { return fallback; }
+    };
+    const body = JSON.stringify({
+      ok: true,
+      gate: gameGate(),
+      roomTtl: readJson(path.join('shared', 'data', 'room-ttl.json'), { minutes: 15 }),
+      announcement: readJson(path.join('guard', 'announcement.json'), { enabled: false, text: '' }),
+    });
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(body);
+    return;
+  }
+
   if (pathname === '/api/announcements') {
     try {
       const raw = fs.readFileSync(path.join(ROOT_DIR, 'content', 'announcements.json'), 'utf8');
