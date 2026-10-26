@@ -644,16 +644,8 @@ export function AllianceSelect({ onClose, onCreate, difficulty = 'FUNNY', code, 
             <span class="ally-card__bar"><span class="ally-card__icon">${busy === 'create' ? html`<${Spinner} size="sm" />` : html`<${Icon} name="plus" />`}</span><span class="ally-card__name">${t('创建同盟')}</span>
               <small>${!online ? t('正在连接服务器…') : createLocked ? t('服务器暂时关闭了创建房间，请稍后再试') : t('难度：{name}（可在同盟内更改）', { name: diffName })}</small></span>
           </button>
-          ${onCapacity ? html`<label class="create-box__cap ally-cap" data-testid="create-capacity">
-            <span>${t('同盟人数')}</span>
-            <select value=${String(capacity)} disabled=${!online || busy === 'create' || createLocked}
-                onChange=${(e) => onCapacity(Number(e.target.value))}>
-              ${PLAYER_CAPACITIES.map((n) => html`<option key=${n} value=${String(n)}>${n} 人</option>`)}
-            </select>
-            <em class="t-dim">${capacity > 4
-              ? t('可从「匹配队友」与他人组队；只有相同人数的房间会匹配到一起。')
-              : t('4 人为默认人数；想开 5–20 人房请在上方选择。')}</em>
-          </label>` : null}
+          ${/* 同盟人数选择器已按维护者要求移除（2026-10-26）：房间创建后在同盟内设置，
+               大厅这里不再提供入口，也不显示相关提示语。 */ null}
           ${testMode ? html`<label class="create-box__test ally-test" data-testid="create-test">
             <input type="checkbox" checked=${asTest} onChange=${(e) => onTest(e.target.checked)} />
             <span>${t('测试房间')}</span>
