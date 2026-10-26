@@ -39,20 +39,37 @@ function allocate(m, plan, gameSpeed = 2) {
   return { allocations: budget.allocations, timeLimit, uniteRound: plan.uniteRound, relayPossible };
 }
 
-console.log('=== 7 人房（< 8，无接力资格）===\n');
+console.log('=== 7 人房（有富余完美玩家 → 应该能接力）===\n');
 {
   const m = fakeMatch({ alive: 7, normalAlive: 7 });
-  // 7 人：planUnite 不会设 uniteRound / relayCandidates
   const results = new Map();
   for (const ps of m.players.values()) results.set(ps.playerId, { perfect: true, leaked: [] });
   // 让 1 个人漏怪、其余完美，触发联防
   results.get('p0').leaked = [{ enemyKey: 'e1', counted: true, lpr: 1 }];
   const plan = planUnite(m, results);
   check('planUnite 返回了联防计划', !!plan, plan ? `helpers=${plan.helpers.length} leakers=${plan.leakers.length}` : '');
-  check('★ 7 人房不设 uniteRound（无接力）', plan && plan.uniteRound === undefined, `uniteRound=${plan?.uniteRound}`);
+  // 7 人里有 6 个完美玩家，第一波只用掉 maxHelpers(2) 个，还剩 4 个 → 够第二波
+  check('★ 7 人房有富余完美玩家 → 允许接力', plan && plan.uniteRound === 1,
+    `uniteRound=${plan?.uniteRound} relayCandidates=${plan?.relayCandidates?.length ?? 0}`);
   const a = allocate(m, plan);
   console.log(`   allocations = [${a.allocations}] → 本段 ${a.timeLimit} 游戏秒`);
-  check('★ 7 人房应一次给满 300 秒', a.timeLimit === 300, `实际 ${a.timeLimit}`);
+  check('★ 7 人房可以接力时第一波 150 秒', a.timeLimit === 150, `实际 ${a.timeLimit}`);
+}
+
+console.log('\n=== 5 人房（完美玩家刚好够第一波，无富余 → 不接力）===\n');
+{
+  const m = fakeMatch({ alive: 5, normalAlive: 5 });
+  const results = new Map();
+  for (const ps of m.players.values()) results.set(ps.playerId, { perfect: true, leaked: [] });
+  results.get('p0').leaked = [{ enemyKey: 'e1', counted: true, lpr: 1 }];
+  const plan = planUnite(m, results);
+  // 4 个完美玩家，第一波 helper 最多 2 个，但 maxHelpers 取 min(2, 4)=2 → 还剩 2 个，仍够
+  console.log(`   helpers=${plan?.helpers.length} relayCandidates=${plan?.relayCandidates?.length ?? 0}`);
+  const a = allocate(m, plan);
+  console.log(`   allocations = [${a.allocations}] → 本段 ${a.timeLimit} 游戏秒`);
+  check('5 人房按候选实际数量决定（有富余就接力）',
+    plan.uniteRound === 1 ? a.timeLimit === 150 : a.timeLimit === 300,
+    `uniteRound=${plan?.uniteRound} 时间=${a.timeLimit}`);
 }
 
 console.log('\n=== 8 人房（有接力资格，且有富余的完美玩家）===\n');

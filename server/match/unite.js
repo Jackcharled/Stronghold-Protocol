@@ -80,10 +80,21 @@ export function planUnite(m, results) {
     }
   }
   const plan = { helpers, leakers, leaked, notReentered };
-  // Expanded rooms with at least eight alive players may need a second relay field.
-  if (m.capacityExperiment && m._normalAliveCount >= 8 && alive.length >= 8) {
-    plan.uniteRound = 1;
-    plan.relayCandidates = perfects.filter((ps) => !helpers.includes(ps) && !results.get(ps.playerId)?.synthetic);
+  // 5–20 人大厅：分两轮的条件是「够 4 个人联防」。
+  //
+  // 一轮联防最多上 2 名 helper（config.unite.maxHelpers），两轮就是 4 名 —— 这就是规则：
+  // **完美玩家凑够 4 个就分成 2 轮，不够就一轮打完**，与房间总人数无关。
+  //
+  // 以前卡的是「存活 ≥ 8 人」这个和实际需求无关的门槛：7 人房明明有 4 个以上完美玩家可接力，
+  // 却被挡掉只打一轮（玩家反馈「左边这么多人可以帮联防，但只有一轮」）。
+  const eligible = perfects.filter((ps) => !results.get(ps.playerId)?.synthetic);
+  if (m.capacityExperiment && eligible.length >= 2 * m.gd.unite.maxHelpers) {
+    const spare = eligible.filter((ps) => !helpers.includes(ps));
+    // 第二波要有人顶上：第一波用掉 maxHelpers 个后，剩下的必须够再凑一波
+    if (spare.length > 0) {
+      plan.uniteRound = 1;
+      plan.relayCandidates = spare;
+    }
   }
   return plan;
 }

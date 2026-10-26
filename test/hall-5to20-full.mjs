@@ -56,11 +56,12 @@ check('★ 并发悬赏：所有人同时选', /_concurrentSpStep\(\)/.test(spDr
 check('★ 并发时没有轮次限制', /if \(!this\.sp\.concurrent && this\.spTurn\(\) !== ps\.playerId\)/.test(spDraft));
 
 console.log('\n=== 三、联防：预算与接力 ===\n');
-// 7 人：无接力，一次给满
+// 7 人：完美玩家 >= 4 → 应该分两轮（规则：够 4 个人联防就两轮，与总人数无关）
 {
   const { plan } = planFor(7);
-  check('7 人房不设接力（< 8 人）', plan.uniteRound === undefined, `uniteRound=${plan.uniteRound}`);
-  check('★ 7 人房一次给满 300 游戏秒', allocate(plan) === 300, `实际 ${allocate(plan)}`);
+  check('★ 7 人房有富余完美玩家 → 允许接力', plan.uniteRound === 1,
+    `uniteRound=${plan.uniteRound} 候选=${plan.relayCandidates?.length ?? 0}`);
+  check('★ 7 人房可以接力时第一波 150 秒', allocate(plan) === 150, `实际 ${allocate(plan)}`);
 }
 // 8 人：有接力，分两段
 {
