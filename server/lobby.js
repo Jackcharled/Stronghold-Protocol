@@ -2820,7 +2820,8 @@ export class Lobby {
         cleaned.push(room.code);
         this.log.info(`[lobby] ${room.code} 清理账号 ${accountId} 的遗留座位（旧会话 ${seat.playerId}）`);
         if (room.hostId === seat.playerId || !room.hostId) this.migrateHost(room);
-        if (room.activeHumans().length === 0 && room.spectators.length === 0) this.disposeRoom(room, 'empty');
+        // 同 removeMember：没有注册玩家了（空房或只剩游客）就解散
+        if (!room.activeHumans().some((s) => s && s.guest !== true)) this.disposeRoom(room, 'empty');
         else this.broadcastState(room);
       }
       for (let i = room.spectators.length - 1; i >= 0; i--) {
@@ -2886,7 +2887,10 @@ export class Lobby {
     }
     if (room.disposed) return; // onLeave may have ended the match and emptied the room
     if (room.hostId === playerId) this.migrateHost(room);
-    if (room.activeHumans().length === 0) this.disposeRoom(room, 'empty');
+    // 没有注册玩家了（空房，或只剩游客）：解散。
+    // 只剩游客时必须解散 —— migrateHost 不再把房主给游客，
+    // 留着就是一间没有房主、谁也开不了局的僵尸房。
+    if (!room.activeHumans().some((s) => s && s.guest !== true)) this.disposeRoom(room, 'empty');
     else this.broadcastState(room);
   }
 
@@ -2909,20 +2913,29 @@ export class Lobby {
 
   /**
    * Lowest-seat connected human becomes host (else lowest-seat human, else null).
-   * 游客不继承房主：游客只能游玩/旁观，不能创建同盟模拟房间，自然也不该成为房主
-   * （以前这里直接取第一个在线玩家，普通房主退出后房主会落到游客头上 ——
-   *  玩家反馈「游客成了房主」）。只有房间里全是游客时才退回给他们，
-   * 避免出现「没有房主、房间卡住」的情况。
+   * 游客永远不继承房主：游客只能游玩/旁观，不能创建同盟模拟房间，自然也不该成为房主
+   * （玩家反馈「游客成了房主」）。
+   *
+   * 以前的写法是：房主退出后房主落到第一个非游客；如果房里只剩游客，
+   * 就退回给游客（日志标记 all guests, fallback），理由是「避免房间无主卡住」。
+   * 但这样一来游客就拿到了开始对局、调实验选项、踢人、解散房间等房主权限，
+   * 违背设计。而且「房间无主会卡住」本来就不成立 —— 房间里已经没有任何注册玩家，
+   * 没有人会继续玩，直接解散才是正确的收尾。
+   *
+   * 现在：房里只剩游客 → 房主置空，房间随即解散（调用方负责）。
    */
   migrateHost(room) {
     const humans = room.activeHumans();
     const nonGuest = humans.filter((s) => s && s.guest !== true);
-    const pool = nonGuest.length ? nonGuest : humans;
-    const pick = pool.find((s) => s.connected) || pool[0] || null;
+    const pick = nonGuest.find((s) => s.connected) || nonGuest[0] || null;
     const prev = room.hostId;
     room.hostId = pick ? pick.playerId : null;
     if (pick && prev !== pick.playerId) {
-      this.log.info(`[lobby] ${room.code} host → ${pick.name}${pick.guest === true ? ' (all guests, fallback)' : ''}`);
+      this.log.info(`[lobby] ${room.code} host → ${pick.name}`);
+    }
+    if (!pick && humans.length) {
+      // 只剩游客：不给房主，房间由调用方解散，别让游客拿到房主权限
+      this.log.info(`[lobby] ${room.code} 只剩游客，不给房主（房间将解散）`);
     }
     // 房主换人后重新判定「不自动销毁」：noExpire 只在房主本人是管理员/服主时成立。
     // 管理员建房后离开、房主交给普通玩家，房间必须恢复 15 分钟销毁计时，
