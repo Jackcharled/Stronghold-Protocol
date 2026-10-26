@@ -3499,9 +3499,22 @@ const JOIN_COOKIE = (() => {
     // 现在先给 resume 一个宽限窗口：这段时间内若 room.state 到达并显示已在房间里，就静默完成。
     const startedAt = Date.now();
     const RESUME_GRACE_MS = 5000;
+    // 给「恢复账号对局」让路的上限：accountObserver 的自动恢复含 4 次重试（每次间隔 700ms）
+    // 与 3.5s 超时，正常 5s 内必出结果；留到 12s 只是防止标记异常残留把玩家永久挡在门外。
+    const ACCOUNT_RESUME_YIELD_MS = 12000;
     try { store.patch('ui', { pendingJoin: null }); } catch (e) { /* ignore */ }
     const tick = () => {
       if (adminWatchActive() || watchExitRecent()) { joined = true; return; }
+      // 「恢复账号对局」正在接管（ui/accountObserver.js 的 requestAccountResume）：
+      // 它会把旧设备的座位 token 换到本机，这时若我们抢先发 room.join，
+      // 服务端可能给本机新开一个座位（同一账号两个座位），而 resumeAccount
+      // 随后又要把座位换过来 —— 两边打架。
+      // accountObserver 用 window.__SP_ACCOUNT_RESUME_PENDING 标记这段窗口，
+      // joinFlow 必须让路，等它结束（成功或失败都会清掉这个标记）。
+      // 兜底：标记若因异常没清掉，最多让路 ACCOUNT_RESUME_YIELD_MS，之后照常加入，
+      // 不能因为一个残留标记让玩家永远进不去房间。
+      if (window.__SP_ACCOUNT_RESUME_PENDING === true
+        && Date.now() - startedAt < ACCOUNT_RESUME_YIELD_MS) return;
       const s = store.get();
       // 跨节点跳转后不要卡在 `session.entered` 上：
       // entered 由 localStorage 里的「本机进入过」标记决定，跳到一个新节点后页面是全新上下文，
