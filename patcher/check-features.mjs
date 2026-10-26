@@ -172,6 +172,16 @@ const CHECKS = [
     ],
   },
   {
+    id: 'client-module-exports',
+    name: '模块导入完整性（导入的名字必须真的导出）',
+    rules: [
+      // 2026-10-26 事故：bandDraft.js 导入 draftMyTurn，但 gameLogic.js 漏了 re-export，
+      // 浏览器抛 SyntaxError → 整个模块图崩 → 全站「游戏脚本加载失败」。node --check 抓不到这类错误。
+      ['public/js/ui/gameLogic.js', /export \{[^}]*draftMyTurn[^}]*\} from '\.\/gameLogic\/draft\.js'/, '★ draftMyTurn 必须被 re-export'],
+      ['public/js/screens/bandDraft.js', /import \{[^}]*draftMyTurn[^}]*\} from '\.\.\/ui\/gameLogic\.js'/, 'bandDraft 的导入'],
+    ],
+  },
+  {
     id: 'admin-room-version',
     name: '后台/控制台显示房间版本',
     rules: [
