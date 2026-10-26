@@ -681,6 +681,9 @@ export function AllianceSelect({ onClose, onCreate, difficulty = 'FUNNY', code, 
 export function LobbyScreen() {
   const conn = useStore((s) => s.connection, shallowEqual);
   useData('config', 'assets');
+  // 清理旧版本留下的「上次选过的同盟人数」：大厅的人数选择器已移除，建房固定默认 4 人，
+  // 人数到房间里的「实验性选项」再调。这个值留着会让之前进过大房间的人每次建房都变成大房。
+  try { localStorage.removeItem('sp.roomCapacity'); } catch { /* ignore */ }
   const [difficulty, setDifficulty] = useState(() => {
     const d = loadPref('lobby.difficulty', 'FUNNY');
     return DIFFICULTIES.includes(d) ? d : 'FUNNY';
@@ -701,19 +704,15 @@ export function LobbyScreen() {
   const [achOpen, setAchOpen] = useState(false);
   const [coarse] = useState(() => detectFeatures().coarse);
   const shortScreen = useMediaQuery(SHORT_SCREEN_QUERY);
-  // 同盟人数：4（默认）或 5–20。建房时带进 experimental.playerCapacity，
-  // 匹配池按人数分组，所以只有同人数的房才会被配到一起。
-  // 记住上次的选择，下次建房沿用。
-  const [coopCapacity, setCoopCapacity] = useState(() => {
-    try {
-      const v = Number(localStorage.getItem('sp.roomCapacity'));
-      return Number.isInteger(v) && v >= 4 && v <= 20 ? v : 4;
-    } catch { return 4; }
-  });
+  // 同盟人数：建房默认 4 人，具体人数到房间里的「实验性选项」再调。
+  // 大厅的人数选择器已移除，所以这里不再读 localStorage 的「上次选择」——
+  // 否则玩家之前在哪个 5–20 人房里设置过，之后每次建房都会沿用那个大房间。
+  // 顺带把旧版本留下的 sp.roomCapacity 清掉，免得以后又被读到。
+  try { localStorage.removeItem('sp.roomCapacity'); } catch { /* ignore */ }
+  const [coopCapacity, setCoopCapacity] = useState(4);
   const pickCapacity = (n) => {
     const v = Number.isInteger(n) && n >= 4 && n <= 20 ? n : 4;
     setCoopCapacity(v);
-    try { localStorage.setItem('sp.roomCapacity', String(v)); } catch { /* ignore */ }
   };
   const alive = useRef(true);
   const inFlight = useRef(false); // synchronous guard against double clicks (state updates are async)
@@ -786,17 +785,14 @@ export function LobbyScreen() {
   // 5–20 人房：所有已登录玩家都可以建，不再只限 owner/admin。
   // 以前这里要求 window.__SP_ACCOUNT_ROLE 是非 player 角色，等于只有服主能开多人大厅，
   // 普通玩家建房永远是 4 人，匹配池里也就永远只有 4 人局。
-  // 人数优先级：URL ?capacity=N（或 ?exp=N）> 玩家上次在大厅选过的值 > 4。
-  // 房间建好后房主还能在房间内用「实验性功能」继续调整，并直接点「匹配队友」。
+  // 人数优先级：URL ?capacity=N（或 ?exp=N）> 4。
+  // 大厅已移除人数选择器，因此不再沿用「上次选过的人数」——那样玩家在某个大房间
+  // 调过人数后，之后每次建房都会莫名变成那个大房间。人数到房间里的「实验性选项」再调。
   const experimentalForCreator = () => {
     try {
       const q = new URLSearchParams(location.search);
-      let capacity = Number(q.get('capacity') || q.get('exp') || 0);
-      if (!(Number.isInteger(capacity) && capacity >= 4 && capacity <= 20)) {
-        // 记住上次选的人数（大厅的人数选择器写入），下次建房默认沿用
-        const saved = Number((() => { try { return localStorage.getItem('sp.roomCapacity'); } catch { return null; } })());
-        capacity = Number.isInteger(saved) && saved >= 4 && saved <= 20 ? saved : 4;
-      }
+      const capacity = Number(q.get('capacity') || q.get('exp') || 0);
+      if (!(Number.isInteger(capacity) && capacity >= 4 && capacity <= 20)) return null;
       if (capacity <= 4) return null;   // 4 人是默认房间，不带实验选项，保持原来的协议
       return {
         revivalEnabled: q.get('revive') === '1',
