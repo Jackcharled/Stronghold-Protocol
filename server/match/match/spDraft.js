@@ -57,9 +57,23 @@ export class MatchSpDraft {
    */
   spCardAvailable(card, player = null) {
     if (!card) return false;
-    const free = this.capacityExperiment || this.sp?.taken[card.idx] == null;
-    if (!free) return false;
-    return card.kind !== 'item' || (player ? this.itemPoolFor(player).canGain(card.id) : this.itemPool.canGain(card.id));
+    // 5–20 人大厅不判重（每人独立卡池，允许多人悬赏同一个目标）；
+    // 普通 4 人局仍按「队友已选」的规则走。
+    if (!this.capacityExperiment && this.sp?.taken[card.idx] != null) return false;
+    return card.kind !== 'item' || this.spItemAvailable(card.id, player);
+  }
+
+  /**
+   * 这张物品卡对 `player` 还可获得吗（不掉人头就按全队）。
+   *
+   * 5–20 人房「独立卡池」(disableSharedPool) 下**每人有自己的卡池**：
+   * 必须用 `itemPoolFor(player)` 判断，而不是全队共用的 `this.itemPool` ——
+   * 否则 A 拿过的东西会挡住 B，独立卡池等于没生效。
+   * @param {any} id @param {any} [player]
+   */
+  spItemAvailable(id, player = null) {
+    if (player) return this.itemPoolFor(player).canGain(id);
+    return this.alivePlayers().some((p) => this.itemPoolFor(p).canGain(id));
   }
 
   startSpTurn() {

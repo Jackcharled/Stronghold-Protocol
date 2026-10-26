@@ -22,12 +22,13 @@ check('allowRepeat 由 capacityExperiment 把关（只在 5–20 人房生效）
   /this\.allowRepeat = this\.capacityExperiment && this\.experimental\.allowRepeat === true/.test(matchJs));
 
 console.log('\n=== 2) 悬赏决策可重复 ===\n');
+// 5–20 人房（capacityExperiment）不判「已被选走」；4 人局仍判重
 check('★ 大厅房不判「已被选走」（capacityExperiment 短路）',
-  /this\.capacityExperiment \|\| this\.sp\?\.taken\[card\.idx\] == null/.test(spDraft),
+  /if \(!this\.capacityExperiment && this\.sp\?\.taken\[card\.idx\] != null\) return false;/.test(spDraft),
   'spCardAvailable 里的 capacityExperiment 判断');
 check('★ 重复选中时克隆卡片（每人独立副本，不互相影响）',
   /const card = this\.capacityExperiment \? structuredClone\(s\.cards\[idx\]\) : s\.cards\[idx\]/.test(spDraft));
-check('4 人局仍然按 taken 判重', /this\.sp\?\.taken\[card\.idx\] == null/.test(spDraft));
+check('4 人局仍然按 taken 判重', /!this\.capacityExperiment && this\.sp\?\.taken\[card\.idx\] != null/.test(spDraft));
 
 console.log('\n=== 3) 同时选（并发草稿）而不是按顺序 ===\n');
 check('★ 盟约草稿有并发实现 _concurrentBandStep', /_concurrentBandStep\(\)/.test(phases));

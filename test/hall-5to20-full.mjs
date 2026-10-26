@@ -50,7 +50,7 @@ check('前端接受并发（draftMyTurn）', /draftMyTurn\(draft, myId, solo\)/.
 
 console.log('\n=== 二、悬赏：可重复选择 ===\n');
 check('★ 大厅房不判「已被选走」（capacityExperiment 短路）',
-  /this\.capacityExperiment \|\| this\.sp\?\.taken\[card\.idx\] == null/.test(spDraft));
+  /if \(!this\.capacityExperiment && this\.sp\?\.taken\[card\.idx\] != null\) return false;/.test(spDraft));
 check('★ 重复选中时克隆卡片', /this\.capacityExperiment \? structuredClone\(s\.cards\[idx\]\)/.test(spDraft));
 check('★ 并发悬赏：所有人同时选', /_concurrentSpStep\(\)/.test(spDraft));
 check('★ 并发时没有轮次限制', /if \(!this\.sp\.concurrent && this\.spTurn\(\) !== ps\.playerId\)/.test(spDraft));
