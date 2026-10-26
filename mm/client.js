@@ -425,6 +425,7 @@ const JOIN_COOKIE = (() => {
     installNodeBadge();
     installAdminEntry();
     /* @sp-strip-icp:start */
+    installIcpBadge();
     /* @sp-strip-icp:end */
   installQQGroup();
   setInterval(cleanTopExtras, 1200);
@@ -1728,6 +1729,75 @@ const JOIN_COOKIE = (() => {
 
 
   /* @sp-strip-icp:start */
+  // ---------------------------------------------------------------- ICP 备案号（页脚）
+
+  function installIcpBadge() {
+    const ICP = '鲁ICP备2026010707号-1';
+    let busy = false;
+
+    const findLeaf = () => {
+      let best = null;
+      for (const el of document.querySelectorAll('div,span,p')) {
+        if (el.childElementCount !== 0) continue;
+        const txt = (el.textContent || '').trim();
+        if (!/非官方同人/.test(txt)) continue;
+        if (txt.length > 80) continue;
+        if (!best || txt.length < best.txt.length) best = { el, txt };
+      }
+      return best;
+    };
+
+    const apply = () => {
+      if (busy) return;
+      const leaf = findLeaf();
+      if (!leaf) return;
+      busy = true;
+      try {
+        const { el, txt } = leaf;
+        // 原地定位，不搬动元素，字体继承关系保持不变
+        el.style.position = 'fixed';
+        el.style.left = '50%';
+        el.style.bottom = '22px';
+        el.style.transform = 'translateX(-50%)';
+        el.style.zIndex = '60';
+        el.style.whiteSpace = 'nowrap';
+        el.style.textAlign = 'center';
+        el.style.pointerEvents = 'auto';
+        // mm-align-right：与右下角「项目仓库」那一行保持同一水平高度
+        try {
+          const rightEl = [...document.querySelectorAll('div,span,p')]
+            .find((n) => n.childElementCount === 0 && /WEB SIMULATION/i.test((n.textContent || '').trim()));
+          if (rightEl) {
+            const r = rightEl.getBoundingClientRect();
+            const myH = el.getBoundingClientRect().height || 16;
+            const bottom = Math.max(6, Math.round(window.innerHeight - (r.top + r.height / 2) - myH / 2));
+            el.style.bottom = bottom + 'px';
+          }
+        } catch { /* ignore */ }
+        if (!el.querySelector('.mm-icp')) {
+          const a = document.createElement('a');
+          a.className = 'mm-icp';
+          a.href = 'https://beian.miit.gov.cn/';
+          a.target = '_blank';
+          a.rel = 'noreferrer noopener';
+          a.textContent = ICP;
+          a.style.cssText = 'color:inherit;text-decoration:none';
+          el.textContent = '· ' + txt;
+          el.insertBefore(a, el.firstChild);
+        }
+      } finally { busy = false; }
+    };
+
+    apply();
+    try { new MutationObserver(apply).observe(document.body, { childList: true, subtree: true }); } catch { /* ignore */ }
+  }
+  /* @sp-strip-icp:end */
+
+
+
+
+
+
   // ---------------------------------------------------------------- 官方 QQ 群（右上角）
 
   // 顶部按钮助手：克隆「统计」按钮的样式与图标位，替换图标路径与文字
@@ -3421,6 +3491,14 @@ const JOIN_COOKIE = (() => {
     }
     const { store, net } = sp;
     let inFlight = false, joined = false, retries = 0;
+    // 刷新页面重连时，服务端会先在 hello 的 resume 里把玩家送回原房间/对局（lobby.onHello → resync
+    // → 对局 match.onReconnect），这条路径**不需要** room.join。
+    // 以前这里一 tick 就抢发 room.join：若此时 room.state 还没到、或服务端已按别的路径处理了会话，
+    // 已开局的对局就回 ROOM_STARTED，于是提示「加入失败：模拟已开始」并把房间痕迹全清掉
+    // —— 玩家看到的就是「掉线刷新后回不到对局」。
+    // 现在先给 resume 一个宽限窗口：这段时间内若 room.state 到达并显示已在房间里，就静默完成。
+    const startedAt = Date.now();
+    const RESUME_GRACE_MS = 5000;
     try { store.patch('ui', { pendingJoin: null }); } catch (e) { /* ignore */ }
     const tick = () => {
       if (adminWatchActive() || watchExitRecent()) { joined = true; return; }
@@ -3446,6 +3524,14 @@ const JOIN_COOKIE = (() => {
       const onSpectatorSeat = !!s.room && myId != null && Array.isArray(s.room.spectators)
         && s.room.spectators.some((x) => x && x.playerId === myId);
       if (sameRoom && (!spectate || onSpectatorSeat)) { joined = true; cleanUrl(); return; }
+      // 服务端的 resume 已经把我放回这个房间了（对局中），只是 room.state 还没到或还在路上：
+      // 等它一帧，不要抢发 room.join 去撞 ROOM_STARTED。
+      const inMatchNow = !!(s.match && (s.match.phase || s.match.public));
+      if (inMatchNow && Date.now() - startedAt < RESUME_GRACE_MS) return;
+      // 刚刷新：给 resume 一个宽限窗口（服务端 onHello → resync 可能比第一个 tick 慢）
+      const freshPage = Date.now() - startedAt < RESUME_GRACE_MS;
+      const sessionResumed = !!(s.session && s.session.entered);
+      if (freshPage && !sessionResumed) return;
       inFlight = true;
       try {
         console.info('[mm-debug] joinFlow 发请求', {
@@ -3463,15 +3549,32 @@ const JOIN_COOKIE = (() => {
           //   ROOM_STARTED  对局已经打起来了
           //   ROOM_FULL     房间满了
           //   ROOM_NOT_FOUND 房间根本不存在（已解散 / 换房 / 账号残留的旧房号）
-          // 这类错误要把 /r/CODE 从地址里抹掉，并把所有"待加入"记录清空，
-          // 否则玩家退回大厅或刷新时 joinFlow 会被再次触发，表现为反复提示加入失败。
-          const terminal = code2 === 'ROOM_STARTED' || code2 === 'ROOM_FULL' || code2 === 'ROOM_NOT_FOUND'
-            || /模拟已开始|房间已满|未找到该同盟密钥|不存在|已开始|Simulation already started|Room full|room is full|not found/i.test(msg);
+          //
+          // ⚠ ROOM_STARTED 不能像另外两个那样清场：房间还在、对局还在跑，玩家很可能是
+          //   掉线刷新后由 resume 送回对局的（服务端 lobby.onHello → resync → match.onReconnect）。
+          //   以前这里把它当终态，清掉 mm.pendingRoom / sp_join / URL 并弹「模拟已开始」，
+          //   结果玩家明明该自动回到对局，却被踢回大厅。现在只提示一次，保留一切可能
+          //   让服务端继续完成 resume 的痕迹。
+          const startedCode = code2 === 'ROOM_STARTED' || /模拟已开始|已开始|Simulation already started/i.test(msg);
+          const terminal = !startedCode && (code2 === 'ROOM_FULL' || code2 === 'ROOM_NOT_FOUND'
+            || /房间已满|未找到该同盟密钥|不存在|Room full|room is full|not found/i.test(msg));
           // 非终态失败（跨节点跳转后 socket 刚连上、会话还没就绪之类）先重试几次，
           // 不要一次失败就放弃 —— 那会让玩家以为「还得再输一次房间号」。
-          if (!terminal && retries < 6) {
+          if (!terminal && !startedCode && retries < 6) {
             retries++;
             return; // 交给下面的 setInterval 再 tick 一次
+          }
+          if (startedCode) {
+            // 对局进行中：不再反复发 room.join，也不清痕迹。房间状态由 resume 推过来。
+            joined = true;
+            // 主动要一次完整重同步（服务端 lobby 的 state.resync → resyncNow →
+            // 对局中走 match.onReconnect），把玩家自己拉回对局，而不是干等 resume。
+            try { net.request('state.resync', {}).catch(() => {}); } catch { /* ignore */ }
+            const tagKey2 = 'mm.joinStarted:' + code;
+            let shown2 = false;
+            try { shown2 = sessionStorage.getItem(tagKey2) === '1'; sessionStorage.setItem(tagKey2, '1'); } catch { /* ignore */ }
+            if (!shown2) showStyledToast('该同盟的对局已经开始；正在把你送回对局…');
+            return;
           }
           joined = true;
           if (terminal) {
