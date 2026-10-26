@@ -173,6 +173,40 @@ node test\stuck-match-room.mjs    7/7 通过（新增）
 
 ---
 
+### 1d. 管理员房离线太久也要回收
+
+**问题**：管理员/服主建的房 `noExpire = true`，`sweepOldRooms()` 无条件跳过所有过期判定。
+而 `syncNoExpire` 只在**房主换人**时重新判定 —— 只要房主一直是管理员，
+`noExpire` 就永远成立。于是管理员建完房就走、再也不回来，这个房间就永远挂在那里，
+比普通玩家的卡死房更糟（连 15 分钟 TTL 都不走），还会一直占着「同网络建房上限」的名额。
+
+**改了什么**（`server/lobby.js`）：
+
+1. 新增 `adminOwnerOnline(room)`：房主必须是**在线的** admin/服主，`noExpire` 才生效。
+   `sweepOldRooms` 用 `const forever = room.noExpire === true && this.adminOwnerOnline(room);`
+   —— 不再只看 `noExpire` 这个静态标志。
+2. 新增 `room.adminLeftAt`：管理员房主断线时记下时刻；`onDisconnect` / `onHello` 维护它，
+   `syncNoExpire`（房主换人）也跟着重置。
+3. 管理员房的过期计时基准改成 `adminLeftAt`（人走了才开始走 15 分钟），
+   而不是 `createdAt` —— 否则管理员人在的时候房间就可能被判过期。
+
+**行为**：
+| 情况 | 结果 |
+|---|---|
+| 管理员在线 | 房间永久保留（原来是这个行为，保持） |
+| 管理员离线 < 15 分钟 | 保留（切窗口、重连都来得及） |
+| 管理员离线 > 15 分钟 | **回收**（新增） |
+| 管理员回来 | `adminLeftAt` 清零，恢复永久保留 |
+
+**验证**：`node test\admin-room-reap.mjs` —— 4/4 通过（新增）。
+`test\stuck-match-room.mjs` 里原本断言「管理员房即使没人也不回收」，按这次需求改成
+「在线保留 / 离线回收」两条。
+
+`patcher\check-features.mjs` 加了 `adminOwnerOnline` 的存在 + **必须被调用**两条断言 ——
+只写函数不调用是常见的「假修复」，破坏性测试确认这种情况会 FAIL。
+
+---
+
 ### 2. 隐身观战加载不出来
 **病根**：`Lobby.sendToPlayer()` 只认 `seatOf()` / `spectatorOf()`，
 而隐身观战者只存在于 `hiddenSpectators`，两者都查不到，

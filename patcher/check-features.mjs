@@ -112,10 +112,16 @@ const CHECKS = [
     name: '卡死对局房间回收（不影响正常对局）',
     rules: [
       // 以前 sweepOldRooms 见到 room.match 就 continue，房主断线后对局永远卡着、房间永不过期
-      ['server/lobby.js', /if \(room\.match\) \{\s*\n\s*if \(room\.noExpire\) continue;/, '★ 对局中的房间也要过一遍过期判定'],
+      ['server/lobby.js', /if \(room\.match\) \{\s*\n\s*if \(forever\) continue;/, '★ 对局中的房间也要过一遍过期判定'],
       ['server/lobby.js', /room\.activeHumans\(\)\.some\(\(s\) => s && s\.connected\)\) continue;/, '★ 有真人在线就绝不回收'],
       ['server/lobby.js', /room\.lastHumanLeftAt = this\.now\(\)/, '★ 记录最后一人断线时刻'],
       ['server/lobby.js', /if \(room\.lastHumanLeftAt\) room\.lastHumanLeftAt = 0;/, '★ 有人回来就作废回收计时'],
+      // 管理员房：人在才永久保留，人走了也要回收
+      ['server/lobby.js', /return !!\(session && session\.admin === true && session\.connected === true\);/, '★ noExpire 只在管理员在线时生效'],
+      // 光有 adminOwnerOnline() 不够，必须真的被 sweepOldRooms 用来决定 forever
+      ['server/lobby.js', /const forever = room\.noExpire === true && this\.adminOwnerOnline\(room\);/, '★ 过期判定必须调用 adminOwnerOnline（不能只看 noExpire 标志）'],
+      ['server/lobby.js', /room\.adminLeftAt = this\.now\(\)/, '★ 记录管理员离线时刻'],
+      ['server/lobby.js', /Number\(room\.adminLeftAt\)/, '★ 管理员房从离线时刻起计时'],
     ],
   },
   {

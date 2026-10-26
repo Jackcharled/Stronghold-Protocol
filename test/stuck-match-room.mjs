@@ -83,15 +83,26 @@ console.log('\n=== 边界 1：刚断线还没到 15 分钟，不能立刻回收 
   check('★ 断了 16 分钟的房间回收掉', !lobby.rooms.has('JUST1'));
 }
 
-console.log('\n=== 边界 2：管理员房（noExpire）永远不动 ===\n');
+console.log('\n=== 边界 2：管理员房（noExpire）—— 人在则保留，人走了要回收 ===\n');
 {
+  // 管理员房主**在线**：房间永久保留
   const lobby = makeLobby();
-  const room = seedStuckMatch(lobby, { code: 'ADM1', connected: false });
+  const room = seedStuckMatch(lobby, { code: 'ADM1', connected: true });
   room.noExpire = true;
-  room.lastHumanLeftAt = clock;
+  lobby.registry = { byId: (id) => (id === 'p_stuck1' ? { playerId: 'p_stuck1', admin: true, connected: true } : null) };
   clock += 24 * 3600_000;
   lobby.sweepOldRooms();
-  check('★ 管理员房即使没人也不回收', lobby.rooms.has('ADM1'));
+  check('★ 管理员在线的房间永久保留', lobby.rooms.has('ADM1'));
+
+  // 管理员房主**离线**：按普通规则回收（原先这里断言「永远不动」，后按需求改为要回收）
+  const lobby2 = makeLobby();
+  const room2 = seedStuckMatch(lobby2, { code: 'ADM2', connected: false });
+  room2.noExpire = true;
+  room2.adminLeftAt = clock;
+  lobby2.registry = { byId: (id) => (id === 'p_stuck1' ? { playerId: 'p_stuck1', admin: true, connected: false } : null) };
+  clock += 24 * 3600_000;
+  lobby2.sweepOldRooms();
+  check('★ 管理员已离线的房间要回收（管理员离线太久也要回收）', !lobby2.rooms.has('ADM2'));
 }
 
 console.log('\n=== 边界 3：多人房里还有一个人在打，不能回收 ===\n');
