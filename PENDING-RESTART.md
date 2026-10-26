@@ -1,7 +1,32 @@
 # 待生效改动与重启清单
 
-最后更新：2026-10-26 12:45
-状态：**等待重启**（服主安排时间，不要自行重启）
+最后更新：2026-10-26 13:20
+状态：**已部分重启**（2026-10-26 13:15，只重启了无连接节点）
+
+---
+
+## 最近一次重启的结果（13:15）
+
+按「不影响正在对局的玩家」执行：
+
+| 对象 | 操作 | 说明 |
+|---|---|---|
+| matchmaker | 已重启 | 独立进程，不影响进行中的对局 |
+| 20 个无连接节点 | 已用 `startOrReload --update-env` 重载 | node-15 有人刚连上，跳过 |
+| 9 个有玩家的节点 | **未重启** | node-2/3/10/11/19/20/22/27/28 |
+
+**已验证生效**：
+- `SP_MAX_ROOMS_PER_ADDR = 3`、`SP_EXPERIMENTAL = 1`（dump.pm2 已确认，`pm2 save` 已存）
+- 匹配按人数独立成池：`node test\e2e-capacity-match.mjs` 全部通过
+  （此前 4/5/8/12/16/20 六个房会全被配进同一个 4 人局，现在各池独立）
+- 抽查 node-2/3/10/19/27/28（未重启）也能建 12 人房
+
+**仍待重启**：node-2、node-3、node-10、node-11、node-19、node-20、node-22、node-27、node-28
+（有玩家在线，等他们空下来再重启；重启前务必先查 `sockets`）
+
+> 注：`pm2 restart --update-env` **不会**重读 `ecosystem.config.cjs`，
+> 必须用 `pm2 startOrReload ecosystem.config.cjs --only node-N --update-env`，
+> 然后 `pm2 save`。这一点已实测确认。
 
 ---
 
