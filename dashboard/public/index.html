@@ -56,6 +56,8 @@
 #rooms-bar .room-state.is-queued:before{background:#e8b25a;box-shadow:0 0 0 3px rgba(232,178,90,.14)}
 #rooms-bar .room-round{display:inline-block;min-width:74px;padding:3px 7px;border-radius:6px;background:rgba(255,255,255,.04);color:#cfe0dd;font-size:12px;text-align:center;white-space:nowrap}
 #rooms-bar .room-round.is-empty{background:transparent;color:#687c7f}
+#rooms-bar .room-ver{display:inline-block;padding:2px 6px;border-radius:5px;border:1px solid rgba(120,160,165,.22);background:rgba(255,255,255,.03);color:#8fa4a6;font-size:11px;white-space:nowrap}
+#rooms-bar .room-ver.is-other{border-color:rgba(122,167,255,.45);background:rgba(122,167,255,.1);color:#adc6ff;font-weight:600}
 #rooms-bar .room-players,#rooms-bar .room-spectators{display:flex;flex-wrap:wrap;gap:4px;max-width:360px}
 #rooms-bar .room-players--large{max-width:560px}
 #rooms-bar .room-player,#rooms-bar .room-spectator{display:inline-flex;align-items:center;gap:4px;max-width:180px;padding:3px 7px;border:1px solid rgba(120,160,165,.2);border-radius:999px;background:rgba(255,255,255,.035);color:#d9e9e6;font-size:12px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -65,6 +67,7 @@
 #rooms-bar .room-kind{flex:none;padding:0 4px;border-radius:3px;font-size:9px;line-height:1.5;font-style:normal}
 #rooms-bar .room-kind.is-player{color:#9fe8cf;background:rgba(78,216,175,.12);border:1px solid rgba(78,216,175,.28)}
 #rooms-bar .room-kind.is-guest{color:#ffd08a;background:rgba(232,178,90,.1);border:1px solid rgba(232,178,90,.28)}
+#rooms-bar .room-kind.is-admin{color:#ffb4a8;background:rgba(217,83,79,.14);border:1px solid rgba(217,83,79,.42);font-weight:700}
 #rooms-bar .room-spectator{border-color:rgba(120,160,165,.16);background:rgba(120,160,165,.05);color:#b9cecb}
 #rooms-bar .room-empty{color:#667b7e}
 #rooms-bar .room-count{display:inline-flex;min-width:24px;justify-content:center;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.045);color:#d9e9e6;font-size:12px}
@@ -147,7 +150,7 @@
   <div class="rooms-table-wrap">
     <table class="rooms-table">
       <thead><tr>
-        <th>房间号</th><th>节点</th><th>类型</th><th>难度</th><th>状态</th><th>回合</th><th>玩家</th><th>真人</th><th>AI</th><th>观战</th><th>旁观者</th>
+        <th>房间号</th><th>节点</th><th>类型</th><th>难度</th><th>版本</th><th>状态</th><th>回合</th><th>玩家</th><th>真人</th><th>AI</th><th>观战</th><th>旁观者</th>
       </tr></thead>
       <tbody id="rooms-body"></tbody>
     </table>

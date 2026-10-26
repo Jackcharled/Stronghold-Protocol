@@ -173,22 +173,25 @@ function updateMatchmaking(mm) {
   if (expEl) {
     if (!on) { expEl.textContent = ''; expEl.hidden = true; }
     else {
-      let expWaiting = 0, expMatches = 0;
+      let expWaiting = 0, expMatches = 0, expParties = 0;
       const expByDiff = [];
       const shortDiff = { FUNNY: '标准', NORMAL: '险境', HARD: '绝境', ABYSS: '终极' };
       for (const [d, data] of Object.entries(mm.byDifficulty || {})) {
-        let dw = 0, dm = 0;
+        let dw = 0, dm = 0, dteam = 0;
         for (const c of (Array.isArray(data.byCapacity) ? data.byCapacity : [])) {
           if (Number(c.capacity) > 4) {
-            dw += Number(c.waiting) || 0;
+            // 单人票据 + 组队房间里的人数都要算（同上：以前漏了组队）
+            dw += (Number(c.waiting) || 0) + (Number(c.partyWaiting) || 0);
             dm += Number(c.matches) || 0;
+            dteam += Number(c.parties) || 0;
           }
         }
         expWaiting += dw;
         expMatches += dm;
+        expParties += dteam;
         if (dw || dm) expByDiff.push(`${shortDiff[d] || d} ${dw}人/${dm}局`);
       }
-      expEl.innerHTML = `实验池（分难度） <b>${expWaiting}</b> 人排队 · <b>${expMatches}</b> 局`;
+      expEl.innerHTML = `实验池（分难度） <b>${expWaiting}</b> 人排队 · <b>${expParties}</b> 队 · <b>${expMatches}</b> 局`;
       expEl.title = expByDiff.length ? `按难度：${expByDiff.join(' · ')}（同难度内再按具体人数）` : '5～20 人实验池，按难度和具体人数分开';
       expEl.hidden = false;
     }
@@ -207,15 +210,22 @@ function updateMatchmaking(mm) {
         const verTag = vers.length > 1 ? `<i class="mm-ver" title="${verTip.replace(/"/g, '&quot;')}">多版本</i>` : '';
         const exp = caps ? caps.filter((c) => Number(c.capacity) > 4 && (Number(c.waiting) || Number(c.parties) || Number(c.matches))) : [];
         if (exp.length) {
-          const expWaiting = exp.reduce((n, c) => n + (Number(c.waiting) || 0), 0);
+          // ★ 实验池（5–20 人）的排队人数必须同时算「单人票据」和「组队房间」。
+          //   以前只累加 c.waiting，房间里点「匹配队友」的玩家在后台是看不见的。
+          const expWaiting = exp.reduce((n, c) => n + (Number(c.waiting) || 0) + (Number(c.partyWaiting) || 0), 0);
           const expMatches = exp.reduce((n, c) => n + (Number(c.matches) || 0), 0);
-          const detail = exp.map((c) => `${Number(c.capacity)}人 ${Number(c.waiting) || 0}/${Number(c.capacity)}`).join(' · ');
+          const expParties = exp.reduce((n, c) => n + (Number(c.parties) || 0), 0);
+          const detail = exp.map((c) => {
+            const w = (Number(c.waiting) || 0) + (Number(c.partyWaiting) || 0);
+            const team = Number(c.parties) || 0;
+            return `${Number(c.capacity)}人 ${w}/${Number(c.capacity)}${team ? `（${team} 队）` : ''}`;
+          }).join(' · ');
           const base = caps.find((c) => Number(c.capacity) === 4);
           return `<span class="mm-pool diff-${d}"><b>${labels[d]}</b>${verTag}<i>4人 单人 <b>${Number(base?.waiting) || 0}</b></i>`
             + `<i>房间 <b>${Number(base?.parties) || 0}</b> 队/<b>${Number(base?.partyWaiting) || 0}</b> 人</i>`
             + `<i>已开 <b>${Number(base?.matches) || 0}</b></i>`
             + `<span class="mm-cap is-exp" title="${detail || '5～20 人实验池'}"><b>实验池 5～20人</b>`
-            + `<i>排队 <b>${expWaiting}</b></i><i>已开 <b>${expMatches}</b></i></span></span>`;
+            + `<i>排队 <b>${expWaiting}</b></i><i>房间 <b>${expParties}</b> 队</i><i>已开 <b>${expMatches}</b></i></span></span>`;
         }
         return `<span class="mm-pool diff-${d}"><b>${labels[d]}</b>${verTag}<i>单人 <b>${Number(x.waiting) || 0}</b></i><i>房间 <b>${Number(x.parties) || 0}</b> 队/<b>${Number(x.partyWaiting) || 0}</b> 人</i><i>已开 <b>${Number(x.matches) || 0}</b></i></span>`;
       }).join('');
@@ -283,7 +293,14 @@ function renderRoomsTable() {
   body.innerHTML = pageRows.length ? pageRows.map((x) => {
     const state = x.started ? '对局中' : (x.queued ? '匹配中' : '等待中');
     const stateClass = x.started ? ' is-live' : (x.queued ? ' is-queued' : '');
-    const playerHtml = (x.players || []).map((p) => '<span class="room-player' + (p.host ? ' is-host' : '') + '" title="' + esc(p.name || '') + '">' + '<span class="room-kind ' + (p.guest ? 'is-guest' : 'is-player') + '">' + (p.guest ? '游客' : '玩家') + '</span>' + esc(p.name || '') + (p.host ? '<em>房主</em>' : '') + (p.connected === false ? '<i>离线</i>' : '') + '</span>').join('') || '<span class="room-empty">—</span>';
+    const playerHtml = (x.players || []).map((p) => {
+      // 身份标签：管理员/服主 > 游客 > 玩家
+      const kind = p.admin ? { cls: 'is-admin', text: '管理员' } : p.guest ? { cls: 'is-guest', text: '游客' } : { cls: 'is-player', text: '玩家' };
+      return '<span class="room-player' + (p.host ? ' is-host' : '') + '" title="' + esc(p.name || '') + '">'
+        + '<span class="room-kind ' + kind.cls + '">' + kind.text + '</span>'
+        + esc(p.name || '') + (p.host ? '<em>房主</em>' : '') + (p.connected === false ? '<i>离线</i>' : '')
+        + '</span>';
+    }).join('') || '<span class="room-empty">—</span>';
     const spectatorHtml = (x.spectatorPlayers || []).map((p) => '<span class="room-spectator">' + esc(p.name || '') + (p.connected === false ? '<i>离线</i>' : '') + '</span>').join('') || '<span class="room-empty">—</span>';
     const count = (n) => '<span class="room-count' + (!n ? ' is-zero' : '') + '">' + (n == null ? '—' : n) + '</span>';
     const spectate = x.mode === 'solo' ? '<span class="room-empty">—</span>' : '<span class="room-count' + (!x.spectators ? ' is-zero' : '') + '">' + (x.spectators != null ? x.spectators : 0) + (x.maxSpectators ? '/' + x.maxSpectators : '') + '</span>';
@@ -292,8 +309,13 @@ function renderRoomsTable() {
     const cap = Number(x.seats) || 4;
     const capBadge = cap > 4 ? '<span class="room-cap">' + cap + '人</span>' : '';
     const adminBadge = x.adminCreated ? '<span class="room-admin">管理员房</span>' : '';
-    return '<tr><td><span class="room-code">' + esc(x.code) + '</span>' + capBadge + adminBadge + '</td><td title="node-' + x.node + '"><span class="room-node">' + esc(NAMES[x.node - 1] || ('节点 ' + x.node)) + '</span></td><td><span class="room-mode">' + (x.mode === 'solo' ? '单人模拟' : x.mode === 'coop' ? '同盟模拟' : '—') + '</span></td><td><span class="room-diff' + (x.difficulty ? ' diff-' + esc(x.difficulty) : '') + '">' + esc(diffName) + '</span></td><td><span class="room-state' + stateClass + '">' + state + '</span></td><td><span class="room-round' + (x.round > 0 ? '' : ' is-empty') + '" title="' + (x.round > 0 ? '第 ' + x.round + ' 回合' : (x.started ? '对局准备中' : '暂无对局')) + '">' + roundText + '</span></td><td><div class="room-players' + (cap > 4 ? ' room-players--large' : '') + '">' + playerHtml + '</div></td><td>' + count(x.humans) + '</td><td>' + count(x.bots) + '</td><td>' + spectate + '</td><td><div class="room-spectators">' + spectatorHtml + '</div></td></tr>';
-  }).join('') : '<tr><td colspan="11" class="muted">暂无房间</td></tr>';
+    // 房间所用的游戏版本：默认版本（第二期下半）显示成低调的灰字，其它版本高亮 ——
+    // 匹配是按版本隔离的，后台一眼能看出这局到底跑的是哪个版本。
+    const verId = typeof x.version === 'string' && x.version ? x.version : 'act2autochess';
+    const verName = VERSION_LABELS[verId] || verId;
+    const verCell = '<span class="room-ver' + (verId !== 'act2autochess' ? ' is-other' : '') + '" title="' + esc(verId) + '">' + esc(verName) + '</span>';
+    return '<tr><td><span class="room-code">' + esc(x.code) + '</span>' + capBadge + adminBadge + '</td><td title="node-' + x.node + '"><span class="room-node">' + esc(NAMES[x.node - 1] || ('节点 ' + x.node)) + '</span></td><td><span class="room-mode">' + (x.mode === 'solo' ? '单人模拟' : x.mode === 'coop' ? '同盟模拟' : '—') + '</span></td><td><span class="room-diff' + (x.difficulty ? ' diff-' + esc(x.difficulty) : '') + '">' + esc(diffName) + '</span></td><td>' + verCell + '</td><td><span class="room-state' + stateClass + '">' + state + '</span></td><td><span class="room-round' + (x.round > 0 ? '' : ' is-empty') + '" title="' + (x.round > 0 ? '第 ' + x.round + ' 回合' : (x.started ? '对局准备中' : '暂无对局')) + '">' + roundText + '</span></td><td><div class="room-players' + (cap > 4 ? ' room-players--large' : '') + '">' + playerHtml + '</div></td><td>' + count(x.humans) + '</td><td>' + count(x.bots) + '</td><td>' + spectate + '</td><td><div class="room-spectators">' + spectatorHtml + '</div></td></tr>';
+  }).join('') : '<tr><td colspan="12" class="muted">暂无房间</td></tr>';
   if (!pager) return;
   if (rooms.length <= ROOMS_PAGE_SIZE) { pager.innerHTML = rooms.length ? `<span class="muted">共 ${rooms.length} 间</span>` : ''; return; }
   pager.innerHTML = `<button data-p="-1"${roomsPage <= 1 ? ' disabled' : ''}>上一页</button>`

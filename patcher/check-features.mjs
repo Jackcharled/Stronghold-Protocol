@@ -108,6 +108,24 @@ const CHECKS = [
     ],
   },
   {
+    id: 'admin-room-version',
+    name: '后台/控制台显示房间版本',
+    rules: [
+      // 房间文档必须存 version，否则 matchmaker/后台都读不到（全部当成默认版本）
+      ['server/persist/lobbyState.js', /version: room\.version,/, '★ 房间文档存 version'],
+      ['server/persist/lobbyState.js', /typeof r\.version === 'string'/, '★ 恢复房间时带回 version'],
+      ['matchmaker/server.js', /version: typeof doc\.version === 'string' && doc\.version \? doc\.version : 'act2autochess'/, '★ roomInfo 输出 version'],
+      // 后台控制台（节点控制台 dashboard）
+      ['dashboard/public/index.html', /<th>版本<\/th>/, '★ dashboard 房间表头有版本列'],
+      ['dashboard/public/app.js', /class="room-ver/, '★ dashboard 渲染版本单元格'],
+      ['dashboard/public/index.html', /#rooms-bar \.room-ver/, 'dashboard 版本样式'],
+      // 管理后台（matchmaker admin.html，不进 git，仅本地校验）
+      ['matchmaker/public/admin.html', /<th>版本<\/th>/, '★ 管理后台房间表头有版本列'],
+      ['matchmaker/public/admin.html', /class="room-ver/, '★ 管理后台渲染版本单元格'],
+      ['matchmaker/public/admin.html', /#roomBody \.room-ver/, '管理后台版本样式'],
+    ],
+  },
+  {
     id: 'server-one-room-per-account',
     name: '一个账号只能在一个房间 + 遗留座位自愈',
     rules: [
@@ -184,8 +202,10 @@ const absent = [];
 for (const feature of CHECKS) {
   const misses = [];
   for (const [rel, re, label] of feature.rules) {
-    const abs = path.resolve(TARGET, rel);
-    const src = readSafe(abs);
+    // 部署树里 server/ public/ 在 node-N/ 下，而 matchmaker/ dashboard/ 等是同级目录。
+    // TARGET 是 node-N（或合并输出），所以先按 TARGET 找，找不到再回 RUNTIME 根目录找。
+    let src = readSafe(path.resolve(TARGET, rel));
+    if (src == null) src = readSafe(path.resolve(RUNTIME, rel));
     if (src == null) {
       if (PARTIAL) { absent.push({ feature: feature.id, rel, label }); continue; }
       misses.push({ rel, label, why: '文件不存在' });
