@@ -101,6 +101,7 @@ patcher\
 | 功能 | 涉及文件 | 所属补丁 | 生效方式 |
 |---|---|---|---|
 | **合并轮询 `/api/pulse`** | `matchmaker/server.js`（新端点）、`matchmaker/public/client.js`（refreshPulse / onPulse / getPulse） | `matching-party` / `client-announcement` | **重启 matchmaker**（前端刷新即可） |
+| **client.js 版本自检**（matchmaker 改动自动下发） | `matchmaker/server.js:clientBuildTag()`、`matchmaker/public/client.js:checkClientBuild()` | `matching-party` / `client-announcement` | **重启 matchmaker** |
 | 资源本机优先 + 缺失回源 | `nginx/conf/nginx.conf`（`/assets/` + `@assets_origin`）、`public/js/assets.js`、`public/js/assetPack.js` | 部署配置（见 `deploy/nginx.conf`） | `nginx -s reload` |
 | `sw.js` 永久 no-cache | `server/http/files.js:cacheControlFor()` | `game-core-server` | **重启节点** |
 | 资源站进 nginx 缓存 | `nginx/conf/nginx.conf`（`proxy_cache sp_assets`） | 部署配置 | `nginx -s reload` |
@@ -139,6 +140,11 @@ patcher\
    用内容哈希或 `deploy/sync-nodes.cjs` 的差异报告核对，不要只看时间戳。
 4. **前端/服务端两层的改动要分别验收** —— 例如 DOCTOR # 需要服务端下发 tag，
    旧节点上前端会自动回退到哈希，看起来"没坏"但功能没生效。
+5. **静态文件"部署完成"不等于"玩家已生效"** —— 页面加载后模块留在内存里，服务器更新送不到
+   已打开的标签页。节点侧靠 `ui/buildGuard.js` 盯 `/healthz.build` 自动刷新，但那个
+   `buildTag` **不含 `matchmaker/`**。所以改 `matchmaker/public/client.js` 后，要么等玩家
+   自己刷新，要么靠 `/api/pulse` 带回来的 `clientBuild` 自检（本服新增，见上表）。
+   验证方式：看 access.log 里新端点是否开始被大量调用，而不是只看文件已部署。
 
 ## 两个一键脚本（在仓库根目录）
 

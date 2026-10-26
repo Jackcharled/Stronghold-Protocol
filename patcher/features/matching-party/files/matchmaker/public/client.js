@@ -10,6 +10,58 @@
 
 (function () {
   const q = new URLSearchParams(location.search);
+
+  // ---------------------------------------------------------------- client.js 版本自检（本服新增）
+  //
+  // 页面加载后模块留在内存里，服务器更新送不到已打开的标签页。节点的 ui/buildGuard.js 靠
+  // /healthz.build 发现更新并自动刷新，但那个 buildTag 不含 matchmaker 的 client.js。
+  // 于是改了这里，玩家的旧页面会一直跑旧代码 —— 实测 2026-10-27 合并轮询上线 15 分钟后，
+  // 12,252 次轮询里只有 215 次走新端点，client.js 只被请求了 9 次。
+  //
+  // 做法：/api/pulse 带回服务器当前 client.js 的 sha1 前 12 位（server.js clientBuildTag）。
+  // 页面第一次拿到它时记下当作"我这一份"，之后再不同就说明服务器换过文件了。
+  // 刷新规则与 buildGuard 一致，宁可不刷也不打断对局：
+  //   * 对局中：不刷，只等到回到大厅；
+  //   * 对局外：直接刷新，且最多自动刷一次（避免出问题时来回刷）。
+  // 拿不到该字段（老节点）时一律不刷。
+  let seenClientBuild = null;
+  let clientReloaded = false;
+  let clientUpdatePending = false;
+  /** 当前是否在跑一局（对局中不允许自动刷新，避免把玩家的局刷掉）。 */
+  function inRunningMatch() {
+    try {
+      const g = window.__spStore;
+      const s = g && typeof g.get === 'function' ? g.get() : null;
+      const pub = s && s.match && s.match.public;
+      if (pub && !pub.ended) return true;
+    } catch { /* ignore */ }
+    try { return !!document.querySelector('.game-screen'); } catch { return false; }
+  }
+  function checkClientBuild(serverBuild) {
+    if (typeof serverBuild !== 'string' || !serverBuild) return;
+    if (seenClientBuild === null) { seenClientBuild = serverBuild; return; }
+    if (serverBuild === seenClientBuild) { clientReloaded = false; clientUpdatePending = false; return; }
+    if (clientReloaded) return;          // 已经自动刷过一次，不再重复
+    if (inRunningMatch()) { clientUpdatePending = true; return; }  // 对局中：等回大厅
+    clientReloaded = true;
+    seenClientBuild = serverBuild;
+    try { (window.__SP_AUTO_LOG ||= []).push({ event: 'client-build-reload', at: Date.now() }); } catch { /* ignore */ }
+    setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 1200);
+  }
+  /**
+   * 对局刚结束时调用：如果这局期间服务器换过 client.js，立刻刷新，
+   * 不必等下一轮 5 秒轮询（玩家回到大厅那一刻正好是刷新的好时机）。
+   */
+  function flushClientBuildWait() {
+    if (!clientUpdatePending || clientReloaded) return;
+    if (inRunningMatch()) return;
+    clientUpdatePending = false;
+    clientReloaded = true;
+    try { (window.__SP_AUTO_LOG ||= []).push({ event: 'client-build-reload', at: Date.now(), via: 'after-match' }); } catch { /* ignore */ }
+    setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 600);
+  }
+  window.__mmFlushClientBuild = flushClientBuildWait;
+
   // 名字：优先 URL 参数（匹配/邀请链接会带），否则回退到本机记住的名字。
   // 只认 URL 的话，老玩家直接打开域名（没有 ?name=）时 NAME 为空：
   // 于是 net.setName 从不调用 → net.name 为空 → hello 不发、rehandshake 也返回 false
@@ -404,6 +456,8 @@ const JOIN_COOKIE = (() => {
         emitPulse('gate', data.gate);
         emitPulse('ttl', data.ttl);
         emitPulse('announcement', data.announcement);
+        // client.js 版本自检：服务器换过文件就让页面自我更新（对局中不刷）
+        try { checkClientBuild(j.clientBuild); } catch { /* ignore */ }
       })
       .catch(() => { /* 断网时保持现状，下一轮再试 */ });
   }

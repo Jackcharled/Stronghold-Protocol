@@ -500,9 +500,33 @@ function serveStatic(res, pathname) {
   if (!file.startsWith(PUB)) { res.writeHead(403); return res.end('forbidden'); }
   fs.readFile(file, (err, buf) => {
     if (err) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('not found'); }
-    res.writeHead(200, { 'cache-control': 'no-store', 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream', 'cache-control': 'no-store' });
+    res.writeHead(200, { 'cache-control': 'no-store', 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' });
     res.end(buf);
   });
+}
+
+/**
+ * client.js 的内容指纹（本服新增）。
+ *
+ * 问题：页面加载后模块留在内存里，服务端更新送不到已打开的标签页。节点的
+ * ui/buildGuard.js 靠 `/healthz.build` 发现更新并自动刷新，但那个 buildTag 的覆盖范围是
+ * public/index.html、public/js、public/css、server/sim、shared、data —— **不含 matchmaker 的
+ * client.js**。于是改了 client.js 之后，玩家的旧页面会一直跑旧代码
+ * （2026-10-27 实测：合并轮询上线 15 分钟后，12,252 次轮询里只有 215 次走新端点，
+ *  client.js 只被请求了 9 次）。
+ *
+ * 做法：把 client.js 的 sha1 前 12 位缓存在内存里，/api/pulse 每次带出去；
+ * 页面拿自己的 `__MM_CLIENT_BUILD`（由 client.js 在启动时写入，值等于它自己的哈希）
+ * 与之比对，不同就说明服务器换过 client.js 了，按与 buildGuard 相同的克制规则刷新。
+ */
+let clientBuild = null;
+function clientBuildTag() {
+  if (clientBuild) return clientBuild;
+  try {
+    const buf = fs.readFileSync(path.join(PUB, 'client.js'));
+    clientBuild = require('node:crypto').createHash('sha1').update(buf).digest('hex').slice(0, 12);
+  } catch { clientBuild = ''; }
+  return clientBuild;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -716,6 +740,8 @@ const server = http.createServer(async (req, res) => {
       gate: gameGate(),
       roomTtl: readJson(path.join('shared', 'data', 'room-ttl.json'), { minutes: 15 }),
       announcement: readJson(path.join('guard', 'announcement.json'), { enabled: false, text: '' }),
+      // 页面据此判断自己的 client.js 是否已过期（见 clientBuildTag 的注释）
+      clientBuild: clientBuildTag(),
     });
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(body);
