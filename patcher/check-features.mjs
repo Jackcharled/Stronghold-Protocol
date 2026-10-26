@@ -162,6 +162,16 @@ const CHECKS = [
     ],
   },
   {
+    id: 'client-spine-cache-bust',
+    name: '模型 404 被缓存后能自愈',
+    rules: [
+      // CDN 对 404 也发 immutable + 30 天缓存 → 一次失败 = 30 天拿不到模型
+      ['public/js/assets.js', /const spineBust = \(entry, n\) =>/, '★ cache-buster 生成'],
+      ['public/js/assets.js', /spineBust\(entry, \+\+spineBustSeq\)/, '★ 重试路径调用它'],
+      ['public/js/assets.js', /if \(!\(o && o\.fresh\)\) return \(opts\.loadSpine \|\| loadSpineData\)\(entry\);/, '★ 首次加载不加 bust（仍走 CDN 缓存）'],
+    ],
+  },
+  {
     id: 'admin-room-version',
     name: '后台/控制台显示房间版本',
     rules: [

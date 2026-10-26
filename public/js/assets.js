@@ -940,15 +940,46 @@ export function createAssets(options) {
   }
 
   const spineEntries = new Map(); // skel URL → manifest entry (for the atlas / page URLs on unload)
+  /**
+   * A copy of spine entry `entry` whose skel / atlas / texture URLs carry a `?r=N` cache-buster, or null when the URL
+   * cannot be busted (no entry, or one of them is not an absolute http(s) URL this store can rewrite).
+   *
+   * Why: the CDN answers 404 with `cache-control: public, max-age=2592000, immutable`, so ONE failed request poisons the
+   * browser cache for 30 days and no later attempt revalidates it (a player reported an operator that never left its
+   * fallback diamond; the network panel showed its .skel as 404 from disk cache while the file was served 200). Rewriting
+   * the URLs on a retry makes it a different cache key, so the real file is fetched. A plain `PIXI.Assets.load` cannot do
+   * this: [`PIXI` caches by URL]{@link forgetPendingSpine}.
+   * @param {any} entry @param {number} n the attempt number
+   */
+  const spineBust = (entry, n) => {
+    if (!isObj(entry) || typeof entry.skel !== 'string' || !entry.skel) return null;
+    const add = (u) => (typeof u === 'string' && /^https?:\/\//.test(u) ? `${u}${u.includes('?') ? '&' : '?'}r=${n}` : null);
+    const skel = add(entry.skel);
+    const atlas = entry.atlas == null ? entry.atlas : add(entry.atlas);
+    const texs = Array.isArray(entry.textures) ? entry.textures.map(add) : entry.textures;
+    // every URL must be rewritable, else a mixed entry would load one file twice under two cache keys
+    if (!skel || atlas === null || (Array.isArray(texs) && texs.some((u) => u == null))) return null;
+    return { ...entry, skel, ...(atlas !== undefined ? { atlas } : null), ...(texs !== undefined ? { textures: texs } : null) };
+  };
+  let spineBustSeq = 0;
+
   const spine = new RefLru({
     load: (key, entry, o) => {
       spineEntries.set(key, entry);
+      // 重试（o.fresh：restart 或失败后重试）时给 URL 加一个 cache-buster。
+      //
+      // 起因：CDN 对 404 也发 `cache-control: public, max-age=2592000, immutable`，
+      // 于是某个模型只要曾经 404 过一次，浏览器就会把「不存在」缓存 30 天且**永不重新验证**
+      // （玩家反馈「就一个干员一直只有头像没有模型」，网络面板里该 .skel 显示 404 + disk cache，
+      // 而服务器上文件其实是 200）。加 ?r=N 让 URL 变掉，绕开那份毒缓存。
+      // 只在重试时加：首次加载仍用干净 URL，能正常走 CDN 缓存。
       if (!(o && o.fresh)) return (opts.loadSpine || loadSpineData)(entry);
       // a fresh load (a restart, or after a failure): not joined to a request that may never settle — but the pages
       // another cached skeleton uses stay (forgetPendingSpine `keep`)
       const keep = new Set();
       for (const [k, other] of spineEntries) if (k !== key && spine.map.has(k)) for (const u of spinePages(other)) keep.add(u);
-      return (opts.loadSpine || loadSpineData)(entry, { fresh: true, keep });
+      const busted = spineBust(entry, ++spineBustSeq);
+      return (opts.loadSpine || loadSpineData)(busted || entry, { fresh: true, keep });
     },
     unload: (key, value, rec) => {
       // a late value of an entry that was dropped while loading, with the key already loading/cached again: the

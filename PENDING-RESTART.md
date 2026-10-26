@@ -353,6 +353,67 @@ node test\model-retry-backoff.mjs   全部通过（新增）
 
 ---
 
+### 1h. 某个干员模型 404（真正的原因：CDN 把 404 也缓存 30 天）
+
+**抓到现场的经过**：让管理员在观战页开 DevTools → 网络，筛 `skel`，刷新后看到：
+
+```
+char_133_mm.skel   404   pixi.min.js    23 ms
+char_133_mm.skel   404   sw.js?v=...    (disk cache)   0 ms
+```
+
+同一行两个 404，第二个来自 **disk cache**、耗时 **0 ms** —— 请求根本没发出去。
+`char_133_mm` 就是「梅」（MAIN）。
+
+**验证服务器上文件是好的**：
+```
+HEAD https://assets.luobomiao.love/assets/spine/op/char_133_mm/front/char_133_mm.skel  → 200
+GET  同上（带 Origin/Referer）                                                          → 200, 96578 字节
+抽检 12 个干员模型                                                                        → 12/12 = 200
+```
+
+**真正的病根**：
+```
+404 响应的头：cache-control: public, max-age=2592000, immutable
+```
+
+CDN（或它前面的 nginx）**对 404 也发了 30 天的 immutable 缓存头**。
+`immutable` 的语义是「这个资源在有效期内绝不会变，不用再验证」——
+所以某个模型只要**曾经** 404 过一次（比如某次发布过程中文件短暂缺失），
+浏览器就会把「不存在」这个结论**缓存 30 天，且永不重新验证**。
+
+这和之前修过的 nginx 缓存 404 是同一类问题，但发生在**浏览器端**，服务端改头已经来不及。
+
+**改了什么**（`public/js/assets.js`）：
+
+- 新增 `spineBust(entry, n)`：把 skel / atlas / textures 的 URL 都加上 `?r=<n>`。
+- `RefLru.load` 的**重试路径**（`o.fresh`：失败后重试 / restart）传入 busted entry，
+  让 URL 变掉 → 变成新的缓存键 → 真正回服务器拿文件。
+- **首次加载仍用干净 URL**，正常命中 CDN 缓存，不影响性能。
+
+配合 1g 的「重试永不放弃」，现在：模型一旦失败 → 1.2s 后重试（此时已带 bust）→ 拿到 200 → 显示出来。
+**玩家不需要手动清缓存。**
+
+> ⚠️ 服务端也建议一起修（本次未动，属基础设施）
+> 让 nginx / CDN 对 4xx 不发 `immutable`，例如：
+> `location ~ \.(skel|atlas|png|json)$ { add_header Cache-Control "public, max-age=2592000" always; }`
+> 或对 error_page 单独设 `add_header Cache-Control "no-store" always;`。
+> 否则**今后任何一次** 404 都会继续毒化 30 天缓存，只是现在有 self-heal 兜底。
+
+**验证**：
+```
+node test\spine-cache-bust.mjs   全部通过（新增）
+```
+覆盖：skel/atlas/贴图都带 bust、每次重试值不同、不修改原 entry、
+相对路径不强行改写、首次加载不加 bust、重试路径确实调用。
+另实测 `?r=1` 的三个文件均 200。
+
+`patcher\check-features.mjs` 新增 `client-spine-cache-bust`（3 条断言）。
+
+**涉及文件**：`public/js/assets.js`（静态文件，**刷新即生效，不用重启**）
+
+---
+
 ### 2. 隐身观战加载不出来
 
 **病根**：`Lobby.sendToPlayer()` 只认 `seatOf()` / `spectatorOf()`，
