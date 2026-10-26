@@ -87,6 +87,10 @@ export function makeMatch(o = {}) {
     verify: o.verify ?? 'off',
     headlessSliceMs: o.headlessSliceMs,
     aiPicksLast: o.aiPicksLast,
+    // 5–20 人大厅的实验选项（playerCapacity / allowRepeat / disableDuckLord …）。
+    // 不透传的话 roomCapacity 会退回 MAX_SEATS，构造超过 4 人的房间会直接抛
+    // 「seats exceed room capacity」，也就无法测试 capacityExperiment 相关的逻辑。
+    experimental: o.experimental,
     // a bot prep's layout rehearsal delegated to the room's host (DESIGN §14; test/match/rehearsal-delegate.test.js):
     // `hostId` is the executor a task is sent to, `botRehearsalDelegateMs` its answer window
     hostId: o.hostId !== undefined ? o.hostId : (o.test === true ? (seats.find((s) => s && !s.isBot)?.playerId ?? null) : undefined),
