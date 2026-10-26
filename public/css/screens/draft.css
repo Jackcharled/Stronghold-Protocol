@@ -39,6 +39,9 @@
 .draft-order__rows { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: .24rem; overflow: auto; padding: .08rem .5rem .1rem .3rem; scrollbar-width: none; }
 .draft-order__tip { flex: none; margin: 0; padding-right: .5rem; font-size: calc(.14 * var(--t)); line-height: 1.55; color: var(--text-dim); }
 .draft--detail .draft-order__tip, .draft--detail .draft-order__deco span { display: none; }
+/* 并发草稿（5–20 人大厅）：所有人同时选，左栏不再需要「当前是谁」的节奏，
+   行列表给宽一点、纵向排布，避免大房间里被挤成一列细条。 */
+.draft-order.is-wide .draft-order__rows { gap: .14rem; padding-right: .3rem; }
 
 .dorder { position: relative; flex: none; display: grid; grid-template-columns: minmax(0, 1fr) 1.2rem .5rem; align-items: center; gap: .1rem; height: 1.26rem;
   animation: pg-left 420ms var(--pg-ease) backwards; animation-delay: calc(180ms + var(--i, 0) * 70ms); }

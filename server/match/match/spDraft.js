@@ -25,7 +25,9 @@ export class MatchSpDraft {
     order = this.humansFirst(order);
     // untimed: solo and any single-human match (soloUntimed); the co-op order / 6 cards stay
     const untimed = this.soloUntimed;
-    this.sp = { ...draft, order, idx: 0, picks: {}, taken: {}, untimed, turnDeadline: 0 };
+    // 5–20 人大厅：所有人同时各选一张，整段共用一个倒计时（原来的实现，升级上游时被丢掉了）
+    const concurrent = this.concurrentDraft();
+    this.sp = { ...draft, order, idx: 0, picks: {}, taken: {}, untimed, turnDeadline: 0, ...(concurrent ? { concurrent: true } : {}) };
     this.setDeadline(0);
     this.startSpTurn();
     this.markPublic();
@@ -33,14 +35,36 @@ export class MatchSpDraft {
 
   spTurn() {
     const s = this.sp;
-    if (!s) return null;
+    if (!s || s.concurrent) return null;   // 并发草稿没有「当前这一位」
     return s.order[s.idx] ?? null;
   }
 
-  spCardAvailable(card) { return !!card && this.sp?.taken[card.idx] == null && (card.kind !== 'item' || this.itemPool.canGain(card.id)); }
+  /** Whether `ps` still has a card to pick in a concurrent draft. */
+  spPending(ps) {
+    const s = this.sp;
+    return !!s && !!ps && ps.alive && s.picks[ps.playerId] == null && s.cards.some((c) => this.spCardAvailable(c, ps));
+  }
+
+  /**
+   * 这张卡能不能选。
+   *
+   * `this.capacityExperiment`（5–20 人大厅）时**不判重**：多人局里每人独立卡池，
+   * 允许多人悬赏同一个目标。以前这里是 `taken[idx] == null` 一刀切，
+   * 大房间也强制不重复 —— 玩家反馈的「5–20 的悬赏决策不能重复选择」正是这个。
+   * 普通 4 人局仍按 队友已选 的规则走。
+   *
+   * @param {any} card @param {any} [player] 谁在选（物品类卡按这个人的卡池判断）
+   */
+  spCardAvailable(card, player = null) {
+    if (!card) return false;
+    const free = this.capacityExperiment || this.sp?.taken[card.idx] == null;
+    if (!free) return false;
+    return card.kind !== 'item' || (player ? this.itemPoolFor(player).canGain(card.id) : this.itemPool.canGain(card.id));
+  }
 
   startSpTurn() {
     const s = this.sp;
+    if (s.concurrent) { this._concurrentSpStep(); return; }
     this.cancel(this._turnTimer);
     this._turnTimer = null;
     while (s.idx < s.order.length) { // loop-cap: draft order
@@ -71,13 +95,62 @@ export class MatchSpDraft {
     this.markPublic();
   }
 
-  scheduleSpBot() {
+  /**
+   * 5–20 人大厅的并发悬赏：**所有还活着的座位同时各选一张**，整段共用一个倒计时。
+   * 这是本服 0.3.3 之前的实现，升级上游时被丢掉，大房间退回成「一个一个按顺序选」。
+   */
+  _concurrentSpStep() {
+    const s = this.sp;
+    if (!s || s.done) return;
+    const deciding = s.order.map((pid) => this.players.get(pid)).filter((ps) => this.spPending(ps));
+    // 都选完了（或没有可选的卡）：结束本阶段
+    if (!deciding.length) {
+      s.done = true;
+      s.turnDeadline = 0;
+      this.setDeadline(0);
+      this.later(0, () => this.finishSpDraft());
+      this.markPublic();
+      return;
+    }
+    if (!s.armed) {
+      s.armed = true;
+      const token = ++this._turnToken;
+      this.setDeadline(this.gd.timer('spFirst'), () => {
+        if (this.phase !== PHASE.SP_DRAFT || token !== this._turnToken || this.sp !== s) return;
+        // 超时：还没选的人各随机拿一张可选的
+        for (const ps of deciding) {
+          if (!this.spPending(ps)) continue;
+          const avail = s.cards.filter((c) => this.spCardAvailable(c, ps)).map((c) => c.idx);
+          if (avail.length) this._applyCard(ps, avail[Math.floor(this.rngDraft() * avail.length)]);
+        }
+        this._concurrentSpStep();
+      });
+      s.turnDeadline = this.deadline;
+    } else {
+      this.setDeadline(0);
+    }
+    // AI / 托管座位立刻出手；真人各选各的
+    const humansDeciding = deciding.some((p) => p && !p.isBot);
+    for (const ps of deciding) {
+      if (ps.botControlled && (!this.aiPicksLast || !ps.isBot || !humansDeciding)) this.scheduleSpBot(ps);
+    }
+    this.markPublic();
+  }
+
+  scheduleSpBot(target = null) {
     const token = this._turnToken;
+    const s = this.sp;
+    // 并发草稿：每个座位只排一次
+    if (s?.concurrent) {
+      if (!target || s.botQueued?.has(target.playerId)) return;
+      (s.botQueued ||= new Set()).add(target.playerId);
+    }
     this.later(this.scaled(DELAYS.BOT_ACTION), () => {
-      if (this.phase !== PHASE.SP_DRAFT || token !== this._turnToken || !this.sp) return;
-      const ps = this.players.get(this.spTurn());
-      if (!ps || !ps.botControlled) return;
-      const avail = this.sp.cards.filter(c => this.spCardAvailable(c)).map(c => c.idx);
+      if (s?.concurrent) s.botQueued.delete(target.playerId);
+      if (this.phase !== PHASE.SP_DRAFT || token !== this._turnToken || !this.sp || this.sp !== s) return;
+      const ps = s.concurrent ? target : this.players.get(this.spTurn());
+      if (!ps || !ps.botControlled || !this.spPending(ps)) return;
+      const avail = s.cards.filter(c => this.spCardAvailable(c, ps)).map(c => c.idx);
       if (!avail.length) return;
       const fallback = () => this._applyCard(ps, this.bot.pickCard(this, ps, this.sp.cards, avail));
       if (this.bot.decide?.(this, ps, { kind: 'card',
@@ -91,20 +164,23 @@ export class MatchSpDraft {
     if (this.phase !== PHASE.SP_DRAFT || !this.sp) return fail(ERR.WRONG_PHASE);
     if (!ps.alive) return fail(ERR.ELIMINATED);
     if (this.sp.picks[ps.playerId] != null) return fail(ERR.ALREADY);
-    if (this.spTurn() !== ps.playerId) return fail(ERR.NOT_YOUR_TURN);
+    // 并发草稿里人人同时选，没有轮次限制
+    if (!this.sp.concurrent && this.spTurn() !== ps.playerId) return fail(ERR.NOT_YOUR_TURN);
     if (!Number.isInteger(idx) || idx < 0 || idx >= this.sp.cards.length) return fail(ERR.BAD_TARGET);
-    if (!this.spCardAvailable(this.sp.cards[idx])) return fail(ERR.SOLD_OUT);
+    if (!this.spCardAvailable(this.sp.cards[idx], ps)) return fail(ERR.SOLD_OUT);
     this._applyCard(ps, idx);
     return OK;
   }
 
   _applyCard(ps, idx) {
     const s = this.sp;
-    if (!s || s.picks[ps.playerId] != null || !this.spCardAvailable(s.cards[idx])) return;
-    const card = s.cards[idx];
+    if (!s || s.picks[ps.playerId] != null || !this.spCardAvailable(s.cards[idx], ps)) return;
+    // 5–20 人大厅里同一张卡可能被多人选中：每人拿一份独立的副本，
+    // 否则 applyCard 会改到共享的卡片对象，后面选同一张的人就被前面的人影响了。
+    const card = this.capacityExperiment ? structuredClone(s.cards[idx]) : s.cards[idx];
     if (!card) return;
     s.picks[ps.playerId] = idx;
-    s.taken[idx] = ps.playerId;
+    if (s.taken[idx] == null) s.taken[idx] = ps.playerId;
     try { applyCard(this, ps, card); } catch (e) { this.reportError(`applyCard ${card.id}`, e); }
     this.markPrivate(ps);
     this.markPublic();

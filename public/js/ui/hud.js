@@ -495,8 +495,13 @@ export function UniteBudgetNote({ pub }) {
   const relay = total > segment && segment > 0;
   const round = Math.max(1, Math.min(2, Number(pub?.unite?.round) || 1));
   const realLeft = secondsLeft(pub?.deadline);
+  // 单位要说清楚：服务端下发的是**游戏秒**（timeLimit），除以游戏速度才是真实秒。
+  // 以前只写「联防时间：150 秒」，而同一帧的跑马灯写「本段 300 游戏秒」，
+  // 两个数看着互相矛盾（其实 300 游戏秒 ÷ 2 倍速 = 150 真实秒），玩家会以为预算给少了。
   return html`<div class="gtop__budget" data-testid="unite-budget" data-total=${budget.total} data-remaining=${budget.remaining}>
-    <span>${relay ? t('联防第 {round}/2 段：{n} 秒', { round, n: segmentSeconds }) : t('联防时间：{n} 秒', { n: segmentSeconds })}</span>
+    <span title=${t('服务端下发 {g} 游戏秒，{s} 倍速下实际 {r} 秒', { g: segment, s: speed, r: segmentSeconds })}>${relay
+      ? t('联防第 {round}/2 段：{n} 秒（{g} 游戏秒）', { round, n: segmentSeconds, g: segment })
+      : t('联防时间：{n} 秒（{g} 游戏秒）', { n: segmentSeconds, g: segment })}</span>
     <span>${realLeft == null ? t('倒计时：--') : t('倒计时：{n} 秒', { n: realLeft })}</span>
   </div>`;
 }

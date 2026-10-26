@@ -48,12 +48,15 @@ export class MatchPhases {
     let order = this.order.map((p) => p.playerId);
     if (!this.isSolo) this.rngDraft.shuffle(order);
     order = this.humansFirst(order);
-    const skips = this.isSolo ? 0 : this.gd.bandDraft.skipsPerPlayer;
+    // 并发草稿（5–20 人大厅）：所有人同时选一次，没有「跳过」这个动作
+    const concurrent = this.concurrentDraft();
+    const skips = this.isSolo || concurrent ? 0 : this.gd.bandDraft.skipsPerPlayer;
     const untimed = this.soloUntimed;
     this.draft = {
       order, idx: 0, picks: {}, skipsLeft: Object.fromEntries(order.map((pid) => [pid, skips])), untimed, turnDeadline: 0,
       /** playerId → the strategy highlighted in the draft screen (g.bandFocus) */
       focus: new Map(),
+      ...(concurrent ? { concurrent: true } : {}),
     };
     this.setDeadline(0);
     this.startDraftTurn();
@@ -78,7 +81,7 @@ export class MatchPhases {
 
   draftTurn() {
     const d = this.draft;
-    if (!d) return null;
+    if (!d || d.concurrent) return null;   // 并发草稿没有「当前这一位」
     return d.order[d.idx] ?? null;
   }
 
@@ -87,6 +90,7 @@ export class MatchPhases {
 
   startDraftTurn() {
     const d = this.draft;
+    if (d.concurrent) { this._concurrentBandStep(); return; }
     this.cancel(this._turnTimer);
     this._turnTimer = null;
     if (this.test) this.setDeadline(0);
@@ -119,15 +123,74 @@ export class MatchPhases {
     this.markPublic();
   }
 
+  /**
+   * 5–20 人大厅的并发草稿：**所有座位同时各选一次**，整个阶段共用一个倒计时。
+   *
+   * 这是本服 0.3.3 之前的实现，升级上游时被整段丢掉（`Match.concurrentDraft()` 和
+   * `views.js` 的 `d.concurrent` 都还在，只有这里的执行逻辑没了），
+   * 于是大房间退回成「一个一个按顺序选」——玩家反馈的正是这个。
+   */
+  _concurrentBandStep() {
+    const d = this.draft;
+    if (d.done) return;
+    // 所有人都选完了：结束本阶段
+    if (d.order.every((pid) => d.picks[pid])) {
+      d.done = true;
+      this.cancel(this._turnTimer);
+      this._turnTimer = null;
+      d.turnDeadline = 0;
+      this.setDeadline(0);
+      this.later(0, () => this.finishBandDraft(false));
+      this.markPublic();
+      return;
+    }
+    // 第一次进入：起一个覆盖整个阶段的倒计时
+    if (!d.armed) {
+      d.armed = true;
+      const token = ++this._turnToken;
+      if (!d.untimed) {
+        const ms = this.bandTurnMs();
+        d.turnDeadline = this.sched.now() + ms;
+        this.deadline = d.turnDeadline;
+        // 超时：所有还没选的人各自按 timeoutBand 兜底（高亮的策略优先，否则默认且尽量不重复）
+        const expire = () => {
+          if (this.phase !== PHASE.BAND_DRAFT || token !== this._turnToken || this.draft !== d) return;
+          for (const pid of d.order) if (!d.picks[pid] && this.players.get(pid)) this._applyBand(this.players.get(pid), this.timeoutBand(pid));
+        };
+        if (this.test) { this.setDeadline(ms / 1000 / (this.timerScale || 1), expire); d.turnDeadline = this.deadline; }
+        else this._turnTimer = this.later(ms, expire);
+      } else {
+        d.turnDeadline = 0;
+        this.setDeadline(0);
+      }
+    }
+    // 让还在等的 AI / 托管座位立刻出手（真人不受影响，各选各的）
+    const deciding = d.order.filter((pid) => !d.picks[pid]).map((pid) => this.players.get(pid));
+    const humansDeciding = deciding.some((p) => p && !p.isBot);
+    for (const ps of deciding) {
+      if (ps && ps.botControlled && (!this.aiPicksLast || !ps.isBot || !humansDeciding)) this.scheduleBandBot(ps);
+    }
+    this.markPublic();
+  }
+
   /** An AI seat's (or an AI 托管 seat's) turn: it picks at once (user playtest #4 item 4 — nobody waits on the AI). */
-  scheduleBandBot() {
+  scheduleBandBot(target = null) {
     const token = this._turnToken;
+    const d = this.draft;
+    // 并发草稿：每个座位只排一次（避免重复排队）
+    if (d?.concurrent) {
+      if (!target || d.botQueued?.has(target.playerId)) return;
+      (d.botQueued ||= new Set()).add(target.playerId);
+    }
     this.later(0, () => {
-      if (this.phase !== PHASE.BAND_DRAFT || token !== this._turnToken) return;
-      const ps = this.players.get(this.draftTurn());
+      if (d?.concurrent) d.botQueued.delete(target.playerId);
+      if (this.phase !== PHASE.BAND_DRAFT || token !== this._turnToken || this.draft !== d) return;
+      const ps = d.concurrent ? target : this.players.get(this.draftTurn());
       if (!ps || !ps.botControlled) return;
+      if (d.picks[ps.playerId]) return;
       const fallback = () => {
-        // a strategy a teammate already took is not selectable (队友已选): the bot re-draws, else the first free one
+        // a strategy a teammate already took is not selectable (队友已选): the bot re-draws, else the first free one.
+        // 「允许重复选择策略」开着时 bandTaken 恒为 false，AI 就按自己的意愿挑（可能与人重复）—— 与本服原始设计一致。
         let id = this.bot.pickBand(this, ps);
         for (let k = 0; k < 8 && this.bandTaken(id, ps.playerId); k++) id = this.bot.pickBand(this, ps);
         if (this.bandTaken(id, ps.playerId)) id = this.gd.bandIds().find((b) => !this.bandTaken(b, ps.playerId)) || id;
@@ -144,8 +207,14 @@ export class MatchPhases {
    * Whether `bandId` was already picked by another player of this draft. Research 09 §5 / DESIGN §14 corrections:
    * the strategy draft marks a teammate's pick as 队友已选 and it cannot be chosen again (co-op). The automatic
    * assignments — a turn that runs out and a departing seat — obey the same rule: see timeoutBand / defaultBand.
+   *
+   * 实验选项「允许重复选择策略」(allowRepeat，5–20 人大厅) 打开后**整支队伍都不再判重**：
+   * 玩家可以主动选别人已拿过的盟约，AI 也照常按自己的意愿挑（可能与人重复）。
+   * 这是本服原始设计（0.3.3 升级时 `_concurrentBandStep` 那套并发草稿连同本行一起被丢掉，
+   * 导致开关只剩「下发给前端」一个作用，实际选的时候仍被拦成「队友已选」）。
    */
   bandTaken(bandId, playerId) {
+    if (this.allowRepeat) return false;
     const picks = this.draft?.picks || {};
     for (const [pid, id] of Object.entries(picks)) if (pid !== playerId && id === bandId) return true;
     return false;
@@ -173,6 +242,8 @@ export class MatchPhases {
    */
   timeoutBand(playerId) {
     const f = this.draft && this.draft.focus instanceof Map ? this.draft.focus.get(playerId) : null;
+    // 玩家高亮的这个就是他想要的：allowRepeat 下允许它和队友重复（不算「自动」），
+    // 没高亮才退到 defaultBand，那里才会去重。
     if (typeof f === 'string' && this.gd.bandAllowed(f) && !this.bandTaken(f, playerId)) return f;
     return this.defaultBand(playerId);
   }
@@ -195,7 +266,8 @@ export class MatchPhases {
   pickBand(ps, bandId) {
     if (this.phase !== PHASE.BAND_DRAFT || !this.draft) return fail(ERR.WRONG_PHASE);
     if (this.draft.picks[ps.playerId]) return fail(ERR.ALREADY);
-    if (this.draftTurn() !== ps.playerId) return fail(ERR.NOT_YOUR_TURN);
+    // 并发草稿里人人都是「当前位」，没有轮次限制
+    if (!this.draft.concurrent && this.draftTurn() !== ps.playerId) return fail(ERR.NOT_YOUR_TURN);
     if (typeof bandId !== 'string' || !this.gd.bandAllowed(bandId)) return fail(ERR.BAD_TARGET);
     if (this.bandTaken(bandId, ps.playerId)) return fail(ERR.BAD_TARGET, '队友已选'); // i18n-ignore: developer detail (players see ERR_TEXT)
     this._applyBand(ps, bandId);
@@ -206,6 +278,8 @@ export class MatchPhases {
     const d = this.draft;
     if (!d || !ps || d.picks[ps.playerId]) return;
     let id = this.gd.bandAllowed(bandId) ? bandId : this.defaultBand(ps.playerId);
+    // dedupe 只出现在自动分配路径上（超时 / 掉线托管）：避开队友已选的，给玩家一个有区分度的兜底。
+    // allowRepeat 打开时 bandTaken 恒为 false，所以这里自然不生效。
     if (dedupe && this.bandTaken(id, ps.playerId)) id = this.gd.bandIds().find((b) => !this.bandTaken(b, ps.playerId)) || id;
     d.picks[ps.playerId] = id;
     ps.bandId = id;
@@ -220,6 +294,8 @@ export class MatchPhases {
     const d = this.draft;
     if (this.isSolo) return fail(ERR.WRONG_PHASE, 'no skip in solo');
     if (d.picks[ps.playerId]) return fail(ERR.ALREADY);
+    // 并发草稿没有「跳过」：没有人排在后面等你让位
+    if (d.concurrent) return fail(ERR.WRONG_PHASE, 'no skip in a concurrent draft');
     if (this.draftTurn() !== ps.playerId) return fail(ERR.NOT_YOUR_TURN);
     if (!(d.skipsLeft[ps.playerId] > 0)) return fail(ERR.ALREADY, 'no skip left');
     if (d.order.length - d.idx <= 1) return fail(ERR.BAD_TARGET, 'nobody to pass to');

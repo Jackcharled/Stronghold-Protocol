@@ -41,7 +41,7 @@ import { StepHeader, ExitModal } from '../ui/matchChrome.js';
 import { MatchInfoDialog, matchInfoModel } from '../ui/matchInfo.js';
 import { MatchEnemies } from '../ui/matchEnemies.js';
 import { actions, act } from '../ui/gameActions.js';
-import { normalizeDraft, sortedPlayers } from '../ui/gameLogic.js';
+import { normalizeDraft, sortedPlayers, draftMyTurn } from '../ui/gameLogic.js';
 import { useStore } from '../store.js';
 import { data } from '../data.js';
 import { audio } from '../audio.js';
@@ -75,10 +75,13 @@ export function BandOffNote({ names = [] }) {
  * @param {any[]} bands
  * @param {string|null} modeType 'SINGLE'|'MULTI'
  */
-export function allowedBands(bands, modeType) {
+export function allowedBands(bands, modeType, disableDuckLord = false) {
   const sid = (b) => (Number.isFinite(b.sortId) ? b.sortId : 99);
   return (Array.isArray(bands) ? bands : [])
-    .filter((b) => b && (!modeType || !Array.isArray(b.modeTypeList) || b.modeTypeList.includes(modeType)))
+    // 「禁用鸭爵策略」(5–20 人大厅的实验选项) 在这里把鸭爵从候选里去掉：
+    // 服务端 gd.disableDuckLord 已经生效，前端也必须一致，否则玩家还能看到并选中一个服务端会拒的策略。
+    .filter((b) => b && !(disableDuckLord === true && b.bandId === 'band_ducklord')
+      && (!modeType || !Array.isArray(b.modeTypeList) || b.modeTypeList.includes(modeType)))
     .sort((a, b) => sid(a) - sid(b) || (a.bandId < b.bandId ? -1 : a.bandId > b.bandId ? 1 : 0));
 }
 
@@ -270,16 +273,23 @@ export function BandDraftScreen({ held = null } = {}) {
   const mode = gd.config?.modes?.[pub?.modeId];
   const offBonds = modeOffBonds(mode); // the bonds this mode never activates (标准: 10 of 23)
   const solo = roomSolo || mode?.type === 'SINGLE' || String(pub?.modeId || '').includes('single');
-  const bands = useMemo(() => allowedBands(gd.list('bands'), mode?.type || (solo ? 'SINGLE' : 'MULTI')), [gd.ready, mode?.type, solo, data.locale(), data.contentId()]);
+  // 「禁用鸭爵策略」：只在 5–20 人大厅房生效（服务端 gd.disableDuckLord 同一条件）
+  const disableDuckLord = !solo && pub?.playerCapacity > 4 && pub?.experimental?.disableDuckLord === true;
+  const bands = useMemo(() => allowedBands(gd.list('bands'), mode?.type || (solo ? 'SINGLE' : 'MULTI'), disableDuckLord), [gd.ready, mode?.type, solo, disableDuckLord, data.locale(), data.contentId()]);
   const players = sortedPlayers(pub);
   const draft = normalizeDraft(pub?.draft, players);
   const myPick = draft.picks.get(myId) || priv?.bandId || null;
   const inOrder = solo || draft.order.includes(myId);
-  const myTurn = !myPick && (solo || draft.turnPid === myId);
+  // 轮到谁：并发草稿（5–20 人大厅 allowRepeat）里人人同时选、尚无选择就是「轮到我」，
+  // 顺序草稿才看 turnPid。以前这里直接判 draft.turnPid === myId，
+  // 并发时服务端 draftTurn() 返回 null，于是永远不「轮到我」、玩家根本选不了。
+  const myTurn = !myPick && draftMyTurn(draft, myId, solo);
   const skipsLeft = draft.skipsLeft.has(myId) ? draft.skipsLeft.get(myId) : (skipped ? 0 : 1);
   // the last doctor still to pick cannot skip (no one to pass the turn to)
-  const canSkip = !solo && myTurn && skipsLeft > 0 && draft.order.filter((pid) => !draft.picks.has(pid)).length > 1;
-  const taken = solo ? new Map() : teammateBands(draft.picks, myId);
+  // 并发草稿（5–20 人大厅）没有「跳过」：所有人同时选，没有人排在后面等你让位
+  const canSkip = !solo && !draft.concurrent && myTurn && skipsLeft > 0 && draft.order.filter((pid) => !draft.picks.has(pid)).length > 1;
+  // 并发 + 允许重复时，别人的选择不构成「队友已选」
+  const taken = solo || (draft.concurrent && draft.allowRepeat) ? new Map() : teammateBands(draft.picks, myId);
   const pickers = new Map(); // bandId → players
   for (const [pid, bid] of draft.picks) {
     const p = players.find((x) => x.playerId === pid);
@@ -416,12 +426,13 @@ export function BandDraftScreen({ held = null } = {}) {
         title=${t('本局信息')}><${Icon} name="search" /><span>${t('本局信息')}</span></button>`}
       status=${head} />
     <main class="draft__main">
-      <aside class="draft-order">
+      <aside class=${cx('draft-order', draft.concurrent && 'is-wide')}>
         <div class="draft-order__deco" aria-hidden="true"><i></i><i></i><span>STRONGHOLD PROTOCOL<br />${solo ? 'SINGLE OPERATOR' : 'COLLABORATIVE SYSTEM'}</span></div>
         <div class="draft-order__rows">
           ${rows.map((p, i) => {
             const picked = draft.picks.get(p.playerId) || (p.playerId === myId ? myPick : p.bandId) || null;
-            const cur = !picked && !allPicked && (solo || draft.turnPid === p.playerId);
+            // 并发草稿里所有还没选的人都算「当前」（没有先后）
+            const cur = !picked && !allPicked && (solo || draft.concurrent || draft.turnPid === p.playerId);
             return html`<${OrderRow} key=${p.playerId} p=${p} i=${i} picked=${picked} cur=${cur} self=${p.playerId === myId}
               arts=${artOf(p)} medal=${p.playerId === myId ? myMedal : null} gd=${gd} onPeek=${peekBand} />`;
           })}
