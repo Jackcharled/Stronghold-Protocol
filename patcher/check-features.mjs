@@ -151,6 +151,9 @@ const CHECKS = [
       ['matchmaker/public/admin.html', /<th>版本<\/th>/, '★ 管理后台房间表头有版本列'],
       ['matchmaker/public/admin.html', /class="room-ver/, '★ 管理后台渲染版本单元格'],
       ['matchmaker/public/admin.html', /#roomBody \.room-ver/, '管理后台版本样式'],
+      // 加列时必须同步调整列宽索引，否则「玩家」列被挤成竖排（2026-10-26 实际发生过）
+      ['matchmaker/public/admin.html', /#roomsCard th:nth-child\(8\)\{width:19%\}/, '★ 玩家列（第8列）宽度足够'],
+      ['matchmaker/public/admin.html', /#roomsCard th:nth-child\(13\)\{width:\d+%\}/, '13 列的宽度都有定义'],
     ],
   },
   {
