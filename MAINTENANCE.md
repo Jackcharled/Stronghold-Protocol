@@ -1,4 +1,4 @@
-# 卫戍协议 · 运维维护手册（2026-10-20）
+# 卫戍协议 · 运维维护手册（2026-10-26）
 
 > 新会话接手必读。本文件覆盖：整体架构、30 节点、管理后台、数据库、控制台、日常运维、故障排查。
 > 配套文档：`docs/HANDOFF-2026-10-20.md`（开发交接）、`docs/GITHUB-RULES.md`（上传规则）。
@@ -53,7 +53,7 @@ nginx 1.31.7（D:\Stronghold-Protocol\nginx，443）
 | 持久化 | 每个节点用独立 Redis 前缀 `sp:n<N>:` 保存房间/会话/对局检查点，每 10 秒一次；建房（`room.create`）与开局（`startMatch`）时立即 flush 一次，重启后恢复（日志 `[persist] restored N session(s), M room(s)`） |
 | 检查点 | 每 10 秒 |
 | 单节点容量 | 房间上限与每 IP 限制写在 `server/http/config.js` 的 `LOBBY_OPTION_KEYS` |
-| 节点分配 | 匹配服务按负载选择节点；客户端通过 `sp_route` cookie 固定上游，`sp_node` 供前端读取（pin 时两个 cookie 一起写） |
+| 节点分配 | 三条入口：①新玩家首次访问由 nginx 的 `split_clients $sp_rand_node` 随机分配；②匹配服务按负载选择节点；③之后都靠 `sp_route` cookie 粘住（`sp_node` 供前端读取，pin 时两个 cookie 一起写）。维护期要**同时**限制 ① 和 ②，见「重启窗口期」一节 |
 | 重启影响 | 该节点上玩家掉线 1~2 秒自动重连，房间与对局由持久化恢复 |
 
 ### 节点常用命令
@@ -74,6 +74,97 @@ curl http://127.0.0.1:3007/healthz
 | `PORT` | 监听端口 |
 | `SP_MAX_BOTS_PER_ADDR` | 单 IP 最多 AI 数 |
 | `SP_IDLE_KICK_MS` | **已废弃**（挂机踢人已从代码移除，设置无效） |
+
+### 匹配器配置项（`matchmaker`，在 `ecosystem.config.cjs` 的 `matchmaker.env`）
+
+| 变量 | 作用 |
+|---|---|
+| `MM_PORT` / `MM_HOST` | 匹配服务监听地址（3090 / 127.0.0.1） |
+| `MM_EXPERIMENTAL_NODE` | 5–20 人大厅专用节点，默认 `4`。**这个节点必须在开放列表里**，否则多人大厅开不出来 |
+| `MM_DISABLED_NODES` | 暂停接收新玩家的节点，逗号分隔，如 `1,3,9`。见下节 |
+
+### 重启窗口期：节点分批维护的标准做法
+
+节点上有人在对局时**不能重启**。要更新服务端代码又不想打断玩家，按这个顺序做：
+
+**第一步：判断哪些节点能重启**
+
+```powershell
+foreach ($n in 1..30) {
+  $j = Invoke-RestMethod "http://127.0.0.1:$((3000+$n))/healthz" -TimeoutSec 2
+  if ($j.rooms -eq 0 -and $j.matches -eq 0 -and $j.humans -eq 0) { "node-$n 空闲" }
+}
+```
+
+判断标准是 `rooms / matches / humans` **全为 0**，不能只看 `uptimeSec`。
+`sockets > 0` 但 `humans = 0` 通常是节点自己到 127.0.0.1 的内部连接，不算玩家。
+重启前**再查一次**（两次采样），避免刚好有人进来。
+
+**第二步：重启空闲节点，并把它设为开放**
+
+```powershell
+pm2 startOrReload ecosystem.config.cjs --only node-7 --update-env
+pm2 save
+```
+
+> 必须用 `startOrReload ... --update-env` 才会重读 `ecosystem.config.cjs`；
+> 普通 `pm2 restart` 不会重读，环境变量还是旧的。
+
+**第三步：把有玩家的节点从「对外开放」里摘掉（改两处！）**
+
+| 位置 | 改什么 |
+|---|---|
+| `ecosystem.config.cjs` → `matchmaker.env.MM_DISABLED_NODES` | 写上受限节点号 |
+| `nginx/conf/nginx.conf` → `split_clients $sp_rand_node` | **只保留开放节点**，权重按数量等分 |
+| `nginx/conf/nginx.conf` → `map $cookie_sp_route $sp_cookie_open` | 受限节点记 `0`，开放节点记 `1` |
+
+```powershell
+# 匹配器
+pm2 startOrReload ecosystem.config.cjs --only matchmaker --update-env
+pm2 save
+# nginx
+.\nginx\nginx.exe -t -c "$PWD\nginx\conf\nginx.conf" -p "$PWD\nginx"
+.\nginx\nginx.exe -s reload -c "$PWD\nginx\conf\nginx.conf" -p "$PWD\nginx"
+```
+
+> ⚠️ **只改其中一处是不够的**，两条入口各管一半：
+> - `MM_DISABLED_NODES` 只管**匹配器组队时挑哪个节点**
+> - `split_clients` / `sp_cookie_open` 管**新玩家登录进哪个节点**（nginx 静态分流）
+>
+> 漏掉 nginx 那份，新玩家照样会被随机分进正在维护的节点。
+
+**这些限制拦的是什么、不拦什么**
+
+| 场景 | 受限节点 |
+|---|---|
+| 新玩家首次访问被 nginx 随机分配进来 | ❌ 不会（`split_clients` 里没有它） |
+| 匹配系统把新玩家分进来 | ❌ 不会（`DISABLED_NODES` 排除） |
+| 旧 `sp_route` cookie 指向它 | ❌ 会被重新分流到开放节点 |
+| **房间里已有的玩家继续游玩** | ✅ **完全不受影响** |
+| **房间直连**（`?room=CODE`、`n=`、`adminWatch=1`） | ✅ **强制回原节点，绝不切走** |
+| 打完后在房间里再开一局 | ✅ 可以 |
+
+**第四步：等对局自然结束后，重复第一步**，把空出来的节点重启、加回开放列表。
+
+**验证是否真的生效**
+
+```powershell
+# 匹配器启动日志应打印
+Get-Content logs\matchmaker.out-*.log -Tail 5 | Select-String "暂停接收新玩家"
+
+# 带受限节点 cookie 访问，应被改派到开放节点
+$r = Invoke-WebRequest "https://stronghold.luobomiao.love/" -UseBasicParsing -Headers @{ Cookie = "sp_route=20" }
+@($r.Headers['X-SP-Node'])[0]     # 不应是 20
+
+# 房间直连必须仍回原节点
+$r = Invoke-WebRequest "https://stronghold.luobomiao.love/?n=20" -UseBasicParsing -Headers @{ Cookie = "sp_route=2" }
+@($r.Headers['X-SP-Node'])[0]     # 必须是 20
+```
+
+**第五步：全部节点更新完**，把 `MM_DISABLED_NODES` 置空、
+`split_clients` 恢复成 30 个节点各 3.33%、`$sp_cookie_open` 全部记 `1`。
+
+> 当前进度与每次的节点清单记录在仓库根目录 `PENDING-RESTART.md`。
 
 ---
 
@@ -211,6 +302,9 @@ curl --resolve stronghold.luobomiao.love:443:127.0.0.1 -o NUL -s -w "%{http_code
 | 需求 | 操作 |
 |---|---|
 | 暂停建房（维护） | 后台 → 服务器设置 → 取消「允许创建房间」 |
+| **更新代码但不打断玩家** | 见「重启窗口期：节点分批维护的标准做法」 |
+| **某节点要重启但还有人在玩** | 先把节点号加进 `MM_DISABLED_NODES` **和** nginx 的 `split_clients`/`sp_cookie_open`，等它空下来再重启 |
+| **放开一个节点** | 从上面两处同时移除，`pm2 startOrReload ... matchmaker --update-env` + `nginx -s reload` |
 | 踢掉某玩家 | 房间内房主踢人；或封禁账号 |
 | 重置玩家密码 | 后台 → 玩家账号 → 重置密码（玩家也可自助找回） |
 | 解除误封 | 后台 → 封禁按钮切换 |
@@ -236,6 +330,10 @@ curl --resolve stronghold.luobomiao.love:443:127.0.0.1 -o NUL -s -w "%{http_code
 | 玩家刷新回旧房间 | 会话残留 `roomCode` | 已修：`onHello` 校验座位，无座位则清空 |
 | 登录 500 | matchmaker 日志 `Max call stack`（ipOf 递归）等 | 修复后重启 matchmaker |
 | 节点启动崩溃 `xxx is not a function` | 近期是否批量删过代码 | 从 `deploy/server-patches` 基线恢复该方法 |
+| 新玩家还进维护中的节点 | `split_clients` 与 `$sp_cookie_open` 是否同步改了 | 两处都要改（见「重启窗口期」），改完 `nginx -t` + `-s reload` |
+| 改了 `MM_DISABLED_NODES` 没生效 | 是否用了 `pm2 restart` | 必须 `pm2 startOrReload ... matchmaker --update-env`，再 `pm2 save` |
+| 5–20 人大厅开不出来 | `MM_EXPERIMENTAL_NODE`（默认 4）是否被限制/离线 | 放开该节点或改指向别的开放节点 |
+| 玩家被切到别的节点、对局丢失 | `?room=` / `n=` 分支是否被改动 | 房间上下文优先级必须最高，见「重启窗口期」 |
 
 ---
 
