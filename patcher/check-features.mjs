@@ -125,6 +125,17 @@ const CHECKS = [
     ],
   },
   {
+    id: 'client-mobile-quality',
+    name: '手机「画面质量」真正生效',
+    rules: [
+      // 以前 `lean ? 1 : 2`：触屏一律夹到 DPR 1，手机上高画质等于没设，画面糊
+      ['public/js/render/app.js', /const TOUCH_DPR_CAP = \{/, '★ 触屏像素上限按画质分档'],
+      ['public/js/render/app.js', /lean \? \(TOUCH_DPR_CAP\[settings\.quality\] \|\| 1\) : 2/, '★ dpr() 用分档表'],
+      ['public/js/render/app.js', /lean \? \(TOUCH_BOARD_DPR_CAP\[settings\.quality\] \|\| 0\.85\) : 2/, '★ boardDpr() 用分档表'],
+      ['public/js/render/app.js', /TOUCH_DPR_CAP = \{ high: 2, medium: 1\.5, low: 1 \}/, '★ 手机高画质 = 2x'],
+    ],
+  },
+  {
     id: 'admin-room-version',
     name: '后台/控制台显示房间版本',
     rules: [

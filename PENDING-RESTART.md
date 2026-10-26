@@ -207,7 +207,57 @@ node test\stuck-match-room.mjs    7/7 通过（新增）
 
 ---
 
+### 1e. 手机「画面质量」调到最高依然模糊
+
+**现象**：玩家反馈手机上调到最高画质，画面依然很糊。
+
+**病根**：`public/js/render/app.js` 里
+
+```js
+const dpr = () => Math.min(devicePixelRatio || 1, QUALITY_RES[settings.quality] || 2, lean ? 1 : 2);
+const boardDpr = () => Math.min(devicePixelRatio || 1, BOARD_RES[settings.quality] || 2, lean ? 0.85 : 2);
+```
+
+`lean = touchDevice()`，也就是**只要是触屏设备，第三项恒为 1**，
+`Math.min` 之后不管画质选什么都得到 1。手机 DPR 通常是 3，
+夹到 1 等于只画了 1/9 的像素 —— 低/中/高在手机上**完全一样**，设置形同虚设。
+
+讽刺的是旁边第 207–208 行的注释写着「an explicit 设置 choice must still change
+resolution/particle load」，代码恰好违反了这句话。
+
+**改了什么**：触屏像素上限改成**按画质分档**，不再一刀切：
+
+```js
+const TOUCH_DPR_CAP       = { high: 2,   medium: 1.5, low: 1 };      // 战斗画面
+const TOUCH_BOARD_DPR_CAP = { high: 1.5, medium: 1.25, low: 0.85 };  // 3D 棋盘
+```
+
+| 画质 | 手机（DPR 3）改前 | 手机改后 | 桌面(D​PR 2) |
+|---|---|---|---|
+| 高 | 1 | **2** | 2 |
+| 中 | 1 | **1.5** | 1.5 |
+| 低 | 1 | 1 | 1 |
+
+高画质给 2 而不是 3：2x 在手机上已经明显清晰，3x 的填充成本是 2x 的 2.25 倍，
+散热顶不住。低画质保持 1，省电档位不受影响。**桌面端完全没变。**
+
+**涉及文件**：`public/js/render/app.js`（静态文件，**刷新即生效，不用重启**）
+
+**验证**：
+```
+node test\quality-mobile-dpr.mjs        全部通过（新增）
+node test\e2e-mobile-quality-dpr.cjs    DPR3 + 触屏模拟下 high=2 / medium=1.5 / low=1
+```
+线上 `https://stronghold.luobomiao.love/js/render/app.js` 已确认含 `TOUCH_DPR_CAP`，
+且 `cache-control: no-cache`，玩家刷新就能拿到。
+
+`patcher\check-features.mjs` 新增 `client-mobile-quality`（4 条断言），
+把高画质改回 1x 会让单测和校验器同时变红（破坏性测试已验证）。
+
+---
+
 ### 2. 隐身观战加载不出来
+
 **病根**：`Lobby.sendToPlayer()` 只认 `seatOf()` / `spectatorOf()`，
 而隐身观战者只存在于 `hiddenSpectators`，两者都查不到，
 于是 `addSpectator → _resync` 的补发帧被直接 `return false` 丢掉，
