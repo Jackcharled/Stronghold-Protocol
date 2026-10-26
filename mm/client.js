@@ -2894,8 +2894,40 @@ const JOIN_COOKIE = (() => {
 .server-status__table tr.off td{color:#c98b8b}
 `;
   // 管理员账号：仅在大厅（选择模拟协议）的「公告」旁加「管理后台」按钮
+  // 管理员/服主角色的缓存：不再只依赖 account-title.js 异步写的 window.__SP_ACCOUNT_ROLE。
+  // 那个变量由另一个脚本的 render() 赋值，时机/是否执行都不受这里控 —— 它一旦是空，
+  // 「管理后台」按钮就永远不出现（玩家反馈「我的管理后台按钮不见了，我变普通玩家了吗」，
+  // 而数据库里 role 一直是 owner）。这里改为：
+  //   1) 先用已知变量（若已有值）
+  //   2) 否则主动 GET /mm/api/auth/me 拿真实角色，缓存起来
+  // 两者都不会改变服务端权限，只是把入口正确地显示出来。
+  let __spRoleCache = null;      // 已确认的角色（'owner' / 'admin' / 'player' …）
+  let __spRoleProbe = null;      // 进行中的探测 Promise
+  function currentRole() {
+    const known = (typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE) || '';
+    if (known) return known;
+    if (__spRoleCache) return __spRoleCache;
+    if (!__spRoleProbe) {
+      __spRoleProbe = (async () => {
+        try {
+          const r = await fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' });
+          if (!r.ok) return '';
+          const j = await r.json();
+          const role = (j && j.user && j.user.role) || '';
+          if (role) {
+            __spRoleCache = role;
+            // 顺手补回全局变量，让依赖它的其它逻辑也能用
+            try { if (!window.__SP_ACCOUNT_ROLE) window.__SP_ACCOUNT_ROLE = role; } catch { /* ignore */ }
+          }
+          return role;
+        } catch { return ''; }
+      })().finally(() => { __spRoleProbe = null; });
+    }
+    return '';   // 本次先用空，下一轮（1.5s 后）缓存就绪
+  }
+
   function installAdminEntry() {
-    const role = (typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE) || '';
+    const role = currentRole();
     const notice = document.getElementById('mm-notice-btn');
     const old = document.getElementById('mm-admin-btn');
     const onTitle = !!document.querySelector('.title-screen');
