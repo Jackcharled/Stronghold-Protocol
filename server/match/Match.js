@@ -682,9 +682,17 @@ export class Match {
     return pool;
   }
 
-  /** Experimental expanded rooms draft every seat at once instead of waiting for a turn. */
+  /**
+   * Experimental expanded rooms draft every seat at once instead of waiting for a turn.
+   *
+   * 并发草稿只跟「允许重复选择策略」(allowRepeat) 这个实验开关绑定：
+   * 开了它才是「所有人同时选、可重复」——重复选本来就要求并发，顺序选里「队友已选」
+   * 的拦截没有意义；同时这也是「跳过」按钮唯一的开关（并发草稿没有人排在后面等你让位，
+   * 所以 skipBand 与前端 canSkip 都在并发时关掉跳过）。
+   * 5–20 人房但没开 allowRepeat：仍是顺序草稿，保留跳过。
+   */
   concurrentDraft() {
-    return !!this.capacityExperiment && !this.isSolo;
+    return !!this.capacityExperiment && !this.isSolo && this.allowRepeat;
   }
 
   /** Experimental room card-pool bucket number (1-based); ordinary rooms are always group 1. */
