@@ -2021,14 +2021,13 @@ const JOIN_COOKIE = (() => {
         st.id = 'mm-qq-css';
         st.textContent = `
           /* ★ 标题屏：Q群按钮放在左下角「添加到桌面」的正上方。
-             要求（维护者）：页脚原有布局不能变（版本号仍在右下角、添加/公告在原位），
+             要求（维护者）：页脚原有布局不能变（版本号/项目仓库保持它本来的位置），
              只是把 Q群按钮叠加在「添加到桌面」上面一行。
-             做法：按钮绝对定位在 .title-foot 内，left/bottom 由脚本按
-             「添加到桌面」的实际位置算出来（不猜像素），因此
-               —— 各屏幕尺寸 / 缩放 / 移动端都对齐
-               —— 不参与页脚 flex 排版，不撑高页脚、不推开任何原有元素
-             为防重叠，按钮自身的 pointer-events 只在它自己的矩形内生效。 */
-          .title-foot > .mm-qq-row{position:absolute!important;left:0!important;right:auto!important;top:auto!important;bottom:100%!important;flex:0 0 auto!important;width:auto!important;display:flex!important;justify-content:flex-start!important;align-items:flex-end!important;line-height:0!important;margin:0 0 .06rem 0!important;padding:0!important;pointer-events:none!important}
+             做法：按钮绝对定位在 .title-foot 内，**不参与 flex 排版**
+             （不撑高页脚、不推开任何原有元素）。
+             left / bottom 由脚本按「添加到桌面」的实际位置写进行内样式——
+             所以这里**不能**用 !important 锁死这两个值，否则会盖掉测量结果。 */
+          .title-foot > .mm-qq-row{position:absolute!important;right:auto!important;top:auto!important;flex:0 0 auto!important;width:auto!important;display:flex!important;justify-content:flex-start!important;align-items:flex-end!important;line-height:0!important;margin:0 0 .06rem 0!important;padding:0!important;pointer-events:none!important;left:0;bottom:100%}
           .title-foot .mm-qq-row > #mm-qq{position:static!important;flex:0 0 auto!important;width:auto!important;max-width:fit-content!important;align-self:center!important;margin:0!important;padding:.05rem .2rem!important;height:max(.3rem,1.75em)!important;font-size:calc(.13 * var(--t))!important;line-height:1!important;box-sizing:border-box!important;justify-content:flex-start!important;pointer-events:auto!important}
           .title-foot .mm-qq-row > #mm-qq .mm-qq-penguin{width:1.05em!important;height:1.05em!important}
           /* 兜底：万一按钮没进 .mm-qq-row（页脚结构缺失），退回 body 固定定位，

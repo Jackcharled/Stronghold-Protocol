@@ -243,6 +243,8 @@
 .asset-download__errors { color: var(--amber); }
 .asset-download__errors ul { max-height: 1.8rem; overflow: auto; padding-left: .24rem; }
 .asset-download__errors code { overflow-wrap: anywhere; font-size: calc(.13 * var(--t)); }
+/* 「导出清单 / 复制清单」：失败列表下方的一行按钮（玩家反馈失败文件看不到、也没法导出）。 */
+.asset-download__export { display: flex; gap: .1rem; flex-wrap: wrap; margin-top: .1rem; }
 .asset-import__row { display: flex; flex-wrap: wrap; gap: .08rem; margin: .08rem 0; }
 .asset-import__drop {
   margin: .08rem 0;
@@ -276,6 +278,10 @@
 .title-invite .icon { width: .2rem; height: .2rem; }
 .title-invite b { font-size: calc(.2 * var(--t)); letter-spacing: .2em; color: #ffd08a; }
 .title-conn { display: flex; align-items: center; justify-content: center; gap: .1rem; min-height: .32rem; font-size: calc(.14 * var(--t)); color: var(--text-lo); }
+/* 「已连接服务器」这一段恢复成上游原貌（整行正常排布）。
+   本服曾为「不折行」加过 white-space:nowrap + overflow:hidden + text-overflow:ellipsis，
+   窄屏下整句被压成「已连接服…」，比换行更难看（玩家反馈），故去掉这些截断规则。 */
+.title-conn .ping, .title-conn .title-guide, .title-conn .fsbtn { flex: none; }
 /* 统计 (the local stats page) beside the language menu in the top-right corner */
 .title-corner__tools { display: flex; align-items: center; justify-content: flex-end; gap: .1rem; margin-bottom: .1rem; }
 .title-corner__tools .title-lang { margin-bottom: 0; }
@@ -303,7 +309,12 @@ html[data-script="alphabetic"] .title-login .btn--xl { letter-spacing: .3em; }
   font-size: calc(.13 * var(--t));
   color: var(--text-dim);
 }
-.title-foot__meta { display: flex; align-items: flex-end; gap: .16rem; flex-wrap: wrap; justify-content: flex-end; }
+/* 本服：让「项目仓库 · 版本号」始终贴在页脚右下角。
+   原始（上游）布局是 .title-foot 的 space-between + flex-wrap：宽度够时它就在右边，
+   但版权那句话（「非官方同人复刻 · 游戏素材版权归 …」）一长，整组会被挤到换行后的
+   第二行左边，看起来像跑到了左下角。维护者要求它**总在右下角**。
+   margin-left:auto 在 flex 里会把该元素推到行尾；若它单独换到一行，同样贴右。 */
+.title-foot__meta { display: flex; align-items: flex-end; gap: .16rem; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 .title-repo { color: inherit; text-decoration: none; border-bottom: 1px solid transparent; }
 .title-repo:hover, .title-repo:focus-visible { color: var(--text-hi); border-bottom-color: currentColor; }
 /* a development build (shared/constants.js DEV_BUILD): an unmissable tag in the footer */
