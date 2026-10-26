@@ -267,6 +267,12 @@ function ifRangeMatches(req, etag, lastModified) {
 
 function cacheControlFor(ext, mountName, segments, query) {
   if (ext === '.html' || ext === '.htm') return 'no-cache';
+  // Service Worker **永远** no-cache：浏览器靠重新抓取 sw.js 来发现新版本。
+  // 一旦给它 immutable，浏览器在一年内连「有没有新版本」都不问，SW 就永远更新不了
+  // （资源包的缓存规则、离线兜底等改动全部无法下发）。带 ?v= 也一样。
+  const segs = Array.isArray(segments) ? segments : [];
+  const last = segs.length ? segs[segs.length - 1] : '';
+  if (last === 'sw.js' || last === 'sw.mjs') return 'no-cache';
   if (/(^|&)v=/.test(query)) return IMMUTABLE_CACHE;
   if (mountName === 'public' && segments.length > 1 && LONG_CACHE_DIRS.includes(segments[0])) return LONG_CACHE;
   return 'no-cache';
