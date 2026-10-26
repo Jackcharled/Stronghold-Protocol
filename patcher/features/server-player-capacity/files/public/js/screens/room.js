@@ -248,6 +248,25 @@ function CardPicker({ current, list, m, localSkins = {}, onPick, onClose }) {
 }
 
 /**
+ * The 4-digit number on a seat card's name plate (`DOCTOR #1234`).
+ *
+ * 优先用账号的真实 tag（room.state seats[].tag，来自 users.tag）：那是玩家在后台/资料里看到的编号，
+ * 稳定、跨设备、跨重连都不变。
+ *
+ * 上游的做法是对 playerId 做 FNV-1a 哈希（components.js doctorNo），而 playerId 是
+ * net.js 里 `'p_' + randomBytes(5).toString('hex')` 随机生成的**每次会话都不一样**——
+ * 于是同一个玩家的编号每次重连都变。玩家会以为"我的编号不对/资料被改了"。
+ *
+ * 拿不到 tag 时（游客、或连到还没更新 lobby.js 的老节点）回退到上游的哈希，行为与本服改造前一致。
+ * @param {{ tag?: string|null, playerId?: any }} seat
+ * @returns {string}
+ */
+function seatNo(seat) {
+  const tag = seat && typeof seat.tag === 'string' && /^[0-9]{4}$/.test(seat.tag) ? seat.tag : null;
+  return tag || doctorNo(seat ? seat.playerId : null);
+}
+
+/**
  * One seat: a tall card — the top strip (P#), the 名片干员 portrait (or the avatar frame: a bot, no art pack), 创建者, the
  * state at the bottom (准备中 / 待命中 / 已就绪 with its box) — and the name plate under it. The art's text sits in two
  * groups in flow, `.rseat__top` (the badge, 更换立绘, the tags) and `.rseat__low` (the operator's name, the state), so a
@@ -327,7 +346,7 @@ function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot,
       ${isMe ? html`<span class="rseat__me" role="img" aria-label=${t('你')} title=${t('你')}><${Icon} name="info" /></span>` : null}
       <${AvatarFrame} size="sm" name=${seat.name} seat=${index} bot=${seat.isBot} self=${isMe} />
       <span class="rseat__who"><b class="seat__name">${botPrefix ? html`<span class="seat__name-pre">${botPrefix[0]}</span>${botPrefix[1]}` : seat.name || t('博士')}</b>${isMe ? html`<span class="seat__you" aria-hidden="true">${t('你')}</span>` : null}</span>
-      <small class="rseat__doc">${seat.isBot ? 'AUTONOMOUS UNIT' : `DOCTOR #${doctorNo(seat.playerId)}`}</small>
+      <small class="rseat__doc">${seat.isBot ? 'AUTONOMOUS UNIT' : `DOCTOR #${seatNo(seat)}`}</small>
     </div>
   </article>`;
 }

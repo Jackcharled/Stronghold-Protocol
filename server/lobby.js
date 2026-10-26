@@ -605,6 +605,11 @@ export class Room {
       matchmakingAt: this.matchmaking ? (Number(this.matchmakingStartedAt) || this.matchmakingAt || 0) : 0,
       seats: this.seats.map((s) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left,
+          // 账号 tag（4 位数字）：前端的 DOCTOR #1234 用它显示真实账号编号。
+          // 上游是按 playerId 做 FNV 哈希，而 playerId 每次新建会话都随机生成（net.js: 'p_' + randomBytes(5)），
+          // 于是同一账号的编号每次重连都变，玩家会以为"我的编号不对/立绘被改了"。
+          // 这里下发真实 tag；拿不到（游客、老节点没这个字段）时前端回退到哈希，行为与上游一致。
+          ...(typeof s.tag === 'string' && /^[0-9]{4}$/.test(s.tag) ? { tag: s.tag } : {}),
           // 管理员/服主标记：控制台据此把「玩家」显示成「管理员」（仅展示用）
           ...(s.admin === true ? { admin: true } : {}),
           // a room with gameplay plugins (header "Gameplay plugins"): has this player's page loaded and checked its content?

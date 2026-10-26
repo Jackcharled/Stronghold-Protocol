@@ -26,6 +26,9 @@ const LIST = process.argv.includes('--list');
 const IGNORE = [
   /^public\/vendor\//, /^patcher\//, /^docs\//, /^\.github\//, /^test\//,
   /^tools\//, /^schemas\//, /^packs\//, /^nginx\//,
+  // 部署与运维脚本：它们是运维手段，不是游戏运行时的一部分，上游升级不会覆盖、
+  // 也不需要被补丁"恢复"（deploy/sync-nodes.cjs、watchdog 等）。
+  /^deploy\//,
   /^package(-lock)?\.json$/, /\.(png|jpg|jpeg|gif|webp|ico)$/,
   // 上游 .gitignore 明令禁止提交的后台页面（Server-only administration）
   /^matchmaker\/public\/admin\.html$/,
