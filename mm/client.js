@@ -2609,16 +2609,38 @@ const JOIN_COOKIE = (() => {
     const ID = 'mm-resume-btn';
     const existing = () => document.getElementById(ID);
     const removeBtn = () => { const b = existing(); if (b) b.remove(); };
-    // 正在房间里 / 对局里：不需要入口
+    // 已经在目标对局里（并且连着）才不需要入口。
+    //
+    // ⚠ 不能只看 store 里有没有 room：玩家**掉线**时 socket 已经断了，但 store 里的
+    // room 还在（resume 失败或还没完成时也留着），于是这里会以为「他还在房间里」，
+    // 把「恢复对局」按钮移除掉 —— 玩家就再也找不到回对局的路了。
+    // 判据：socket 在线 **且** 服务端确实把对局状态推过来过（m.public）。
+    // 只是还残留一个房间号（掉线遗留）不算「在房间里」，恰恰是需要显示按钮的时候。
     const inRoom = () => {
       try {
         const sp = window.__SP__;
-        const room = sp && sp.store && sp.store.get ? sp.store.get().room : null;
-        return !!(room && room.code);
+        if (!sp || !sp.store || !sp.store.get) return false;
+        const s = sp.store.get();
+        const room = s && s.room;
+        if (!room || !room.code) return false;
+        const online = !!(sp.net && sp.net.status === 'online');
+        const inMatch = !!(s.match && (s.match.phase || s.match.public));
+        // 在线 + 确实在对局中 → 不需要恢复入口；其余情况都该显示
+        return online && inMatch;
       } catch { return false; }
     };
-    // 账号观察者已经在自动恢复中：别抢
-    const autoBusy = () => window.__SP_ACCOUNT_RESUME_PENDING === true;
+    // 账号观察者已经在自动恢复中：别抢。
+    // 但要加时间保护：__SP_ACCOUNT_RESUME_PENDING 如果因为异常没被清掉（比如页面
+    // 在自动恢复途中被切走），这个标记会让按钮永远不出现。超过 12s（自动恢复的
+    // 正常上限）就当作已结束，照常显示按钮 —— 手动入口本来就该是最后一道保底。
+    let pendingSince = 0;
+    const autoBusy = () => {
+      const pending = window.__SP_ACCOUNT_RESUME_PENDING === true;
+      if (!pending) { pendingSince = 0; return false; }
+      if (!pendingSince) pendingSince = Date.now();
+      if (Date.now() - pendingSince > 12000) { pendingSince = 0; return false; }
+      return true;
+    };
     let lastCode = null;
     let lastCheck = 0;
 
@@ -2653,7 +2675,26 @@ const JOIN_COOKIE = (() => {
       const anchor = notice
         || document.querySelector('.verchip-wrap, button.verchip[data-testid="version-switch"]')
         || [...document.querySelectorAll('button')].find((b) => !b.id.startsWith('mm-') && /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
-      if (!anchor || !anchor.parentElement) return;
+      // 所有锚点都找不到时（界面改版、按钮还没建出来、或玩家停在一个很简的页面），
+      // 不能再直接 return —— 那样「恢复对局」就彻底没有入口了。
+      // 退回一个固定定位的独立按钮，保证这条路任何时候都走得通。
+      if (!anchor || !anchor.parentElement) {
+        const fb = document.createElement('button');
+        fb.id = ID;
+        fb.type = 'button';
+        fb.className = 'verchip mm-resume-fallback';
+        fb.textContent = '恢复对局';
+        fb.title = `返回进行中的对局（${code}）`;
+        fb.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;'
+          + 'padding:8px 16px;border-radius:999px;cursor:pointer;font:600 13px/1.4 system-ui,sans-serif;'
+          + 'background:#1c8f74;color:#fff;border:1px solid #2fbf99;box-shadow:0 4px 16px rgba(0,0,0,.4)';
+        fb.onclick = () => {
+          try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
+          window.location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');
+        };
+        (document.body || document.documentElement).appendChild(fb);
+        return;
+      }
       const btn = (notice || anchor).cloneNode(true);
       btn.id = ID;
       btn.type = 'button';
