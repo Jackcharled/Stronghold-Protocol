@@ -25,7 +25,7 @@ import { listImportedPaths, IMPORTED_ASSET_CACHE } from './assetCache.js';
 export function collectAssetUrls(...manifests) {
   const urls = new Set();
   const remote = __spRemoteAssetRe();
-  const gameUrl = (value) => remote.test(value) ? '/assets-cdn/' + value.replace(remote, '') : value;
+  const gameUrl = (value) => remote.test(value) ? '/assets/' + value.replace(remote, '') : value;
   const visit = (value) => {
     if (typeof value === 'string') {
       let path = value;

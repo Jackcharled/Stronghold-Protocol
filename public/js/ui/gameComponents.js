@@ -28,7 +28,7 @@ const cx = (...p) => p.flat().filter(Boolean).join(' ');
 const REMOTE_ASSET_RE = __spRemoteAssetRe();
 /** Route raw manifest art through the same /assets-cdn/ URLs the import cache and game use. */
 const localAssetSrc = (src) => (typeof src === 'string' && REMOTE_ASSET_RE.test(src)
-  ? '/assets-cdn/' + src.replace(REMOTE_ASSET_RE, '')
+  ? '/assets/' + src.replace(REMOTE_ASSET_RE, '')
   : src);
 
 /** Data files the in-match screens use (`backups`: the 补位 stand-ins' bodies — cards, the board model, the detail card). */

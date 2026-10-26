@@ -102,6 +102,9 @@ patcher\
 |---|---|---|---|
 | **合并轮询 `/api/pulse`** | `matchmaker/server.js`（新端点）、`matchmaker/public/client.js`（refreshPulse / onPulse / getPulse） | `matching-party` / `client-announcement` | **重启 matchmaker**（前端刷新即可） |
 | **client.js 版本自检**（matchmaker 改动自动下发） | `matchmaker/server.js:clientBuildTag()`、`matchmaker/public/client.js:checkClientBuild()` | `matching-party` / `client-announcement` | **重启 matchmaker** |
+| **nginx 缓存键归一化**（`~hash` 剥离） | `nginx/conf/nginx.conf`（`map $uri $sp_asset_cache_uri` + `proxy_cache_key`） | 部署配置（`deploy/nginx.conf`） | `nginx -s reload` |
+| 缓存预热工具 | `tools/warm-cache.mjs` | 不入补丁（运维工具） | 手动运行 |
+| 缓存体检/调优工具 | `tools/augment-cdn.mjs` | 不入补丁（运维工具） | 手动运行 |
 | 资源本机优先 + 缺失回源 | `nginx/conf/nginx.conf`（`/assets/` + `@assets_origin`）、`public/js/assets.js`、`public/js/assetPack.js` | 部署配置（见 `deploy/nginx.conf`） | `nginx -s reload` |
 | `sw.js` 永久 no-cache | `server/http/files.js:cacheControlFor()` | `game-core-server` | **重启节点** |
 | 资源站进 nginx 缓存 | `nginx/conf/nginx.conf`（`proxy_cache sp_assets`） | 部署配置 | `nginx -s reload` |

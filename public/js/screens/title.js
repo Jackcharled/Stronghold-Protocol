@@ -84,7 +84,7 @@ export function findUiAsset(assets, names) {
   // 本服：清单里的资源是资源站的绝对地址。统一改写到 /assets-cdn/ 代理，
   // 与游戏内其它美术保持一致（同源、可缓存、不受 CSP 影响）。
   const REMOTE = __spRemoteAssetRe();
-  const toProxy = (u) => (typeof u === 'string' && REMOTE.test(u) ? '/assets-cdn/' + u.replace(REMOTE, '') : u);
+  const toProxy = (u) => (typeof u === 'string' && REMOTE.test(u) ? '/assets/' + u.replace(REMOTE, '') : u);
   const asUrl = (v) => {
     if (typeof v === 'string') return toProxy(v);
     if (v && typeof v === 'object') return toProxy(v.url || v.path || v.src || null);

@@ -111,7 +111,7 @@ import { unhashedUrl } from '../../shared/assetPaths.js';
 const REMOTE_ASSET_RE = __spRemoteAssetRe();
 function externalToProxy(url) {
   if (typeof url !== 'string') return url;
-  if (REMOTE_ASSET_RE.test(url)) return '/assets-cdn/' + url.replace(REMOTE_ASSET_RE, '');
+  if (REMOTE_ASSET_RE.test(url)) return '/assets/' + url.replace(REMOTE_ASSET_RE, '');
   return url;
 }
 
