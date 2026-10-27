@@ -1486,19 +1486,19 @@ const JOIN_COOKIE = (() => {
       if (s.match && s.match.result) { clear(); return; }
       const rec = read();
       if (!rec) return;
-      // The interrupted room may not have been auto-rejoined yet (there is no sp.lastRoom on a
-      // fresh tab).
       //
       // ★ 2026-10-27：这里以前会自动 location.assign 到 /r/CODE?accountResume=1，
       //   玩家刷新一下页面（或换设备打开）就被自己跳走。按维护者要求改成**不动页面**：
       //   只把「上一局被服务器重启打断」这件事告诉玩家，并在下面给出一个按钮，
       //   由他自己决定要不要回去。所有跳转都必须是玩家亲手点的。
-      if (!s.room) {
-        if (s.connection?.status !== 'online') return;
-        window.__SP_RESTART_PENDING = true;
-        showBackPanel();
-        return;
-      }
+      //
+      // ★ 2026-10-27 再修（玩家反馈「新标签页也弹了本局模拟已结束」）：
+      //   sp.matchInterrupted 存在 **localStorage** 里 —— 它对所有标签页可见，还能活 30 分钟。
+      //   以前这里「只要没房间就弹面板」，于是**任何一个新开的标签页**都会看到
+      //   「本局模拟已结束」，哪怕它跟那一局毫无关系。
+      //   现在要求：只有**本页确实进过那间房**（s.room.code === rec.code）才提示。
+      //   刚打开、还没进任何房间的页面一律不弹 —— 那不是"本局被中断"，只是还没有房间。
+      if (!s.room) return;
       if (s.room.code !== rec.code) return;
       window.__SP_RESTART_PENDING = true;
       showBackPanel();
@@ -1521,29 +1521,40 @@ const JOIN_COOKIE = (() => {
     box.innerHTML = '<div class="awayov__box brackets"><span class="micro micro--mint">SIMULATION CLOSED</span><h2>本局模拟已结束</h2><p class="t-lo">服务器重启导致对局中断，同盟已返回等待室。要回去继续，点下面的按钮。</p><button type="button" class="btn btn--primary btn--lg"><span class="btn__icon" aria-hidden="true">‹</span><span class="btn__label">返回同盟</span></button></div>';
     box.querySelector('button').onclick = () => {
       // 玩家亲手点了「返回同盟」才跳转（不再有自动跳转，见 resumeTick 的注释）。
-      // 先读标记再删，否则下面拿不到房间码。
-      let code = '';
-      try {
-        const rec = JSON.parse(localStorage.getItem('sp.matchInterrupted') || 'null');
-        code = (rec && rec.code) || '';
-      } catch { /* ignore */ }
+      //
+      // ★ 2026-10-27 修复（玩家反馈「在**新标签页**点返回同盟，回到的却是刚新开的对局」）：
+      //   这里以前先读 sp.matchInterrupted 拿到房间码，**紧接着被覆盖**：
+      //       inRoom = !!(s && s.room && s.room.code);
+      //       if (inRoom) code = s.room.code;      ← 用"当前所在房间"盖掉了被打断的那间
+      //       if (inRoom) { location.reload(); }   ← 于是只是原地刷新，永远回不到旧对局
+      //   而 sp.matchInterrupted 是写进 **localStorage** 的（跨标签页共享、30 分钟内有效），
+      //   所以"当前在哪个房间"和"被打断的是哪个房间"完全是两回事：
+      //   新标签页可能已经在新开的对局里，而面板说的仍是那个被打断的旧同盟。
+      //
+      //   现在：**以标记里的房间码为准**。标记里没有房间码，才退而求其次用当前房间。
+      let rec = null;
+      try { rec = JSON.parse(localStorage.getItem('sp.matchInterrupted') || 'null'); } catch { /* ignore */ }
+      const interrupted = rec && typeof rec.code === 'string' ? rec.code : '';
       try { localStorage.removeItem('sp.matchInterrupted'); } catch { /* ignore */ }
       window.__SP_RESTART_PENDING = false;
       box.remove();
-      // 还在房间里：刷新即可把房间页面拿回来。不在房间里（刷新后不会再有自动回房）：
-      // 这次点击就是「我要回去」的明确意图，直接跳到房间路由。
-      let inRoom = false;
+
+      let current = '';
       try {
         const s = window.__SP__ && window.__SP__.store && window.__SP__.store.get();
-        inRoom = !!(s && s.room && s.room.code);
-        if (inRoom) code = s.room.code;
+        current = (s && s.room && s.room.code) || '';
       } catch { /* ignore */ }
-      if (inRoom) { location.reload(); return; }
-      if (code) {
+
+      // 1) 面板说的就是当前这间 → 刷新即可把房间页面拿回来。
+      if (interrupted && interrupted === current) { location.reload(); return; }
+      // 2) 被打断的是另一间 → 明确跳到那一间（这是玩家的本意：回到被中断的那个同盟）。
+      if (interrupted) {
         try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
-        location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');
+        location.assign('/r/' + encodeURIComponent(interrupted) + '?accountResume=1');
         return;
       }
+      // 3) 没有标记：退回当前房间 / 直接刷新。
+      if (current) { location.reload(); return; }
       location.reload();
     };
 

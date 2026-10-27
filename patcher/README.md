@@ -200,6 +200,14 @@ patcher\
     `rooms>0 && matches=0` 的节点（空壳房、等待室）都能安全重启。
     现成的工具：`tools/_restart-when-idle.ps1`（默认只报告，`-Apply` 才重启；
     重启前会自己复查一次 `matches`）。
+13. **`sp.matchInterrupted` 是 localStorage（跨标签页共享、30 分钟），不能当作「本页状态」** ——
+    它记录的是「最近一次正在打的那一局」。踩过两个坑：
+    - **任何新标签页都弹「本局模拟已结束」**：因为 `resumeTick` 里原本「只要没房间就弹面板」。
+      现在要求 `s.room.code === rec.code` 才弹（本页确实进过那间房）。
+    - **点「返回同盟」回到的是新开的对局**：按钮里先读标记拿到旧房号，紧接着
+      `if (inRoom) code = s.room.code` 用**当前房间**把它覆盖掉，然后只 `location.reload()`。
+      在新标签页点就等于原地刷新新房。现在以标记里的房间码为准，不一致就显式跳过去。
+    回归测试：`node test/restart-panel-scope.mjs`。
 
 ## 两个一键脚本（在仓库根目录）
 
