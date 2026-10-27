@@ -451,8 +451,15 @@ const notOwn = (s) => !s || s.tag === 'bounty' || s.tag === 'duck';
  * Drawn from `base`, the round's own wave (no bounty units: they differ per player), so every player who uses the same
  * `rng` stream on the same wave gets the same count, the same units and the same 鸭爵 enemies (GitHub #839). `side`
  * ('L' | 'R', a pair boss field) limits the draw to the units whose route (`routes[routeIndex]`) ends on that half.
+ *
+ * 鸭爵叠加（本服新增，2026-10-27 维护者要求「补抽」）：`exclude` 是一组已经被别的持有者选走的槽位
+ * （`${action}#${k}`）。传入时这些槽位**不参与本次抽取**，于是这一路抽到的每一个都落在「还没被换过的敌人」上，
+ * 不会因为撞车而白白浪费一次抽取。
+ *
+ * ⚠ `exclude` 为空/未传时，`rng.shuffle(ok)` 的输入与上游逐字相同，随机流的消耗顺序也完全一致 ——
+ *   不叠加（只有 1 个持有者）时行为与上游**一字不差**，这是硬约束（见 duckGlobal 的注释）。
  */
-export function duckPicks(gd, rng, base, p, { routes = null, side = null } = {}) {
+export function duckPicks(gd, rng, base, p, { routes = null, side = null, exclude = null } = {}) {
   const ducks = list(p.enemylist).filter((k) => gd.enemy(k));
   if (!ducks.length || !Array.isArray(base)) return [];
   const lo = Math.max(0, int(p.min, 0)), hi = Math.max(lo, int(p.max, lo));
@@ -486,13 +493,18 @@ export function duckPicks(gd, rng, base, p, { routes = null, side = null } = {})
   flat.sort((a, b) => a.t - b.t || a.i - b.i || a.k - b.k);
   const w0 = num(p.minweight, 0), w1 = num(p.maxweight, 1);
   const n = flat.length;
-  const ok = flat.filter((f, j) => {
+  let ok = flat.filter((f, j) => {
     const s = base[f.i];
     const e = gd.enemy(s.enemyKey);
     const frac = n > 1 ? j / (n - 1) : 0;
     return !s.tag && s.countInTotal !== false && e && e.rank !== 'BOSS' && !e.notCountInTotal && e.stats?.motion !== 'FLY'
       && frac >= w0 - 1e-9 && frac <= w1 + 1e-9;
   });
+  // 叠加时把已被别人选走的槽位剔除，让这一路的 want 个全都落在新目标上（补抽）。
+  // 只在真的传了 exclude 时才做，保证不叠加时与上游逐字相同。
+  if (exclude && exclude.size) {
+    ok = ok.filter((f) => !exclude.has(`${f.action}#${f.k}`));
+  }
   return rng.shuffle(ok).slice(0, want).map((f) => ({ action: f.action, k: f.k, enemyKey: rng.pick(ducks) }));
 }
 
@@ -567,9 +579,15 @@ const duckGlobal = {
     const base = Array.isArray(ev.waveSpawns) ? ev.waveSpawns : ev.spawns.filter((s) => !notOwn(s));
     const bySlot = new Map();
     // 第 0 路就是上游那一路（`duck:<round>`）：它单独决定了"至少换这么多"，保证叠加永远不弱于不叠加。
-    // 后面各持有者再往上叠，撞到已选格子就跳过。
+    //
+    // ★ 2026-10-27 改为「补抽」（维护者要求）：后一路抽取时把已选槽位传给 duckPicks，让它的 want 个
+    //   全都落在**还没被换过的敌人**上，而不是撞到已选的就跳过。
+    //   改前：20 人叠加时有 33% 的抽取因为撞车被浪费（实测 20 路抽 21 次只落下 14 个不同槽位）。
+    //   改后：每人次的抽取都有效，覆盖数提升到 min(总抽取次数, 候选池大小)。
+    //   第 0 路不传 exclude，随机流与上游逐字相同（单持有者时行为不变）。
     for (let i = 0; i < holders.length; i++) {
-      for (const pk of duckPicks(ctx.gd, rngFor(i), base, p, { routes: ev.routes, side: ev.side })) {
+      const taken = i === 0 ? null : new Set(bySlot.keys());
+      for (const pk of duckPicks(ctx.gd, rngFor(i), base, p, { routes: ev.routes, side: ev.side, exclude: taken })) {
         const slot = `${pk.action}#${pk.k}`;
         if (!bySlot.has(slot)) bySlot.set(slot, pk);
       }

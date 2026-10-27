@@ -79,6 +79,7 @@ patcher\
 | 悬赏决策公共计时 | `server/match/match/spDraft.js:_concurrentSpStep()` | `game-core-match` | 重启节点 |
 | 跳过按钮（仅非 allowRepeat） | `public/js/match/matchChrome.js:StepHeader`、`server/match/match/phases.js` | `game-core-match` | 刷新页面 + 重启节点 |
 | **鸭爵策略可叠加**（实验开关） | `server/sim/content/bands/meta.js:duckGlobal`、`server/match/Match.js`、`server/match/gamedata.js`、`server/match/snapshot.js`、`shared/experimental.js`、`public/js/screens/room.js` | `game-core-server` / `server-snapshot-checkpoint` / `server-player-capacity` | **重启节点** |
+| **叠加时「补抽」**（撞到已选敌人时改抽别的目标，而不是跳过；20 人大波次覆盖率 13.6→19.5 个） | `server/sim/content/bands/meta.js:duckPicks`（`exclude` 参数）+ `duckGlobal`（`taken` 传入） | `game-core-server` | **重启节点** |
 | 禁用鸭爵策略（5–20 人） | `server/match/gamedata.js`、`shared/experimental.js`、`public/js/screens/bandDraft.js` | `server-player-capacity` | 刷新页面 + 重启节点 |
 | 挂机踢人 / 同 IP 限制 | `server/match/match/intents.js` | `server-idle-guard` | 重启节点 |
 | 房间/对局快照与 Redis 检查点 | `server/match/snapshot.js`、`server/persist/*` | `server-snapshot-checkpoint` | 重启节点 |
