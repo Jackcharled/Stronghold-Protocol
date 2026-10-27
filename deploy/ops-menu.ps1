@@ -123,8 +123,17 @@ function Restart-Idle {
   C "  正在重启 $names ..." Yellow
   $pm2 = Get-Pm2
   if (-not $pm2) { C '  找不到 pm2.cmd，请确认已安装 pm2' Red; return }
-  # 用引号包住 --only 的值，避免逗号被当成数组分隔符
-  & $pm2 startOrReload ecosystem.config.cjs --only "$names" --update-env 2>&1 | Out-Null
+  # 用引号包住 --only 的值，避免逗号被当成数组分隔符；
+  # ecosystem 用绝对路径 —— 相对路径依赖当前目录，控制台版就因为这个报过
+  # `[PM2][ERROR] File ecosystem.config.cjs not found`。
+  $eco = Join-Path $root 'ecosystem.config.cjs'
+  $pm2Out = & $pm2 startOrReload $eco --only "$names" --update-env 2>&1
+  $pm2Ok = ($LASTEXITCODE -eq 0) -and -not ($pm2Out -match '\[PM2\]\[ERROR\]')
+  if (-not $pm2Ok) {
+    C '  ⚠ pm2 报错，没有节点被重启：' Red
+    $pm2Out | Select-Object -Last 5 | ForEach-Object { C "    $_" Red }
+    return
+  }
   & $pm2 save 2>&1 | Out-Null
   Start-Sleep -Seconds 10
   C ''

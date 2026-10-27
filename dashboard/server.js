@@ -276,9 +276,13 @@ async function refresh() {
 
 function runPm2(args) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [PM2_JS, ...args], { timeout: 30000, windowsHide: true }, (err, stdout, stderr) => {
-      resolve({ ok: !err, out: String(stdout || '').slice(-4000), err: String(stderr || '').slice(-2000) });
-    });
+    // cwd 必须是部署根：pm2 是相对「当前进程的工作目录」找 ecosystem 文件的，
+    // dashboard 由 pm2 从别处拉起时 cwd 不一定是 BASE，会报
+    // `[PM2][ERROR] File ecosystem.config.cjs not found`。
+    execFile(process.execPath, [PM2_JS, ...args],
+      { timeout: 30000, windowsHide: true, cwd: BASE, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+        resolve({ ok: !err, out: String(stdout || '').slice(-4000), err: String(stderr || '').slice(-2000) });
+      });
   });
 }
 
@@ -402,16 +406,50 @@ async function opsRestartIdle(want) {
   }
   if (!safe.length) return { ok: true, restarted: [], skipped, message: '复查时有节点开始了对局，已全部跳过' };
 
-  const res = await runPm2(['startOrReload', 'ecosystem.config.cjs', '--only', safe.map(nodeName).join(','), '--update-env']);
-  await runPm2(['save']);
+  // 用绝对路径：不依赖 cwd，也不会被别的 ecosystem 文件抢走
+  const eco = path.join(BASE, 'ecosystem.config.cjs');
+  if (!fs.existsSync(eco)) {
+    return { ok: false, restarted: [], skipped, error: `找不到 ${eco}`, message: '没有重启任何节点（找不到 ecosystem.config.cjs）' };
+  }
+  const res = await runPm2(['startOrReload', eco, '--only', safe.map(nodeName).join(','), '--update-env']);
   opsCache = { at: 0, data: null };
+  if (!res.ok) {
+    // pm2 失败时【绝不能】报「已重启」——之前就是这样误报，实际一个都没动
+    return {
+      ok: false,
+      restarted: [],
+      skipped,
+      out: res.out.slice(-1500),
+      err: res.err.slice(-1200),
+      message: `重启失败，没有节点被重启：${(res.err || res.out || '').split('\n').filter(Boolean).pop() || '未知原因'}`,
+    };
+  }
+  // 成功了才 save（失败时 save 会固化一个可能不对的进程表）
+  await runPm2(['save']);
+  // 复查：起来了吗？新旧对不对？
+  await new Promise((r) => setTimeout(r, 6000));
+  opsCache = { at: 0, data: null };
+  const after = await opsState();
+  const stillOld = safe.filter((n) => {
+    const x = after.nodes.find((y) => y.n === n);
+    return x && !x.fresh;
+  });
+  const dead = safe.filter((n) => {
+    const x = after.nodes.find((y) => y.n === n);
+    return x && !x.alive;
+  });
+  let message = `已重启 ${safe.length} 个：${safe.join(', ')}`;
+  if (dead.length) message += `；⚠ 未响应：${dead.join(', ')}`;
+  if (stillOld.length) message += `；⚠ 仍是旧代码：${stillOld.join(', ')}`;
   return {
-    ok: res.ok,
+    ok: !dead.length && !stillOld.length,
     restarted: safe,
     skipped,
+    dead,
+    stillOld,
     out: res.out.slice(-1500),
     err: res.err.slice(-800),
-    message: `已重启 ${safe.length} 个：${safe.join(', ')}`,
+    message,
   };
 }
 

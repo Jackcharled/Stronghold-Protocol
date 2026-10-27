@@ -1143,6 +1143,44 @@ pm2.cmd restart dashboard --update-env     # 注意是 pm2.cmd，不是 pm2.ps1
 `dashboard/` 在仓库里也是**独立一份**（不是 junction），漏同步就会「线上改了、仓库没改」。
 dashboard 重启不影响任何对局（它只读 `pm2 jlist` 和各节点 `/healthz`）。
 
+#### ⚠ 踩过的坑：pm2 的 ecosystem 路径必须写绝对路径
+
+整合当天，面板点「重启空闲节点」后显示：
+
+```
+已重启 1 个: 8
+[PM2][ERROR] File ecosystem.config.cjs not found
+```
+
+**一行字两个错**：
+
+1. **`ecosystem.config.cjs` 是相对路径** —— pm2 相对**调用进程的 cwd** 找文件。
+   dashboard 被 pm2 从别的目录拉起，cwd 不是部署根，于是根本找不到。
+   后果是 `startOrReload` 什么都没做，**节点重启失败**。
+2. **失败却报「已重启」** —— 结果里 `notify` 那行是硬编码的成功文案，
+   没看 pm2 的退出码/输出。维护者以为自己点成功了，实际一个节点都没动。
+
+正确写法（`dashboard/server.js` 与 `deploy/ops-menu.ps1` 都已改）：
+
+```js
+const eco = path.join(BASE, 'ecosystem.config.cjs');          // 绝对路径
+execFile(process.execPath, [PM2_JS, 'startOrReload', eco, '--only', names, '--update-env'],
+  { cwd: BASE }, (err, out, errOut) => {
+    if (err || /\[PM2\]\[ERROR\]/.test(out)) { /* 报失败，且【不要】pm2 save */ }
+  });
+```
+
+**三条通用规则**（以后再写运维脚本都适用）：
+
+- 调 pm2 一律：**绝对路径的 ecosystem + 显式 `cwd` + 检查退出码/`[PM2][ERROR]`**；
+- **失败时不要 `pm2 save`** —— 那会把一个可能不对的进程表固化下来；
+- 重启后要**复查**：节点响应了吗？`fresh` 变 true 了吗？没起来就必须报出来，
+  不能只说「已重启」。
+
+> 当天实测：点出这个错误的是一次针对 node-8 的误点，但 node-8 **实际没有重启**
+> （`uptime` 仍是 8000+ 秒、`matches` 也没断），所以没有玩家受影响 —— 因为
+> `startOrReload` 在报错前就退出了。这也说明「报错时绝不能显示成功」有多重要。
+
 ### 9.8 提交前最终检查
 
 ```powershell
