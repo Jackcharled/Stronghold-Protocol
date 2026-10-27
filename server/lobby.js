@@ -888,6 +888,16 @@ export class Lobby {
     // live socket) answers the requester alone, so hello spam cannot amplify into room-wide traffic.
     let changed = !seat.connected;
     seat.connected = true;
+    // 回填账号身份：落座时 hello 里可能还没带账号令牌（令牌是异步补发的，比首帧 hello 晚），
+    // 而 humanSeat() 只写一次、之后没有任何地方补。座位 accountId 为空会直接破坏
+    // 「一个账号只能占一处席位」的判定（accountRoomConflict 靠它比对），
+    // 后果是同一账号能一边坐着一边去旁观（实测：新标签页没回到对局，旧标签页变成观战）。
+    // 这里在每次重连 / 重复 hello 时补上，属于幂等操作。
+    if (session.accountId && String(seat.accountId || '') !== String(session.accountId)) {
+      seat.accountId = String(session.accountId);
+      changed = true;
+    }
+    if (session.tag && seat.tag !== session.tag) { seat.tag = session.tag; changed = true; }
     // 有人回来了：卡死对局的回收计时作废（房间重新有活人，sweepOldRooms 不会再碰它）
     if (room.lastHumanLeftAt) room.lastHumanLeftAt = 0;
     // 管理员房主回来了：恢复「永久保留」，管理员房重新不计时
@@ -1442,7 +1452,14 @@ export class Lobby {
       if (room.match) this.callMatch(room, 'addSpectator', session.playerId, true);
       return OK;
     }
-    room.spectators.push({ playerId: session.playerId, name: session.name, connected: session.connected });
+    // 旁观席也要记 accountId：accountRoomConflict 用它判断「同一账号是否已占席位」，
+    // 不写的话同一个账号可以在别的房间坐着、同时还来这边旁观。
+    room.spectators.push({
+      playerId: session.playerId,
+      name: session.name,
+      connected: session.connected,
+      ...(session.accountId ? { accountId: String(session.accountId) } : {}),
+    });
     session.roomCode = room.code;
     session.notice = null;
     session.pendingResult = null;
@@ -2889,18 +2906,30 @@ export class Lobby {
   accountRoomConflict(session) {
     const accountId = session.accountId;
     if (!accountId) return null;
+    // 座位上的 accountId 可能是 null：建房/落座时 hello 里还没带账号令牌（令牌是异步补发的），
+    // 而 humanSeat() 只写一次，之后没人回填。这时同一个账号可以"坐在座位上 + 再开一个旁观席"，
+    // 因为下面这条 != 判断直接把这排除了。实测踩到：玩家新开标签页没回到对局，
+    // 反而看到旧标签页变成旁观状态。
+    // 兜底：座位没有 accountId 时，用 playerId 反查会话的 accountId 再比对。
+    const seatAccountId = (seat) => {
+      if (seat.accountId) return String(seat.accountId);
+      const s = this.registry.byId(seat.playerId);
+      return s && s.accountId ? String(s.accountId) : null;
+    };
     for (const room of this.rooms.values()) {
       if (!room || room.disposed) continue;
       for (const seat of room.seats) {
         if (!seat || seat.isBot || seat.left) continue;
-        if (seat.accountId !== accountId || seat.playerId === session.playerId) continue;
+        if (seat.playerId === session.playerId) continue;
+        if (seatAccountId(seat) !== accountId) continue;
         // 同一账号的另一处座位：判断是不是「已经没人的旧会话」
         const old = this.registry.byId(seat.playerId);
         const stale = !old || old.connected !== true;
         return { room, kind: 'player', seat, stale };
       }
       for (const spec of room.spectators) {
-        if (!spec || spec.accountId !== accountId || spec.playerId === session.playerId) continue;
+        if (!spec || spec.playerId === session.playerId) continue;
+        if (seatAccountId(spec) !== accountId) continue;
         const old = this.registry.byId(spec.playerId);
         const stale = !old || old.connected !== true;
         return { room, kind: 'spectator', seat: spec, stale };

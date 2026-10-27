@@ -25,8 +25,9 @@
   //   * 对局外：直接刷新，且最多自动刷一次（避免出问题时来回刷）。
   // 拿不到该字段（老节点）时一律不刷。
   let seenClientBuild = null;
-  let clientReloaded = false;
   let clientUpdatePending = false;
+  /** 已因版本变化自动刷新过的那一个 build。用它而不是布尔量，避免"刷过一次就永远不再刷"。 */
+  let reloadedForBuild = null;
   /**
    * 当前是否在跑一局（对局中不允许自动刷新，避免把玩家的局刷掉）。
    *
@@ -62,10 +63,41 @@
   function checkClientBuild(serverBuild) {
     if (typeof serverBuild !== 'string' || !serverBuild) return;
     if (seenClientBuild === null) { seenClientBuild = serverBuild; return; }
-    if (serverBuild === seenClientBuild) { clientReloaded = false; clientUpdatePending = false; return; }
-    if (clientReloaded) return;          // 已经自动刷过一次，不再重复
+    if (serverBuild === seenClientBuild) { clientUpdatePending = false; return; }
+    // 同一个 build 已经自动刷过一次就不再刷（避免 reload 与轮询打架来回刷）；
+    // 换了一个更新的 build 仍然会继续处理。
+    if (reloadedForBuild === serverBuild) return;
     if (inRunningMatch()) { clientUpdatePending = true; return; }  // 对局中：等回大厅
-    clientReloaded = true;
+    // ★ 只在「绝对安全」的时候自动刷新。
+    //
+    // 这个自检是为了让 matchmaker 的改动能下发到已打开的页面（节点的 buildTag 不覆盖 matchmaker/），
+    // 但它的触发成本很高：每 5 秒轮询一次，文件一变就把页面刷掉。
+    // 实测代价：开发期一天改 6 次 client.js，等于把所有在线玩家各踢 6 次；
+    // 而且玩家如果正处在"刚点完某个按钮、表单填了一半、正在打字"的状态，刷新同样是破坏性的。
+    //
+    // 现在只在这几种状态自动刷（其余一律等玩家自己刷新，绝不主动打断）：
+    //   * 还在标题页（没进大厅）
+    //   * 在大厅且没开房间、没在匹配
+    // 换句话说：房间里、选策略、对局、结算 —— 一律不刷。
+    let safeToReload = false;
+    try {
+      const g = window.__SP__;
+      const s = g && g.store && typeof g.store.get === 'function' ? g.store.get() : null;
+      if (s) {
+        const entered = !!(s.session && s.session.entered);
+        const phase = s.match && s.match.public && s.match.public.phase;
+        const inMatchNow = !!(phase && phase !== 'LOBBY') || !!(s.match && s.match.result);
+        const inRoom = !!s.room;
+        const matching = !!(s.ui && (s.ui.pendingJoin || s.ui.matchmaking));
+        safeToReload = !entered || (!inMatchNow && !inRoom && !matching);
+      }
+    } catch { /* 拿不到状态就不要刷 */ }
+    if (!safeToReload) {
+      // 不方便刷：记下"有更新待应用"，等玩家自己刷新或回到安全状态再处理
+      clientUpdatePending = true;
+      return;
+    }
+    reloadedForBuild = serverBuild;
     seenClientBuild = serverBuild;
     try { (window.__SP_AUTO_LOG ||= []).push({ event: 'client-build-reload', at: Date.now() }); } catch { /* ignore */ }
     setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 1200);
@@ -75,10 +107,11 @@
    * 不必等下一轮 5 秒轮询（玩家回到大厅那一刻正好是刷新的好时机）。
    */
   function flushClientBuildWait() {
-    if (!clientUpdatePending || clientReloaded) return;
+    if (!clientUpdatePending) return;
+    if (reloadedForBuild === seenClientBuild) { clientUpdatePending = false; return; }
     if (inRunningMatch()) return;
     clientUpdatePending = false;
-    clientReloaded = true;
+    reloadedForBuild = seenClientBuild;
     try { (window.__SP_AUTO_LOG ||= []).push({ event: 'client-build-reload', at: Date.now(), via: 'after-match' }); } catch { /* ignore */ }
     setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 600);
   }
