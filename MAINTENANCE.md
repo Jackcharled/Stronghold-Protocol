@@ -615,7 +615,44 @@ Stop-Process -Id $g.ProcessId -Force
 pm2 list                          # 应该恢复
 ```
 
-2026-10-27 实测：杀掉 pm2 后 **10 秒**被计划任务拉起，33 个应用全部恢复，30/30 节点响应。
+2026-10-27 实测：杀掉 pm2 后 **6 秒**被计划任务拉起，33 个应用全部恢复，30/30 节点响应。
+
+#### ⚠ 脚本以 SYSTEM 运行时特有的两个坑（都踩过，会让自启动"看起来生效其实没有"）
+
+**1. `$env:APPDATA` / `$env:USERPROFILE` 指向 SYSTEM 的目录，不是管理员的**
+
+```
+$env:APPDATA = C:\WINDOWS\system32\config\systemprofile\AppData\Roaming
+```
+
+npm 全局包不在那里 → 脚本报 `PM2 not found at ...systemprofile...`，任务结果码非 0。
+`PM2_HOME` 同理：指错了 `resurrect` 会「成功但什么都没恢复」，比直接失败更难查。
+
+正确做法：**按候选顺序探测**（见 `deploy\_start-pm2.ps1` 顶部的 `$pm2Cmd` / `$env:PM2_HOME` 推导），
+或用环境变量 `SP_PM2` / `PM2_HOME` 显式指定。
+
+**2. 先 `ReadToEnd()` 后 `WaitForExit()` 会永久阻塞**
+
+```powershell
+# ❌ 错误：子进程不关 stdout 时 ReadToEnd 永不返回，WaitForExit 的超时形同虚设
+$out = $p.StandardOutput.ReadToEnd()
+$p.WaitForExit(30000)
+
+# ✅ 正确：先等退出（带超时），确认已退出再读流
+if ($p.WaitForExit(20000)) { $out = $p.StandardOutput.ReadToEnd() }
+else { $p.Kill() }
+```
+
+实测后果：计划任务实例卡了 63 秒以上不结束，下一次触发被 `IgnoreNew` 跳过，
+**看起来完全像"自启动没生效"**，实际是脚本自己噎死了。
+
+**3. 结果码怎么看**
+
+| 码 | 含义 | 要不要管 |
+|---|---|---|
+| `0` | 正常结束 | — |
+| `267009` / `0x00041301` | 任务正在运行中 | 不用管 |
+| `2147946720` / `0x800710E0` | 上一次还没跑完，本次被跳过 | 不用管；**但若每次都这样**，说明脚本卡死了（见第 2 条） |
 
 #### ⚠ 绝对不要做的事
 
