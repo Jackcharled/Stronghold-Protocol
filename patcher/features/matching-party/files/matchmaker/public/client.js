@@ -27,15 +27,37 @@
   let seenClientBuild = null;
   let clientReloaded = false;
   let clientUpdatePending = false;
-  /** 当前是否在跑一局（对局中不允许自动刷新，避免把玩家的局刷掉）。 */
+  /**
+   * 当前是否在跑一局（对局中不允许自动刷新，避免把玩家的局刷掉）。
+   *
+   * ⚠ 这里曾经用 `window.__spStore` —— 那个全局**根本不存在**（全仓搜不到任何定义），
+   * 于是判断退化成只看 `.game-screen` 这个 DOM 类名。而**选策略阶段根本没有 .game-screen**，
+   * 玩家在 BAND_DRAFT 时就被判成"不在对局中"，client.js 一更新就 location.reload()，
+   * 表现为「选策略时突然回到主页」。这是本次要修的 bug，不是猜测：
+   * 玩家的对局还在服务端跑，页面却被自己刷掉了。
+   *
+   * 现在改成与节点侧 ui/buildGuard.js 相同的判断：把 store 上的路由状态读出来。
+   * 与 public/js/store.js 的 selectRoute 保持一致，另外把 BAND_DRAFT 也算作"在局中"——
+   * 那个阶段玩家已经在选策略了，刷新等于把这一局丢掉。
+   */
   function inRunningMatch() {
     try {
-      const g = window.__spStore;
-      const s = g && typeof g.get === 'function' ? g.get() : null;
-      const pub = s && s.match && s.match.public;
-      if (pub && !pub.ended) return true;
+      const g = window.__SP__;
+      const store = g && g.store;
+      const s = store && typeof store.get === 'function' ? store.get() : null;
+      if (s) {
+        if (!s.session || !s.session.entered) return false;      // 标题页
+        const phase = s.match && s.match.public && s.match.public.phase;
+        if (phase && phase !== 'LOBBY') return true;             // 含 BAND_DRAFT / PREP / BATTLE …（store.js selectRoute）
+        if (s.room && s.room.inMatch) return true;               // 对局正在开始，public 还在路上
+        if (s.room) return true;                                 // 在房间里也不行：刷新会把房间丢掉
+        return false;                                            // 大厅
+      }
     } catch { /* ignore */ }
-    try { return !!document.querySelector('.game-screen'); } catch { return false; }
+    // 拿不到 store 时保守处理：只要还看得到对局/房间界面就认为在局中
+    try {
+      return !!document.querySelector('.game-screen, .draft__main, .room-screen');
+    } catch { return true; }
   }
   function checkClientBuild(serverBuild) {
     if (typeof serverBuild !== 'string' || !serverBuild) return;
