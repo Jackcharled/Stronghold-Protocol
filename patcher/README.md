@@ -74,7 +74,7 @@ patcher\
 
 | 功能 | 涉及文件 | 所属补丁 | 生效方式 |
 |---|---|---|---|
-| 5–20 人同盟（容量实验） | `server/match/Match.js`、`server/match/match/phases.js`、`shared/playerCapacity.js`、`shared/experimental.js`、`public/js/screens/room.js` | `server-player-capacity` | 重启节点 |
+| 5–20 人同盟（容量实验） | `server/match/Match.js`、`server/match/match/phases.js`、`shared/playerCapacity.js`、`shared/experimental.js`、`public/js/screens/room.js`<br>**结算显示（2026-10-27）**：`public/js/ui/stats.js`（`MAX_PLAYERS` 取 `MAX_PLAYER_CAPACITY`，原本写死 6 → 记录被截断）、`public/js/screens/settle.js`（`staggerOf`：5–20 张同盟卡片的入场步长，原本 `Math.min(i,7)` 让第 8 张之后同时出现）、`public/css/screens/settle.css`（`.tcard` 动画改用 `var(--step)`） | `server-player-capacity` / `game-core-client-ui` / `game-core-client-style` | 刷新页面 + 重启节点 |
 | 并发草稿（仅 allowRepeat 时） | `server/match/Match.js:concurrentDraft()`、`server/match/match/phases.js` | `game-core-match` | 重启节点 |
 | 悬赏决策公共计时 | `server/match/match/spDraft.js:_concurrentSpStep()` | `game-core-match` | 重启节点 |
 | 跳过按钮（仅非 allowRepeat） | `public/js/match/matchChrome.js:StepHeader`、`server/match/match/phases.js` | `game-core-match` | 刷新页面 + 重启节点 |

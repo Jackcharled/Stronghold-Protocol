@@ -510,13 +510,30 @@ function titleView(p, gd) {
   };
 }
 
-function TeamCard({ p, i, gd, self, victory, raw }) {
+/**
+ * Per-card entrance stagger for the 5–20 doctor row (TeamPage is-wide).
+ * `.tcard` animates with `calc(150ms + var(--i) * 120ms)`; the plain index makes a 20-doctor room
+ * wait 2.4 s for its last card. Keep every index distinct (they would otherwise enter together) and
+ * hand the CSS a step that fits: `{ i, step }` → `--i: i` plus `--step: <ms>` so the whole row is in
+ * within ~1 s at any size. A 4-doctor settlement is not wide and passes the index straight through.
+ * @param {number} i @param {number} n
+ * @returns {{ i: number, step: number }}
+ */
+function staggerOf(i, n) {
+  const n0 = 8;       // the size the 120 ms step was designed for
+  const step0 = 120;  // ms between two cards at that size
+  const span = 900;   // ms of entrance the row may occupy, whatever its size
+  if (n <= n0) return { i, step: step0 };
+  return { i, step: Math.max(30, Math.round(span / (n - 1))) };
+}
+
+function TeamCard({ p, i, step, gd, self, victory, raw }) {
   const ace = aceOf(p.lineup);
   const v = ace ? unitView(ace, gd) : null;
   const title = titleView(p, gd);
   const cleared = rowCleared(raw, p, victory);
   const band = p.bandId ? gd.band(p.bandId) : null;
-  return html`<article class=${cx('tcard', self && 'is-self', p.alive === false && 'is-dead', p.left && 'is-left', cleared ? 'is-clear' : 'is-fail')} style=${`--i:${i}`}>
+  return html`<article class=${cx('tcard', self && 'is-self', p.alive === false && 'is-dead', p.left && 'is-left', cleared ? 'is-clear' : 'is-fail')} style=${`--i:${i};--step:${step ?? 120}ms`}>
     <header class="tcard__head" aria-hidden="true"><i class="tcard__pin"></i><span class="tcard__code"><i></i><i></i><i></i>STRONGHOLD PROTOCOL</span><span class="tcard__seat num">${pad2(p.seat + 1)}</span></header>
     <div class="tcard__art">
       <${OperatorImage} m=${gd.m} chess=${v?.rec} ownerId=${p.playerId} skin=${ace?.skin} portrait avatarFallback portraitClass="tcard__img is-portrait" avatarClass="tcard__img is-avatar" fallback=${html`<span class="tcard__glyph">${[...(p.name || '?')][0]}</span>`} />
@@ -571,7 +588,10 @@ function TeamPage({ r, res, gd, myId, at: when, content, backLabel, onBack, onDe
     <div class="settle__stage">
       <${Logo} />
       <div ref=${rowRef} class=${cx('steam__cards', wide && 'is-wide')} style=${`--n:${r.players.length}`}>
-        ${r.players.length ? r.players.map((p, i) => html`<${TeamCard} key=${p.playerId} p=${p} i=${wide ? Math.min(i, 7) : i} gd=${gd} self=${p.playerId === myId} victory=${r.victory} raw=${rawOf(p.playerId)} />`)
+        ${r.players.length ? r.players.map((p, i) => {
+      const s = staggerOf(i, r.players.length);
+      return html`<${TeamCard} key=${p.playerId} p=${p} i=${s.i} step=${s.step} gd=${gd} self=${p.playerId === myId} victory=${r.victory} raw=${rawOf(p.playerId)} />`;
+    })
           : html`<p class="steam__none">${t('暂无结算数据')}</p>`}
       </div>
       <div class="settle__barbg steam__barbg" aria-hidden="true"><${Sprite} k="settle/bottom_bg" /></div>
