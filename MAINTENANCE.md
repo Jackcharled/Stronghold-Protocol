@@ -1043,6 +1043,70 @@ $c = Get-NetTCPConnection -LocalPort (3000+N) -State Listen
 **绝不能**因为节点不在开放列表就把 `sp_route` cookie 改派走——那会让正在对局的玩家断线重连后
 回不到原节点，表现为「回不到对局」。`sp_route` 必须无条件尊重，开放列表只管没有 cookie 的新访客。
 
+### 9.10 日常运维：双击 `运维.bat`，不用记命令（2026-10-27 新增）
+
+> 维护者原话：「能不能都写成脚本让我操作呢」「不能我直接点击某个脚本就开启吗一定要输入命令吗」
+
+部署根目录的 **`运维.bat`** 打开一个菜单，把日常动作都收敛成「选数字」：
+
+| 菜单 | 做什么 | 有副作用吗 |
+|---|---|---|
+| 1 | 服务器总览：30 节点响应 / 房间 / 对局 / 在线人数，每节点标 `新`(已载新代码) 或 `旧`，外加 nginx、pm2、网站状态 | 无（只读） |
+| 2 | 列出「跑旧代码 + `matches = 0`」的节点，即**现在就能重启**的那些；标出有对局不能动的 | 无（只读） |
+| 3 | 重启上面那些空闲节点（`pm2 startOrReload --only …`，逐个复查 `matches` 后再动） | 会断线 1–2 秒 |
+| 4 | 把 nginx 开放列表改成「所有已跑新代码的节点」（调 `tools\_set-open-nodes.mjs`，自动备份 + `nginx -t` + 失败回滚） | 只影响新访客 |
+| 5 | 重启 nginx（走计划任务 → SYSTEM → Session 0，清理残留 worker） | 断线 1–2 秒 |
+| 6 | PM2：经计划任务启动/恢复（**绝不**在菜单里直接 `pm2 start`）、查看列表 | 见 9.9 红线 |
+| 7 | 日志：素材加载失败、最慢的素材、nginx 启动日志、看门狗日志、单节点错误日志 | 无（只读） |
+
+**菜单只会「先报范围、再确认」**：3/4/5 都先打印将被影响的节点与对局数，输入 `y` 才执行。
+只读项（1/2/7）随便点，任何情况下不会改东西。
+
+#### 两个必须记住的实现细节（都踩过）
+
+**1. `pm2` 必须用 `pm2.cmd`，不能用 `pm2.ps1`**
+
+`pm2.ps1` 会重新切分参数，`--only node-5,node-29` 传不进去，`startOrReload` 退化成
+**无参数调用 = 重启全部 30 个节点**。菜单里用 `Get-Pm2` 固定取 `%APPDATA%\npm\pm2.cmd`。
+手动敲命令同理：**在 PowerShell 里写 `pm2.cmd`**，或用 `cmd /c pm2 …`。
+
+**2. 双击 `.bat` 跑的是 Windows PowerShell **5.1**，不是 pwsh 7**
+
+5.1 没有 `??`（空合并）运算符。第一次写完就因为这个**整个脚本解析失败、菜单根本打不开**，
+但在 pwsh 7 里 `Parser::ParseFile` 是通过的——**所以不能用 pwsh 7 验证**。
+
+```powershell
+# 验证 .ps1 能在 5.1 下解析（改过 deploy\*.ps1 后必须跑这条）
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command `
+  "`$e=`$null; [void][System.Management.Automation.Language.Parser]::ParseFile('<路径>',[ref]`$null,[ref]`$e); `$e"
+# 无输出 = 通过
+```
+
+同理不要用 `-Parallel`、`??`、`?:`、`Get-Content -AsByteStream` 等 7 才有的语法。
+所有 `deploy\*.ps1` 还必须存成 **UTF-8 with BOM**，否则 5.1 会把中文读成乱码。
+
+#### 新增节点的标准动作（照着做就不会漏）
+
+```
+菜单 2 看谁能动  →  菜单 3 重启它们  →  菜单 4 更新开放列表  →  菜单 1 复查（代码列全变「新」）
+```
+
+**顺序不能反**：先重启、后开放。反过来会把新玩家导到还在跑旧代码的节点上（维护者的红线：
+「把可以更新重启的节点对外开放，不能重启更新的节点不对外开放」）。
+
+#### 相关文件
+
+| 文件 | 作用 |
+|---|---|
+| `运维.bat` | 双击入口（ASCII 文件名 + 调 `deploy\ops-menu.ps1`） |
+| `deploy\ops-menu.ps1` | 菜单本体，UTF-8 BOM，兼容 PowerShell 5.1 |
+| `tools\_set-open-nodes.mjs` | 安全改写 nginx 开放列表（Node 写，不产生 BOM；备份 + `nginx -t` + 失败自动还原） |
+| `tools\restart-nginx.mjs` | 报告 / `--apply` 重启 nginx，重启后校验所有进程 SessionId = 0 且 HTTPS 200 |
+| `tools\_restart-when-idle.ps1` | 命令行版「重启空闲节点」，但**判断新旧只看 `lobby.js` mtime**，改过别的文件会误报「已载入新代码」 |
+
+> ⚠ `tools\_set-open-nodes.ps1` 是**废弃**的旧版：`Set-Content -Encoding UTF8` 会给 `nginx.conf`
+> 加 BOM，导致 `nginx: [emerg] unknown directive "﻿worker_processes"`。只留作参考，不要用。
+
 ### 9.8 提交前最终检查
 
 ```powershell
