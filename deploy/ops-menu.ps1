@@ -22,6 +22,9 @@ function Line { C ('─' * 66) DarkGray }
 function Pause2 { C ''; Read-Host '  按回车继续' | Out-Null }
 function Banner([string]$t) { C ''; Line; C "  $t" Cyan; Line; C '' }
 
+# PowerShell 5.1（双击 .bat 时实际用的就是它）不支持 ?? 运算符，所以用函数取默认值。
+function N($v) { if ($null -eq $v) { return 0 }; return [double]$v }
+
 # pm2 必须用 .cmd：pm2.ps1 会把参数拆坏（--only 传不进去），
 # 导致 startOrReload 变成无参数调用，把所有节点都重启一遍。
 function Get-Pm2 {
@@ -40,10 +43,10 @@ function Show-Status {
     try {
       $h = Invoke-RestMethod "http://127.0.0.1:$((3000 + $n))/healthz" -TimeoutSec 2
       $ok++
-      $rooms += ($h.rooms ?? 0); $matches += ($h.matches ?? 0); $humans += ($h.humans ?? 0)
+      $rooms += (N $h.rooms); $matches += (N $h.matches); $humans += (N $h.humans)
       $started = $now.AddSeconds(-[double]$h.uptimeSec)
       $fresh = $started -ge $mt
-      $rows += [pscustomobject]@{ 节点 = "node-$n"; 代码 = $(if ($fresh) { '新' } else { '旧' }); 房间 = ($h.rooms ?? 0); 对局 = ($h.matches ?? 0); 玩家 = ($h.humans ?? 0); 连接 = ($h.sockets ?? 0); 运行 = "$([int]($h.uptimeSec / 60))分" }
+      $rows += [pscustomobject]@{ 节点 = "node-$n"; 代码 = $(if ($fresh) { '新' } else { '旧' }); 房间 = (N $h.rooms); 对局 = (N $h.matches); 玩家 = (N $h.humans); 连接 = (N $h.sockets); 运行 = "$([int]($h.uptimeSec / 60))分" }
     } catch { $rows += [pscustomobject]@{ 节点 = "node-$n"; 代码 = 'X'; 房间 = '-'; 对局 = '-'; 玩家 = '-'; 连接 = '-'; 运行 = '无响应' } }
   }
   C "  节点响应 $ok/30    房间 $rooms    对局 $matches    在线玩家 $humans" White
@@ -77,7 +80,7 @@ function Show-Restartable {
       $h = Invoke-RestMethod "http://127.0.0.1:$((3000 + $n))/healthz" -TimeoutSec 2
       $started = $now.AddSeconds(-[double]$h.uptimeSec)
       if ($started -ge $mt) { $done += $n }
-      elseif (($h.matches ?? 0) -eq 0) { $free += $n }
+      elseif ((N $h.matches) -eq 0) { $free += $n }
       else { $busy += "node-$n($($h.matches)局)" }
     } catch { }
   }
@@ -104,8 +107,8 @@ function Restart-Idle {
     try {
       $h = Invoke-RestMethod "http://127.0.0.1:$((3000 + $n))/healthz" -TimeoutSec 2
       $started = $now.AddSeconds(-[double]$h.uptimeSec)
-      if ($started -lt $mt -and ($h.matches ?? 0) -eq 0) { $free += $n }
-      elseif (($h.matches ?? 0) -gt 0) { $busy++ }
+      if ($started -lt $mt -and (N $h.matches) -eq 0) { $free += $n }
+      elseif ((N $h.matches) -gt 0) { $busy++ }
     } catch { }
   }
   if (-not $free.Count) { C '  没有空闲且需要更新的节点。' Yellow; return }
@@ -177,7 +180,7 @@ function Restart-Nginx {
   } else { C '  nginx 未运行' Yellow }
   C ''
   $m = 0; $hm = 0
-  foreach ($n in 1..30) { try { $h = Invoke-RestMethod "http://127.0.0.1:$((3000 + $n))/healthz" -TimeoutSec 2; $m += ($h.matches ?? 0); $hm += ($h.humans ?? 0) } catch { } }
+  foreach ($n in 1..30) { try { $h = Invoke-RestMethod "http://127.0.0.1:$((3000 + $n))/healthz" -TimeoutSec 2; $m += (N $h.matches); $hm += (N $h.humans) } catch { } }
   C "  影响：$m 局对局、$hm 位玩家会断线 1–2 秒自动重连（对局数据不丢）" Yellow
   C ''
   C '  重启方式：通过计划任务（SYSTEM → Session 0），不会挂在当前窗口。' DarkGray
