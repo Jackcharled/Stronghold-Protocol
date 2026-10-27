@@ -209,9 +209,29 @@ patcher\
       在新标签页点就等于原地刷新新房。现在以标记里的房间码为准，不一致就显式跳过去。
     回归测试：`node test/restart-panel-scope.mjs`。
 
-## 两个一键脚本（在仓库根目录）
+### 回归测试清单（改相关代码后要跑）
 
-| 脚本 | 作用 |
+| 测试 | 守住什么 |
+|---|---|
+| `node test/join-takeover-order.mjs` | `room.join` 必须「同房间 → 接管」在「清理遗留座位」之前 |
+| `node test/takeover-full-chain.mjs` | 接管后的完整链路：`net.playerIdPending` 竞态、旧标签页回大厅 |
+| `node test/manual-resume-only.mjs` | 全站不得有「不由点击触发」的恢复跳转 |
+| `node test/identity-members-exist.mjs` | 所有 `identity.xxx` 调用都必须是 `net.js` 真实存在的成员 |
+| `node test/restart-panel-scope.mjs` | 「本局模拟已结束」只对进过那间房的页面显示；返回同盟跳对房间 |
+
+真实链路工具（要连线上节点，会真的建房，用完注意清理）：
+
+| 工具 | 验证什么 |
+|---|---|
+| `node tools/_verify-join-takeover-live.mjs 1` | 开新标签页回自己房间，房间不被解散 |
+| `node tools/_verify-crossdevice-resume.mjs 4 --start` | 换设备恢复：`account.resume` → 重连 → 收到 `room.state` / `m.public` |
+
+> 注意第 2 个工具**必须模拟前端「拿 token 后断开重连」那一步**，否则服务端不会推状态，
+> 得到的是假阴性（我第一版就漏了这一步）。
+> 这两个工具会在节点上留下房间；`matches=0 sockets=0` 时可重启节点 +
+> `hdel sp:nN:lobby:rooms <CODE>` 清掉（见第 11 条）。
+
+## 两个一键脚本（在仓库根目录）| 脚本 | 作用 |
 |---|---|
 | `apply-patch.bat` | 打补丁 → 同步到 node-1…node-30 → 重启 PM2 |
 | `restore-patch.bat` | 还原官方文件 → 重启 PM2 |

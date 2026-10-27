@@ -537,6 +537,37 @@ node deploy\sync-nodes.cjs           # 复检，必须输出「0 处差异」
 
 重启后要校验 `healthz.ok === true` 且 `uptimeSec` 很小。
 
+**现成工具**：
+
+```powershell
+# 只报告：已载入新代码 / 空闲待重启 / 有对局不动
+pwsh -File tools\_restart-when-idle.ps1
+# 真的重启（会自己再复查一次 matches）
+pwsh -File tools\_restart-when-idle.ps1 -Apply
+```
+
+#### ⚠ 重启后房间又回来了？那不是没重启成功
+
+房间状态持久化在 Redis 的 `sp:nN:lobby:rooms`（**hash 类型**，`get` 会报 WRONGTYPE，
+要用 `hkeys` / `hdel`）。只重启进程的话，服务端启动时会把房间读回内存，`rooms` 数不变，
+看起来像「重启了什么都没变」。
+
+```powershell
+# 先确认是死房间（无人连接）再删
+D:\Redis\redis-cli.exe hkeys sp:n2:lobby:rooms
+D:\Redis\redis-cli.exe hdel  sp:n2:lobby:rooms <CODE>
+# 然后再重启节点
+```
+
+`state/snapshot.json` 通常已经是空的（`{"v":1,...,"rooms":[],"sessions":[]}`），
+真正留住房间的是 Redis 那一份。
+
+#### 卡死对局会挡住重启
+
+判据 `sockets === 0 && matches > 0`（有对局但没有任何连接）。
+排查：`node tools/find-zombie-rooms.mjs`。真人都断线的房间会在 TTL 后自动回收
+（`sweepOldRooms`），但**那需要节点跑着含该修复的代码**，旧代码会一直挂着。
+
 **开放列表**由 nginx 的 `split_clients` / `$sp_cookie_open` 决定：只开放「已重启到最新代码」的节点，
 其余关闭。用 `tools\_set-open-nodes.ps1` 重建（会自动校验百分比合计 = 100%）。
 
