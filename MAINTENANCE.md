@@ -286,7 +286,56 @@ $b = [System.IO.File]::ReadAllBytes('nginx\conf\nginx.conf')
 Copy-Item nginx\conf\nginx.conf "nginx\conf\nginx.conf.bak-$(Get-Date -Format 'MMdd-HHmmss')"
 ```
 
-#### 这一轮的标准流程（照做即可）
+#### 🔍 玩家说「素材/地图没加载出来」怎么查（2026-10-27 新增）
+
+`/assets/` 由 nginx **直接读磁盘**（`root shared/`），**不经过游戏节点** —— 所以
+「某个节点重启过」和「地图加载不出来」没有因果关系，别往那个方向查。
+
+以前这两个 location 都是 `access_log off`，资源请求完全不进日志，**根本无从判断**
+是哪个文件失败。2026-10-27 起新增独立日志：
+
+```
+nginx/logs/assets.log
+```
+
+格式（**304 已被过滤掉**，只留真实传输和失败）：
+
+```
+2026-10-27T17:09:58+08:00 200 6544564B 0.000s src=-    uri=/assets/local/scene/act2autochess_m01/scene.bin
+2026-10-27T17:09:58+08:00 404 0B       0.086s src=MISS uri=/assets/xxx.png
+```
+
+| 字段 | 含义 |
+|---|---|
+| `src=` 空 | 直接读本地磁盘（正常，最快） |
+| `src=MISS` | 本地没有，回源取到并缓存（正常，略慢） |
+| `src=HIT` | 命中 nginx 缓存（正常） |
+| `status 4xx/5xx` | **失败**，重点看 |
+
+**常用查法**：
+
+```powershell
+# 只看失败的
+Get-Content nginx\logs\assets.log | Select-String ' (4\d\d|5\d\d) '
+
+# 只看地图/场景资源
+Get-Content nginx\logs\assets.log | Select-String 'local/scene'
+
+# 看最慢的资源
+Get-Content nginx\logs\assets.log | ForEach-Object { if ($_ -match ' (\d+\.\d+)s ') { [pscustomobject]@{ t=[double]$matches[1]; l=$_ } } } |
+  Sort-Object t -Descending | Select-Object -First 20 -ExpandProperty l
+```
+
+⚠ **这是临时排查工具，高峰期约 300–400 MB/天**（一个玩家进一局要拉几百个素材，
+其中 `assets/local`（场景）占约 70%）。排查完记得关掉：
+
+```powershell
+# 改成 access_log off;（两处：location /assets/ 和 location @assets_origin）
+```
+
+也可以随时清空：`Clear-Content nginx\logs\assets.log`
+
+
 
 ```powershell
 # 1) 找出空闲节点（matches=0）
