@@ -571,6 +571,78 @@ D:\Redis\redis-cli.exe hdel  sp:n2:lobby:rooms <CODE>
 **开放列表**由 nginx 的 `split_clients` / `$sp_cookie_open` 决定：只开放「已重启到最新代码」的节点，
 其余关闭。用 `tools\_set-open-nodes.ps1` 重建（会自动校验百分比合计 = 100%）。
 
+### 9.9 服务器必须自启动，**绝不能依赖任何登录会话**（2026-10-27 事故）
+
+> 维护者原话：「不要让我必须启动你我才能启动服务器」
+
+#### 事故经过
+
+维护者重启了一个桌面应用（AI 助手 DSH）。这个动作不该影响服务器，结果 **30 个节点全部断开**，
+玩家看到「与服务器的连接已中断，正在重连（第 7 次）」。
+
+根因：**PM2 是在那个应用的交互式 shell 里启动的。**
+
+```
+pm2 Daemon.js  ← 父进程 = DSH 的 pwsh shell
+```
+
+应用的 shell 一被杀，pm2 收到退出信号跟着死，30 个节点全没了。
+而当时那个「看门狗」`deploy\_stack-watchdog.ps1` 的注释白纸黑字写着
+`Alert only: this watchdog never starts or restarts nginx / PM2 / game nodes` ——
+**只写日志，从不拉起**。于是必须有人手动 `pm2 resurrect` 才能恢复。
+
+#### 现在的机制（三层，都与登录会话无关）
+
+| 层 | 机制 | 作用 |
+|---|---|---|
+| 1 | 计划任务 `SP-PM2-Resurrect`（SYSTEM） | **开机触发（延迟 30s）+ 每 1 分钟**运行 `deploy\_start-pm2.ps1`；pm2 守护进程不在就 resurrect |
+| 2 | 计划任务 `SP-Stack-Watchdog`（SYSTEM，每 2 分钟） | `deploy\_stack-watchdog.ps1` 现在会**真的修复**：pm2 不在 → 拉起；应用缺失 → 逐个 start；最后 `pm2 save` |
+| 3 | `pm2 save` 的进程表 | 任何时刻 resurrect 都能复原 32 个应用 |
+
+#### 怎么验证它真的独立（每次改动后都要做）
+
+```powershell
+# 1) pm2 必须跑在 Session 0（系统服务会话），而不是 2（桌面会话）
+$g = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -match 'pm2[\\/]lib[\\/]Daemon\.js' } | Select-Object -First 1
+"SessionId = $($g.SessionId)"     # 必须是 0
+# 对比你自己的 shell：应该是 2
+"我的 shell SessionId = $((Get-Process -Id $PID).SessionId)"
+
+# 2) 冷杀测试：杀掉 pm2，90 秒内必须自己回来
+Stop-Process -Id $g.ProcessId -Force
+# 等 60–90 秒后
+pm2 list                          # 应该恢复
+```
+
+2026-10-27 实测：杀掉 pm2 后 **10 秒**被计划任务拉起，33 个应用全部恢复，30/30 节点响应。
+
+#### ⚠ 绝对不要做的事
+
+| 禁止 | 原因 |
+|---|---|
+| 在 AI 助手 / 终端 / 任何交互式 shell 里跑 `pm2 start` | pm2 会挂在那个会话下，会话一死服务器全断 |
+| 关掉或删除 `SP-PM2-Resurrect` / `SP-Stack-Watchdog` 计划任务 | 失去自愈能力 |
+| 把看门狗改回「只报警」 | 事故就是这么发生的 |
+| 依赖「我手动 resurrect 一下就好」 | 凌晨崩溃时没人手动 |
+
+**正确启动方式**（任何时候，包括排查问题后要恢复）：
+
+```powershell
+schtasks /Run /TN "SP-PM2-Resurrect"
+# 它会在 SYSTEM 身份、Session 0 下把 pm2 和 32 个应用全部拉起来
+```
+
+#### 相关文件
+
+| 文件 | 作用 |
+|---|---|
+| `deploy\_start-pm2.ps1` | 以 SYSTEM 身份启动/恢复 pm2，幂等（已在跑就不重复启动） |
+| `deploy\_stack-watchdog.ps1` | 每 2 分钟的看门狗，**现在会自动修复**而不只是报警 |
+| `deploy\server-watchdog.ps1` | 计划任务 `Stronghold-Server-Watchdog` 用 |
+| `logs\stack-watchdog.log` | 看门狗的处置记录（`PM2 daemon is down -> resurrect` 等） |
+| `logs\pm2-resurrect.log` | `_start-pm2.ps1` 的日志 |
+
 **绝不能**因为节点不在开放列表就把 `sp_route` cookie 改派走——那会让正在对局的玩家断线重连后
 回不到原节点，表现为「回不到对局」。`sp_route` 必须无条件尊重，开放列表只管没有 cookie 的新访客。
 
