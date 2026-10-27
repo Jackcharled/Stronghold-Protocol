@@ -94,6 +94,7 @@ patcher\
 | 同账号同房间接管座位 | `server/lobby.js:room.join` 的 takeover 分支 | `game-core-server` | 重启节点 |
 | **回自己房间时先接管、不清房间**（`room.join` 的冲突判定顺序：同房间 → 接管；别的房间 → `dropStaleAccountSeats`） | `server/lobby.js:room.join` | `game-core-server` | 重启节点 |
 | **接管后不再误清房间**（`room.state` 早于 `welcome` 到达时，用 `net.playerIdPending` 跳过身份比对，避免卡「正在进入模拟…」） | `public/js/main.js:onRoomState`、`public/js/net.js`（`_sendHello` / `_onWelcome` / `_onHelloError`） | `account-and-dashboard` | **刷新页面** |
+| **恢复对局只能手动点**（去掉全部自动跳转/自动恢复；换设备、刷新、重新打开页面都不再自己跳） | `public/js/ui/accountObserver.js`、`public/js/ui/resumeMatch.js`、`matchmaker/public/client.js`（`installAutoRejoin` / `resumeTick`） | `account-and-dashboard` / `matching-party` | **刷新页面**（client.js 需重启 matchmaker） |
 | **被接管的旧标签页回大厅**（不再尝试 `room.spectate` 旁观自己的座位，杜绝「观战席不可用」） | `public/js/ui/accountObserver.js:account.detached` | `account-and-dashboard` | **刷新页面** |
 | **DOCTOR # 显示真实账号 tag** | `server/lobby.js`（`room.state seats[].tag`）、`public/js/screens/room.js:seatNo()` | `game-core-server` / `server-player-capacity` | **重启节点**（前端回退到哈希） |
 | **名片立绘跟随账号** | `matchmaker/account.cjs`（DOMAINS + validatePrefPayload + decodePrefPayload）、`matchmaker/public/account-title.js:PREF_MAP.card`、`public/js/ui/seatArt.js` | `account-and-dashboard` / `matching-party` | 重启 matchmaker |
@@ -169,6 +170,13 @@ patcher\
    - 旧标签页被接管后**不要**再去 `room.spectate`：那座位现在的 `accountId` 还是自己，
      `accountRoomConflict` 必然判 `SESSION_IN_USE` →「观战席不可用」。直接回大厅。
    回归测试：`node test/takeover-full-chain.mjs`；真实链路：`node tools/_verify-join-takeover-live.mjs 1`。
+9. **恢复对局一律不许自动跳转**（维护者 2026-10-27 要求）—— 曾经有 6 条自动路径，
+   玩家打开页面 / 刷新 / 换设备就被页面自己跳走，换设备那次还会把原来那台顶下线。
+   现在唯一入口是大厅「恢复对局」按钮；跨节点的跳转也必须是玩家**再点一次**
+   （`resumeMatch.js` 的 `goToRoom`），并且靠**一次性**的 `sp.accountResume` 标记
+   （读完即删，所以刷新不会再触发）。
+   **改这块之前先跑 `node test/manual-resume-only.mjs`**，它会扫全站确认没有任何
+   「不由点击触发」的 `accountResume` 跳转。
 
 ## 两个一键脚本（在仓库根目录）
 

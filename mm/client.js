@@ -10,6 +10,113 @@
 
 (function () {
   const q = new URLSearchParams(location.search);
+
+  // ---------------------------------------------------------------- client.js 版本自检（本服新增）
+  //
+  // 页面加载后模块留在内存里，服务器更新送不到已打开的标签页。节点的 ui/buildGuard.js 靠
+  // /healthz.build 发现更新并自动刷新，但那个 buildTag 不含 matchmaker 的 client.js。
+  // 于是改了这里，玩家的旧页面会一直跑旧代码 —— 实测 2026-10-27 合并轮询上线 15 分钟后，
+  // 12,252 次轮询里只有 215 次走新端点，client.js 只被请求了 9 次。
+  //
+  // 做法：/api/pulse 带回服务器当前 client.js 的 sha1 前 12 位（server.js clientBuildTag）。
+  // 页面第一次拿到它时记下当作"我这一份"，之后再不同就说明服务器换过文件了。
+  // 刷新规则与 buildGuard 一致，宁可不刷也不打断对局：
+  //   * 对局中：不刷，只等到回到大厅；
+  //   * 对局外：直接刷新，且最多自动刷一次（避免出问题时来回刷）。
+  // 拿不到该字段（老节点）时一律不刷。
+  let seenClientBuild = null;
+  let clientUpdatePending = false;
+  /** 已因版本变化自动刷新过的那一个 build。用它而不是布尔量，避免"刷过一次就永远不再刷"。 */
+  let reloadedForBuild = null;
+  /**
+   * 当前是否在跑一局（对局中不允许自动刷新，避免把玩家的局刷掉）。
+   *
+   * ⚠ 这里曾经用 `window.__spStore` —— 那个全局**根本不存在**（全仓搜不到任何定义），
+   * 于是判断退化成只看 `.game-screen` 这个 DOM 类名。而**选策略阶段根本没有 .game-screen**，
+   * 玩家在 BAND_DRAFT 时就被判成"不在对局中"，client.js 一更新就 location.reload()，
+   * 表现为「选策略时突然回到主页」。这是本次要修的 bug，不是猜测：
+   * 玩家的对局还在服务端跑，页面却被自己刷掉了。
+   *
+   * 现在改成与节点侧 ui/buildGuard.js 相同的判断：把 store 上的路由状态读出来。
+   * 与 public/js/store.js 的 selectRoute 保持一致，另外把 BAND_DRAFT 也算作"在局中"——
+   * 那个阶段玩家已经在选策略了，刷新等于把这一局丢掉。
+   */
+  function inRunningMatch() {
+    try {
+      const g = window.__SP__;
+      const store = g && g.store;
+      const s = store && typeof store.get === 'function' ? store.get() : null;
+      if (s) {
+        if (!s.session || !s.session.entered) return false;      // 标题页
+        const phase = s.match && s.match.public && s.match.public.phase;
+        if (phase && phase !== 'LOBBY') return true;             // 含 BAND_DRAFT / PREP / BATTLE …（store.js selectRoute）
+        if (s.room && s.room.inMatch) return true;               // 对局正在开始，public 还在路上
+        if (s.room) return true;                                 // 在房间里也不行：刷新会把房间丢掉
+        return false;                                            // 大厅
+      }
+    } catch { /* ignore */ }
+    // 拿不到 store 时保守处理：只要还看得到对局/房间界面就认为在局中
+    try {
+      return !!document.querySelector('.game-screen, .draft__main, .room-screen');
+    } catch { return true; }
+  }
+  function checkClientBuild(serverBuild) {
+    if (typeof serverBuild !== 'string' || !serverBuild) return;
+    if (seenClientBuild === null) { seenClientBuild = serverBuild; return; }
+    if (serverBuild === seenClientBuild) { clientUpdatePending = false; return; }
+    // 同一个 build 已经自动刷过一次就不再刷（避免 reload 与轮询打架来回刷）；
+    // 换了一个更新的 build 仍然会继续处理。
+    if (reloadedForBuild === serverBuild) return;
+    if (inRunningMatch()) { clientUpdatePending = true; return; }  // 对局中：等回大厅
+    // ★ 只在「绝对安全」的时候自动刷新。
+    //
+    // 这个自检是为了让 matchmaker 的改动能下发到已打开的页面（节点的 buildTag 不覆盖 matchmaker/），
+    // 但它的触发成本很高：每 5 秒轮询一次，文件一变就把页面刷掉。
+    // 实测代价：开发期一天改 6 次 client.js，等于把所有在线玩家各踢 6 次；
+    // 而且玩家如果正处在"刚点完某个按钮、表单填了一半、正在打字"的状态，刷新同样是破坏性的。
+    //
+    // 现在只在这几种状态自动刷（其余一律等玩家自己刷新，绝不主动打断）：
+    //   * 还在标题页（没进大厅）
+    //   * 在大厅且没开房间、没在匹配
+    // 换句话说：房间里、选策略、对局、结算 —— 一律不刷。
+    let safeToReload = false;
+    try {
+      const g = window.__SP__;
+      const s = g && g.store && typeof g.store.get === 'function' ? g.store.get() : null;
+      if (s) {
+        const entered = !!(s.session && s.session.entered);
+        const phase = s.match && s.match.public && s.match.public.phase;
+        const inMatchNow = !!(phase && phase !== 'LOBBY') || !!(s.match && s.match.result);
+        const inRoom = !!s.room;
+        const matching = !!(s.ui && (s.ui.pendingJoin || s.ui.matchmaking));
+        safeToReload = !entered || (!inMatchNow && !inRoom && !matching);
+      }
+    } catch { /* 拿不到状态就不要刷 */ }
+    if (!safeToReload) {
+      // 不方便刷：记下"有更新待应用"，等玩家自己刷新或回到安全状态再处理
+      clientUpdatePending = true;
+      return;
+    }
+    reloadedForBuild = serverBuild;
+    seenClientBuild = serverBuild;
+    try { (window.__SP_AUTO_LOG ||= []).push({ event: 'client-build-reload', at: Date.now() }); } catch { /* ignore */ }
+    setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 1200);
+  }
+  /**
+   * 对局刚结束时调用：如果这局期间服务器换过 client.js，立刻刷新，
+   * 不必等下一轮 5 秒轮询（玩家回到大厅那一刻正好是刷新的好时机）。
+   */
+  function flushClientBuildWait() {
+    if (!clientUpdatePending) return;
+    if (reloadedForBuild === seenClientBuild) { clientUpdatePending = false; return; }
+    if (inRunningMatch()) return;
+    clientUpdatePending = false;
+    reloadedForBuild = seenClientBuild;
+    try { (window.__SP_AUTO_LOG ||= []).push({ event: 'client-build-reload', at: Date.now(), via: 'after-match' }); } catch { /* ignore */ }
+    setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 600);
+  }
+  window.__mmFlushClientBuild = flushClientBuildWait;
+
   // 名字：优先 URL 参数（匹配/邀请链接会带），否则回退到本机记住的名字。
   // 只认 URL 的话，老玩家直接打开域名（没有 ?name=）时 NAME 为空：
   // 于是 net.setName 从不调用 → net.name 为空 → hello 不发、rehandshake 也返回 false
@@ -314,45 +421,108 @@ const JOIN_COOKIE = (() => {
     el.addEventListener('click', () => setTimeout(mmTipHide, 0));
   }
 
+  /**
+   * 应用 /api/gate 的结果（也可能来自合并后的 /api/pulse.gate）。
+   * 从 refreshGate 里拆出来，供两条路径共用。
+   */
+  function applyGate(j) {
+    if (!j) return;
+    GATE = { start: j.start !== false, match: j.match !== false };
+    // 管理员/服主无视维护开关（服务端 session.admin 同样放行）。
+    // 角色变量由账号接口异步写入，也可能只有后台下发的 adminToken，两者任一即可。
+    const isAdmin = (() => {
+      try {
+        const r = window.__SP_ACCOUNT_ROLE;
+        if (r && r !== 'player') return true;
+        if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) return true;
+        return false;
+      } catch { return false; }
+    })();
+    if (GATE.start === false && !isAdmin) lastGateTip = true;
+    const b = [...document.querySelectorAll('button')].find((x) => /开始模拟/.test(x.textContent || ''));
+    if (!b) return;
+    if (GATE.start === false && !isAdmin) {
+      b.disabled = true;
+      b.dataset.mmGate = '1';
+      // 与新版同款悬停提示，而不是浏览器原生 title 气泡
+      b.dataset.mmTipText = '服务器暂时关闭了开始游戏，请稍后再试';
+      b.dataset.mmTipBound = '1';
+      b.removeAttribute('title');
+      mmTipBind(b, b.dataset.mmTipText);
+    } else if (b.dataset.mmGate) {
+      b.disabled = false;
+      delete b.dataset.mmGate;
+      b.dataset.mmTipText = '';
+      b.removeAttribute('title');
+    }
+  }
+
+  let lastGateTip = false;
+
   function refreshGate() {
     fetch('/mm/api/gate', { cache: 'no-store' })
       .then((r) => r.ok ? r.json() : null)
-      .then((j) => {
-        if (!j) return;
-        GATE = { start: j.start !== false, match: j.match !== false };
-        // 管理员/服主无视维护开关（服务端 session.admin 同样放行）
-        // 管理员/服主无视维护开关（服务端 session.admin 同样放行）。
-        // 角色变量由账号接口异步写入，也可能只有后台下发的 adminToken，两者任一即可。
-        const isAdmin = (() => {
-          try {
-            const r = window.__SP_ACCOUNT_ROLE;
-            if (r && r !== 'player') return true;
-            if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) return true;
-            return false;
-          } catch { return false; }
-        })();
-        const b = [...document.querySelectorAll('button')].find((x) => /开始模拟/.test(x.textContent || ''));
-        if (!b) return;
-        if (GATE.start === false && !isAdmin) {
-          b.disabled = true;
-          b.dataset.mmGate = '1';
-          // 与新版同款悬停提示，而不是浏览器原生 title 气泡
-          b.dataset.mmTipText = '服务器暂时关闭了开始游戏，请稍后再试';
-          b.dataset.mmTipBound = '1';
-          b.removeAttribute('title');
-          mmTipBind(b, b.dataset.mmTipText);
-        } else if (b.dataset.mmGate) {
-          b.disabled = false;
-          delete b.dataset.mmGate;
-          b.dataset.mmTipText = '';
-          b.removeAttribute('title');
-        }
-      })
+      .then(applyGate)
       .catch(() => {});
   }
 
+  // ---------------------------------------------------------------- 合并轮询（本服优化）
+  //
+  // 真实访问日志统计（1,192,827 条采样）：
+  //   /mm/api/gate          67,450 次
+  //   /mm/api/room-ttl      67,439 次
+  //   /mm/api/announcement  67,439 次
+  // 三个各自 5 秒轮询，合计约占全部请求的 55% —— 比素材请求（11.6%）多近 5 倍。
+  // 它们都返回几十到一百多字节的小 JSON，合并成一个 /mm/api/pulse 只花一次往返。
+  //
+  // 策略：能合并就合并；pulse 不可用（老节点）时自动退回原来的三个端点，行为不变。
+  //
+  // ⚠ 订阅要能拿到「已经到达过」的数据：模块 A 可能在第一次 pulse 返回之后才 install，
+  //   只推送不缓存的话它就永远收不到（要等下一轮 5 秒，或干脆错过初始值）。
+  //   所以这里保存 lastPulse，订阅时立刻补发一次。
+  let pulseOk = true;
+  let lastPulse = null;
+  const pulseHooks = { gate: [], ttl: [], announcement: [] };
+  /**
+   * 订阅某类数据的变化。
+   * 如果这一类数据已经到达过（lastPulse 里有），会立刻用当前值调用一次 ——
+   * 这样晚注册的模块不会漏掉初始值。
+   */
+  function onPulse(kind, fn) {
+    try {
+      pulseHooks[kind].push(fn);
+      const have = lastPulse && kind in lastPulse && lastPulse[kind] != null;
+      if (have) { try { fn(lastPulse[kind]); } catch { /* ignore */ } }
+    } catch { /* ignore */ }
+  }
+  function emitPulse(kind, value) {
+    for (const fn of pulseHooks[kind]) { try { fn(value); } catch { /* ignore */ } }
+  }
+
+  function refreshPulse() {
+    if (!pulseOk) { refreshGate(); return; }
+    fetch('/mm/api/pulse', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!j || !j.ok) { pulseOk = false; refreshGate(); return; }
+        const data = { gate: j.gate, ttl: j.roomTtl, announcement: j.announcement };
+        lastPulse = data;
+        applyGate(data.gate);
+        emitPulse('gate', data.gate);
+        emitPulse('ttl', data.ttl);
+        emitPulse('announcement', data.announcement);
+        // client.js 版本自检：服务器换过文件就让页面自我更新（对局中不刷）
+        try { checkClientBuild(j.clientBuild); } catch { /* ignore */ }
+      })
+      .catch(() => { /* 断网时保持现状，下一轮再试 */ });
+  }
+  /** 当前已到达的 pulse 数据（可能为 null：还没成功过一次）。供晚注册的模块主动取一次。 */
+  function getPulse() { return lastPulse; }
+
   function boot(sp) {
-    try { refreshGate(); setInterval(refreshGate, 5000); } catch { /* ignore */ }
+    // 合并轮询：一次拿到 gate / room-ttl / announcement，替代原来三个独立的 5 秒轮询。
+    // 老节点没有 /mm/api/pulse 时 refreshPulse 会自动退回 refreshGate。
+    try { refreshPulse(); setInterval(refreshPulse, 5000); } catch { /* ignore */ }
     document.addEventListener('click', (e) => {
       if (GATE.start !== false) return;
       // 管理员/服主无视维护开关：服务端 start 分支按 session.admin 放行，
@@ -534,6 +704,8 @@ const JOIN_COOKIE = (() => {
   }
 
   // 进入对局时的全屏过渡，盖住中间的「同盟等待室」，开局后自动消失
+  let transitionTimer = null;
+  let transitionWatch = null;
   function showTransition() {
     if (document.getElementById('mm-transition')) return;
     const ov = document.createElement('div');
@@ -550,13 +722,28 @@ const JOIN_COOKIE = (() => {
         <span class="mm-ov__foundsub" id="mm-transition-sub">正在进入模拟…</span>
       </div>`;
     document.body.appendChild(ov);
-    // 兜底：90 秒还没开局就把界面让出来，避免卡死
-    setTimeout(() => hideTransition(), 90_000);
+    // 兜底：90 秒还没开局就把界面让出来，避免卡死。
+    // 顺带把定时器记下来：如果遮罩被正常收掉，这个定时器也一并取消，
+    // 免得它 90 秒后再对一个新的遮罩动手。
+    transitionTimer = setTimeout(() => hideTransition(), 90_000);
+    // 更快的一道保险：8 秒后如果还没进对局、而且连接已经断了（被接管/掉线），
+    // 立刻收掉遮罩 —— 那种情况永远不会再"进入"了。
+    transitionWatch = setInterval(() => {
+      try {
+        const s = window.__SP__?.store?.get?.() || {};
+        const dead = s.match == null && !(s.room && s.room.inMatch);
+        if (window.__SP_RESTART_PENDING || dead) { hideTransition(); return; }
+        const st = window.__SP__?.net?.status;
+        if (st === 'closed') hideTransition();
+      } catch { /* ignore */ }
+    }, 2000);
   }
 
   function hideTransition() {
     const el = document.getElementById('mm-transition');
     if (el) el.remove();
+    if (transitionTimer) { try { clearTimeout(transitionTimer); } catch { /* ignore */ } transitionTimer = null; }
+    if (transitionWatch) { try { clearInterval(transitionWatch); } catch { /* ignore */ } transitionWatch = null; }
   }
 
   try { if (!document.querySelector('meta[name="mm-no-referrer"]')) { const m = document.createElement('meta'); m.name = 'mm-no-referrer'; m.setAttribute('name', 'referrer'); m.content = 'no-referrer'; document.head.appendChild(m); } } catch { /* ignore */ }
@@ -590,10 +777,24 @@ const JOIN_COOKIE = (() => {
     const tick = () => {
       const s = store.get();
       const room = s.room;
-      if (window.__SP_RESTART_PENDING) return; // 返回同盟提示还在：不要自动开下一局
+      // ★ 「重启中断」标志不能让过渡遮罩永远盖着。
+      //   以前这里直接 return，于是只要 __SP_RESTART_PENDING 为真，
+      //   hideTransition() 就永远走不到 —— 玩家被钉在「正在进入模拟…」上。
+      //   而那个标志恰恰是在「对局被打断」时置上的（mark()：room.inMatch && !match.result），
+      //   正是玩家最需要看见下面界面的时候。现在即使有该标志，也先把遮罩收掉：
+      //   遮罩只是"正在进入"的装饰，不该成为阻断。
+      if (window.__SP_RESTART_PENDING) {
+        try { hideTransition(); } catch { /* ignore */ }
+        return;
+      }
       // A started / in-match room already moved to the game: do not leave the transition
       // overlay covering it while waiting for the first m.public frame.
       if (s.room?.inMatch || s.match?.public) { autoDone = true; hideTransition(); return; }
+      // 被其他标签页接管（net 已 closed 且是 4001）时，本页不会再收到任何服务端推送：
+      // 遮罩留着只会让人以为还在加载。收掉它，让 main.js 的 replaced 处理把界面带回大厅。
+      try {
+        if (net.status === 'closed') { hideTransition(); return; }
+      } catch { /* ignore */ }
       if (autoDone) return;   // 已经开过一局：返回房间后不要自动重开
       if (!room) { enteredAt = Date.now(); readySent = false; startSent = false; return; }
       const me = s.me.playerId;
@@ -1286,15 +1487,16 @@ const JOIN_COOKIE = (() => {
       const rec = read();
       if (!rec) return;
       // The interrupted room may not have been auto-rejoined yet (there is no sp.lastRoom on a
-      // fresh tab). Follow the marker through the account-resume route once.
+      // fresh tab).
+      //
+      // ★ 2026-10-27：这里以前会自动 location.assign 到 /r/CODE?accountResume=1，
+      //   玩家刷新一下页面（或换设备打开）就被自己跳走。按维护者要求改成**不动页面**：
+      //   只把「上一局被服务器重启打断」这件事告诉玩家，并在下面给出一个按钮，
+      //   由他自己决定要不要回去。所有跳转都必须是玩家亲手点的。
       if (!s.room) {
         if (s.connection?.status !== 'online') return;
-        let tried = '';
-        try { tried = sessionStorage.getItem('sp.restartJoin') || ''; } catch { /* ignore */ }
-        if (tried !== rec.code) {
-          try { sessionStorage.setItem('sp.restartJoin', rec.code); } catch { /* ignore */ }
-          location.assign('/r/' + encodeURIComponent(rec.code) + '?accountResume=1');
-        }
+        window.__SP_RESTART_PENDING = true;
+        showBackPanel();
         return;
       }
       if (s.room.code !== rec.code) return;
@@ -1316,12 +1518,32 @@ const JOIN_COOKIE = (() => {
     const box = document.createElement('div');
     box.id = 'mm-back';
     box.className = 'awayov';
-    box.innerHTML = '<div class="awayov__box brackets"><span class="micro micro--mint">SIMULATION CLOSED</span><h2>本局模拟已结束</h2><p class="t-lo">服务器重启导致对局中断，同盟已返回等待室</p><button type="button" class="btn btn--primary btn--lg"><span class="btn__icon" aria-hidden="true">‹</span><span class="btn__label">返回同盟</span></button></div>';
+    box.innerHTML = '<div class="awayov__box brackets"><span class="micro micro--mint">SIMULATION CLOSED</span><h2>本局模拟已结束</h2><p class="t-lo">服务器重启导致对局中断，同盟已返回等待室。要回去继续，点下面的按钮。</p><button type="button" class="btn btn--primary btn--lg"><span class="btn__icon" aria-hidden="true">‹</span><span class="btn__label">返回同盟</span></button></div>';
     box.querySelector('button').onclick = () => {
+      // 玩家亲手点了「返回同盟」才跳转（不再有自动跳转，见 resumeTick 的注释）。
+      // 先读标记再删，否则下面拿不到房间码。
+      let code = '';
+      try {
+        const rec = JSON.parse(localStorage.getItem('sp.matchInterrupted') || 'null');
+        code = (rec && rec.code) || '';
+      } catch { /* ignore */ }
       try { localStorage.removeItem('sp.matchInterrupted'); } catch { /* ignore */ }
       window.__SP_RESTART_PENDING = false;
       box.remove();
-      // Drop the stale match render as well; the restored room page is the correct view.
+      // 还在房间里：刷新即可把房间页面拿回来。不在房间里（刷新后不会再有自动回房）：
+      // 这次点击就是「我要回去」的明确意图，直接跳到房间路由。
+      let inRoom = false;
+      try {
+        const s = window.__SP__ && window.__SP__.store && window.__SP__.store.get();
+        inRoom = !!(s && s.room && s.room.code);
+        if (inRoom) code = s.room.code;
+      } catch { /* ignore */ }
+      if (inRoom) { location.reload(); return; }
+      if (code) {
+        try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
+        location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');
+        return;
+      }
       location.reload();
     };
 
@@ -1334,42 +1556,11 @@ const JOIN_COOKIE = (() => {
   // ---------------------------------------------------------------- 重启后自动回到上次的房间（会话丢失时兜底）
 
   function installAutoRejoin() {
-    // 匹配转场期间不能自动回旧房间：房主要新建房间（否则会把旧房号当成新房间回报），
-    // 客人要加入匹配到的房间（否则会先回旧房，joinFlow 看到已有房间就不再加入目标房）。
-    if (IS_HOST && PMID && PCID) return;
-    if (ROOM) return;
-    try {
-      const qs = new URLSearchParams(location.search);
-      if (qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || qs.get('watchToken')
-        || sessionStorage.getItem('sp_admin_watch_code') || localStorage.getItem('sp_admin_watch_code')) return;
-    } catch { /* ignore */ }
-    const sp = window.__SP__;
-    if (!sp || !sp.store || !sp.store.subscribe || !sp.net) return;
-    const KEY = 'sp.lastRoom';
-    let tried = false;
-    // 记录最近所在房间
-    sp.store.subscribe((s) => {
-      try {
-        if (s.room && s.room.code) localStorage.setItem(KEY, JSON.stringify({ code: s.room.code, at: Date.now() }));
-        if (!s.room && !s.match.public) { /* 保留 30 分钟 */ }
-      } catch { /* ignore */ }
-    });
-    const tick = () => {
-      if (tried) return;
-      if (watchExitRecent()) { tried = true; return; }
-      const s = sp.store.get();
-      if (!s || !s.session || !s.session.entered) return;
-      if (s.room) { tried = true; return; }
-      if (!sp.net || sp.net.status !== 'online') return;
-      let rec = null;
-      try { rec = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { /* ignore */ }
-      if (!rec || !rec.code) { tried = true; return; }
-      if (Date.now() - (rec.at || 0) > 30 * 60 * 1000) { tried = true; return; }
-      tried = true;
-      try { sp.net.request('room.join', { code: rec.code }).catch(() => {}); } catch { /* ignore */ }
-    };
-    setInterval(tick, 1500);
-    setTimeout(tick, 1200);
+    // ★ 已停用（2026-10-27，维护者要求「恢复对局必须玩家自己点」）。
+    //   这里以前会在刷新 / 重新打开页面时，拿 localStorage 的 sp.lastRoom 自动
+    //   `room.join` 回上一个房间 —— 玩家看到的就是「自己回到房里了」，或者在别的房间
+    //   操作时突然被拽走。现在一律不动：恢复只有大厅「恢复对局」按钮一条路。
+    //   原实现在 http://mm/client.js 的历史提交里；这里保留函数名，调用点不用改。
   }
 
 
@@ -1390,13 +1581,24 @@ const JOIN_COOKIE = (() => {
     const sp = window.__SP__;
     if (!sp || !sp.store || !sp.store.subscribe) return;
     let LIMIT = 15 * 60 * 1000;
-    // 同盟解散时间由后台配置（分钟），每 60 秒同步一次
+    // 同盟解散时间由后台配置（分钟）。数据来自合并轮询 /mm/api/pulse（见 refreshPulse），
+    // 不再自己每 5 秒打一次 /mm/api/room-ttl —— 那三个端点曾占全部请求的一半以上。
+    const applyTtl = (j) => {
+      const m = Number(j && j.minutes);
+      if (Number.isFinite(m) && m >= 1 && m <= 1440) { LIMIT = Math.round(m * 60000); window.__mmTtlMs = LIMIT; }
+    };
+    onPulse('ttl', applyTtl);
+    // 兜底：pulse 不可用（老节点）时仍走原来的端点，行为与改造前一致。
+    // 已经有一次 pulse 数据时先用它，避免"刚装好却没有值、要等 5 秒"的空窗。
     const syncTtl = async () => {
+      if (pulseOk) {
+        const have = getPulse();
+        if (have && have.ttl) applyTtl(have.ttl);
+        return;
+      }
       try {
         const r = await fetch('/mm/api/room-ttl', { cache: 'no-store' });
-        const j = await r.json();
-        const m = Number(j.minutes);
-        if (Number.isFinite(m) && m >= 1 && m <= 1440) { LIMIT = Math.round(m * 60000); window.__mmTtlMs = LIMIT; }
+        applyTtl(await r.json());
       } catch { /* ignore */ }
     };
     syncTtl(); setInterval(syncTtl, 5000);
@@ -1408,7 +1610,34 @@ const JOIN_COOKIE = (() => {
     const tick = () => {
       const s = sp.store.get();
       const room = s.room;
-      if (!room || (s.match && s.match.public)) {
+      // 只在「真的坐在同盟房间里、还没开始模拟」时显示倒计时。
+      // 这个浮层表达的是「同盟/独立模拟的等待室多久后自动销毁」，所以：
+      //   * 没进大厅（标题页）→ 不显示
+      //   * 进了对局（match.public 存在）→ 不显示（对局中不存在"销毁"这回事）
+      //   * 有结算结果 → 不显示
+      //   * 房间码不是有效的四字符 → 说明拿到的是残留数据，不显示
+      //   * **界面上没有房间容器 → 不显示**
+      //
+      // 最后一条是必须的：只靠 store 里的状态判断会漏掉「过渡/异常」中间态——
+      // 比如"正在进入模拟…"遮罩（mm-ov）挡在前面、或者被别的标签页接管后本页还留着一份
+      // 旧的 s.room。那种时候 store 看着像"在房间里"，界面却根本不是房间，
+      // 浮层就被 position:fixed 硬贴在页面顶部（实测玩家在对局/过渡画面上头看到
+      // 「管理员房 · 不自动销毁」，以为房间要没了）。
+      const entered = !!(s.session && s.session.entered);
+      const roomOk = entered && !!room && typeof room.code === 'string' && room.code.length === 4
+        && !(s.match && s.match.public) && !(s.match && s.match.result);
+      if (!roomOk) {
+        const dead = document.getElementById('mm-room-timer');
+        if (dead) dead.remove();
+        return;
+      }
+      // 真在房间界面上吗？(房间/大厅容器存在，且没有过渡遮罩挡着)
+      let onRoomScreen = false;
+      try {
+        const overlay = document.getElementById('mm-overlay') || document.getElementById('mm-back');
+        onRoomScreen = !overlay && !!document.querySelector('.room-screen');
+      } catch { /* ignore */ }
+      if (!onRoomScreen) {
         const dead = document.getElementById('mm-room-timer');
         if (dead) dead.remove();
         return;
@@ -2487,7 +2716,8 @@ const JOIN_COOKIE = (() => {
       showNext();
     };
 
-    const poll = () => fetch('/mm/api/announcement', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+    // 公告数据来自合并轮询 /mm/api/pulse（见 refreshPulse），不再单独每 5 秒轮询。
+    const applyAnnouncement = (d) => {
       const enabled = !!(d && d.enabled && d.text);
       if (!enabled) {
         // 关闭公告：停止当前这条并清空排队，不再显示
@@ -2502,7 +2732,19 @@ const JOIN_COOKIE = (() => {
       // New content replaces the previous reminder; the player can close each one.
       if (showing) closeTicker();
       enqueue(lines, key);
-    }).catch(() => {});
+    };
+    onPulse('announcement', applyAnnouncement);
+    // 兜底：pulse 不可用（老节点）时仍走原来的端点。
+    // 已有 pulse 数据时先用它，避免首次安装时的空窗（onPulse 的补发已经覆盖这种情况）。
+    const poll = () => {
+      if (pulseOk) {
+        const have = getPulse();
+        if (have && have.announcement) applyAnnouncement(have.announcement);
+        return;
+      }
+      fetch('/mm/api/announcement', { cache: 'no-store' })
+        .then((r) => r.json()).then(applyAnnouncement).catch(() => {});
+    };
     startOverlayGuard();
     poll();
     setInterval(poll, 5000);

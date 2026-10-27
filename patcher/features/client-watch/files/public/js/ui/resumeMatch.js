@@ -34,6 +34,8 @@ export function ResumeMatchButton() {
   const [accountRoom, setAccountRoom] = useState(false);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 对局在别的节点上：恢复失败后不再自动跳转，改为在这里提示，由玩家再点一次才跳。
+  const [elsewhere, setElsewhere] = useState(null);
   const [restartPending, setRestartPending] = useState(() => {
     try { return !!localStorage.getItem('sp.matchInterrupted') || !!window.__SP_RESTART_PENDING; } catch { return false; }
   });
@@ -105,14 +107,17 @@ export function ResumeMatchButton() {
       await requestAccountResume();
       setOpen(false);
     } catch {
-      // This browser may be connected to a different node than the seat. Find the room in the
-      // matchmaker directory, open its /r/CODE route, and let the target page resume automatically.
+      // 这台浏览器连的节点上没有该账号的会话（座位在别的节点上）。
+      //
+      // ★ 2026-10-27：以前这里在失败后**自动** location.assign 到 /r/CODE，玩家只是点了一下
+      //   「恢复对局」，紧接着页面自己跳走，看上去像抽搐；而且 /r/CODE 落地后又走自动恢复，
+      //   失败时还会再跳，来回几跳。现在的规则是：**所有跳转都必须由玩家亲手点**。
+      //   所以这里不跳，而是把「去那个房间所在节点继续」变成一个玩家再点一次的按钮
+      //   （goToRoom 就是那次点击的处理函数）。
       const code = await findAccountRoom();
       if (code) {
+        setElsewhere(code);
         setBusy(false);
-        // Nginx may consume the query string on /r/CODE; keep the intent in this tab as well.
-        try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
-        location.assign(`/r/${encodeURIComponent(code)}?accountResume=1`);
         return;
       }
       toast(t('没有找到可恢复的账号对局。'), 'warn');
@@ -120,12 +125,25 @@ export function ResumeMatchButton() {
       setBusy(false);
     }
   };
+  // 玩家**再次点击**才真正跳到房间所在节点（手动跳转，不再自动）。
+  // 落地后需要再发一次 account.resume 才能把已开局的对局接回来（room.join 对已开局
+  // 的房间只会回 ROOM_STARTED）。这里写入的 sp.accountResume 是**本次点击**产生的意图，
+  // 与以前那种「刷新/换设备自动探测就置位」完全不同 —— 只有玩家点了才会写。
+  const goToRoom = () => {
+    if (!elsewhere) return;
+    try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
+    location.assign(`/r/${encodeURIComponent(elsewhere)}?accountResume=1`);
+  };
   return html`<button type="button" class="verchip" data-testid="resume-local-match" onClick=${() => setOpen(true)} title=${resumeLabel}>
       <${Icon} name="refresh" /><span class="verchip__label">${resumeLabel}</span>
     </button>
     <${Modal} open=${open} onClose=${() => !busy && setOpen(false)} title=${resumeLabel}>
       <p>${t('选择已关闭窗口的对局。服务器重启或对局过期后无法恢复。')}</p>
       ${accountResume ? html`<${Button} variant="primary" block=${true} disabled=${busy} onClick=${resumeAccount}>${t('通过账号恢复当前对局')}<//>` : null}
+      ${elsewhere ? html`<div class="resume-elsewhere">
+        <p>${t('这个页面对应的节点上没有你的对局，它在另一个节点（房间 {code}）。点下面的按钮过去继续。', { code: elsewhere })}</p>
+        <${Button} variant="primary" block=${true} onClick=${goToRoom}>${t('前往该房间继续对局')}<//>
+      <//>` : null}
       ${items.length ? items.map((item) => html`<${Button} key=${item.id} variant="secondary" block=${true} disabled=${busy} onClick=${() => resume(item)}>
         ${t('{name} · 同盟 {code}', { name: item.name || t('博士'), code: item.code || '—' })}<//>`) : null}
     <//>`;

@@ -1487,15 +1487,16 @@ const JOIN_COOKIE = (() => {
       const rec = read();
       if (!rec) return;
       // The interrupted room may not have been auto-rejoined yet (there is no sp.lastRoom on a
-      // fresh tab). Follow the marker through the account-resume route once.
+      // fresh tab).
+      //
+      // ★ 2026-10-27：这里以前会自动 location.assign 到 /r/CODE?accountResume=1，
+      //   玩家刷新一下页面（或换设备打开）就被自己跳走。按维护者要求改成**不动页面**：
+      //   只把「上一局被服务器重启打断」这件事告诉玩家，并在下面给出一个按钮，
+      //   由他自己决定要不要回去。所有跳转都必须是玩家亲手点的。
       if (!s.room) {
         if (s.connection?.status !== 'online') return;
-        let tried = '';
-        try { tried = sessionStorage.getItem('sp.restartJoin') || ''; } catch { /* ignore */ }
-        if (tried !== rec.code) {
-          try { sessionStorage.setItem('sp.restartJoin', rec.code); } catch { /* ignore */ }
-          location.assign('/r/' + encodeURIComponent(rec.code) + '?accountResume=1');
-        }
+        window.__SP_RESTART_PENDING = true;
+        showBackPanel();
         return;
       }
       if (s.room.code !== rec.code) return;
@@ -1517,12 +1518,32 @@ const JOIN_COOKIE = (() => {
     const box = document.createElement('div');
     box.id = 'mm-back';
     box.className = 'awayov';
-    box.innerHTML = '<div class="awayov__box brackets"><span class="micro micro--mint">SIMULATION CLOSED</span><h2>本局模拟已结束</h2><p class="t-lo">服务器重启导致对局中断，同盟已返回等待室</p><button type="button" class="btn btn--primary btn--lg"><span class="btn__icon" aria-hidden="true">‹</span><span class="btn__label">返回同盟</span></button></div>';
+    box.innerHTML = '<div class="awayov__box brackets"><span class="micro micro--mint">SIMULATION CLOSED</span><h2>本局模拟已结束</h2><p class="t-lo">服务器重启导致对局中断，同盟已返回等待室。要回去继续，点下面的按钮。</p><button type="button" class="btn btn--primary btn--lg"><span class="btn__icon" aria-hidden="true">‹</span><span class="btn__label">返回同盟</span></button></div>';
     box.querySelector('button').onclick = () => {
+      // 玩家亲手点了「返回同盟」才跳转（不再有自动跳转，见 resumeTick 的注释）。
+      // 先读标记再删，否则下面拿不到房间码。
+      let code = '';
+      try {
+        const rec = JSON.parse(localStorage.getItem('sp.matchInterrupted') || 'null');
+        code = (rec && rec.code) || '';
+      } catch { /* ignore */ }
       try { localStorage.removeItem('sp.matchInterrupted'); } catch { /* ignore */ }
       window.__SP_RESTART_PENDING = false;
       box.remove();
-      // Drop the stale match render as well; the restored room page is the correct view.
+      // 还在房间里：刷新即可把房间页面拿回来。不在房间里（刷新后不会再有自动回房）：
+      // 这次点击就是「我要回去」的明确意图，直接跳到房间路由。
+      let inRoom = false;
+      try {
+        const s = window.__SP__ && window.__SP__.store && window.__SP__.store.get();
+        inRoom = !!(s && s.room && s.room.code);
+        if (inRoom) code = s.room.code;
+      } catch { /* ignore */ }
+      if (inRoom) { location.reload(); return; }
+      if (code) {
+        try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
+        location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');
+        return;
+      }
       location.reload();
     };
 
@@ -1535,42 +1556,11 @@ const JOIN_COOKIE = (() => {
   // ---------------------------------------------------------------- 重启后自动回到上次的房间（会话丢失时兜底）
 
   function installAutoRejoin() {
-    // 匹配转场期间不能自动回旧房间：房主要新建房间（否则会把旧房号当成新房间回报），
-    // 客人要加入匹配到的房间（否则会先回旧房，joinFlow 看到已有房间就不再加入目标房）。
-    if (IS_HOST && PMID && PCID) return;
-    if (ROOM) return;
-    try {
-      const qs = new URLSearchParams(location.search);
-      if (qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || qs.get('watchToken')
-        || sessionStorage.getItem('sp_admin_watch_code') || localStorage.getItem('sp_admin_watch_code')) return;
-    } catch { /* ignore */ }
-    const sp = window.__SP__;
-    if (!sp || !sp.store || !sp.store.subscribe || !sp.net) return;
-    const KEY = 'sp.lastRoom';
-    let tried = false;
-    // 记录最近所在房间
-    sp.store.subscribe((s) => {
-      try {
-        if (s.room && s.room.code) localStorage.setItem(KEY, JSON.stringify({ code: s.room.code, at: Date.now() }));
-        if (!s.room && !s.match.public) { /* 保留 30 分钟 */ }
-      } catch { /* ignore */ }
-    });
-    const tick = () => {
-      if (tried) return;
-      if (watchExitRecent()) { tried = true; return; }
-      const s = sp.store.get();
-      if (!s || !s.session || !s.session.entered) return;
-      if (s.room) { tried = true; return; }
-      if (!sp.net || sp.net.status !== 'online') return;
-      let rec = null;
-      try { rec = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { /* ignore */ }
-      if (!rec || !rec.code) { tried = true; return; }
-      if (Date.now() - (rec.at || 0) > 30 * 60 * 1000) { tried = true; return; }
-      tried = true;
-      try { sp.net.request('room.join', { code: rec.code }).catch(() => {}); } catch { /* ignore */ }
-    };
-    setInterval(tick, 1500);
-    setTimeout(tick, 1200);
+    // ★ 已停用（2026-10-27，维护者要求「恢复对局必须玩家自己点」）。
+    //   这里以前会在刷新 / 重新打开页面时，拿 localStorage 的 sp.lastRoom 自动
+    //   `room.join` 回上一个房间 —— 玩家看到的就是「自己回到房里了」，或者在别的房间
+    //   操作时突然被拽走。现在一律不动：恢复只有大厅「恢复对局」按钮一条路。
+    //   原实现在 http://mm/client.js 的历史提交里；这里保留函数名，调用点不用改。
   }
 
 
