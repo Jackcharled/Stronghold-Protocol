@@ -1,4 +1,4 @@
-# 以 SYSTEM 身份、脱离任何用户会话启动 PM2 及其全部应用
+﻿# 以 SYSTEM 身份、脱离任何用户会话启动 PM2 及其全部应用
 #
 # 为什么需要这个脚本（2026-10-27）：
 #   维护者反馈「不要让我必须启动你我才能启动服务器」。
@@ -26,8 +26,42 @@ if (-not $root) {
   $try = Split-Path -Parent $scriptDir          # deploy/ → 上一级
   $root = if (Test-Path (Join-Path $try 'node-1')) { $try } else { $scriptDir }
 }
-$env:PM2_HOME = if ($env:PM2_HOME) { $env:PM2_HOME } else { Join-Path $env:USERPROFILE '.pm2' }
-$pm2Cmd = if ($env:SP_PM2) { $env:SP_PM2 } else { Join-Path $env:APPDATA 'npm\pm2.cmd' }
+$env:PM2_HOME = $env:PM2_HOME
+if (-not $env:PM2_HOME) {
+  # 与上面同样的道理：SYSTEM 身份的 USERPROFILE 不是管理员目录。
+  # PM2 的 dump（进程表）在那个用户自己的 .pm2 下，必须指向同一处，
+  # 否则 resurrect 会「成功但什么都没恢复」——比直接失败更难查。
+  $homes = @(
+    (Join-Path $env:USERPROFILE '.pm2'),
+    'C:\Users\Administrator\.pm2'
+  )
+  foreach ($h in $homes) {
+    if ($h -and (Test-Path (Join-Path $h 'dump.pm2'))) { $env:PM2_HOME = $h; break }
+  }
+  if (-not $env:PM2_HOME) { $env:PM2_HOME = $homes[0] }
+}
+$pm2Cmd = $env:SP_PM2
+if (-not $pm2Cmd) {
+  # ⚠ 这个脚本通常以 SYSTEM 身份运行，此时 $env:APPDATA 是
+  #   C:\WINDOWS\system32\config\systemprofile\AppData\Roaming —— npm 全局包**不在那里**，
+  #   于是找不到 pm2（实测日志：PM2 not found at ...systemprofile...）。
+  #   旧版硬编码了管理员路径所以能跑。这里改成按候选顺序探测，谁存在用谁。
+  $cands = @(
+    (Join-Path $env:APPDATA 'npm\pm2.cmd'),
+    'C:\ProgramData\npm\pm2.cmd'
+  )
+  # 所有用户目录下的 npm\pm2.cmd（SYSTEM 也能读）
+  Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    $cands += (Join-Path $_.FullName 'AppData\Roaming\npm\pm2.cmd')
+  }
+  $cands += 'C:\Users\Administrator\AppData\Roaming\npm\pm2.cmd'
+  foreach ($c in $cands) { if ($c -and (Test-Path $c)) { $pm2Cmd = $c; break } }
+}
+if (-not $pm2Cmd) {
+  # 最后兜底：从 PATH 里找
+  $w = Get-Command pm2.cmd -ErrorAction SilentlyContinue
+  if ($w) { $pm2Cmd = $w.Source }
+}
 $log = Join-Path $root 'logs\pm2-resurrect.log'
 New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
 function Write-Log([string]$text) {
@@ -45,9 +79,18 @@ function Invoke-Hidden([string]$argLine) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $p = [System.Diagnostics.Process]::Start($psi)
-    $null = $p.StandardOutput.ReadToEnd()
-    $null = $p.StandardError.ReadToEnd()
-    $p.WaitForExit(60000) | Out-Null
+    # ⚠ 要先 WaitForExit 再 ReadToEnd：反过来的话，子进程若一直不关 stdout，
+    #   ReadToEnd 会永远阻塞，WaitForExit 的超时根本没机会生效（实测卡死 5 分钟）。
+    #   这里读流放到「已确认退出」之后，并且给一个硬超时兜底 kill。
+    $done = $p.WaitForExit(45000)
+    if (-not $done) {
+      try { $p.Kill() } catch { /* ignore */ }
+      return @{ code = -1; note = 'timeout' }
+    }
+    try {
+      $null = $p.StandardOutput.ReadToEnd()
+      $null = $p.StandardError.ReadToEnd()
+    } catch { /* ignore */ }
     return @{ code = $p.ExitCode }
   } catch {
     Write-Log ('Invoke-Hidden failed: ' + $_.Exception.Message)
@@ -69,7 +112,8 @@ if ($god) {
   Write-Log ('PM2 daemon already running (pid ' + ($god | Select-Object -First 1).ProcessId + ')')
 } else {
   Write-Log 'PM2 daemon not running -> resurrect'
-  $r = Invoke-Hidden ('/c ""' + $pm2Cmd + '" resurrect >> "' + $log + '" 2>&1"')
+  # resurrect 会打印一整张 pm2 表格，没必要进日志（吵且难 grep）。只记退出码。
+  $r = Invoke-Hidden ('/c ""' + $pm2Cmd + '" resurrect >nul 2>&1"')
   Write-Log ('resurrect exit=' + $r.code)
   Start-Sleep -Seconds 8
 }
@@ -90,18 +134,30 @@ $tmp = Join-Path $env:TEMP 'sp-pm2-jlist.json'
 $null = Invoke-Hidden ('/c ""' + $pm2Cmd + '" jlist > "' + $tmp + '" 2>nul"')
 $probe = Join-Path $root 'deploy\_pm2-online.cjs'
 if (Test-Path $probe) {
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $nodeExe
-  $psi.Arguments = '"' + $probe + '" "' + $tmp + '"'
-  $psi.UseShellExecute = $false
-  $psi.CreateNoWindow = $true
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $p = [System.Diagnostics.Process]::Start($psi)
-  $out = $p.StandardOutput.ReadToEnd()
-  $null = $p.StandardError.ReadToEnd()
-  $p.WaitForExit(30000) | Out-Null
-  if ($p.ExitCode -eq 0) { $online = @($out -split ',') }
+  # ⚠ 这里也必须「先等退出、再读流」。原来写成 ReadToEnd() 在前、WaitForExit() 在后，
+  #   子进程只要不关 stdout 就会永久阻塞 —— 计划任务实例就是这么卡住的（实测 63s+ 不结束，
+  #   下一次触发被 IgnoreNew 跳过，看起来像"自启动失灵"）。
+  try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $nodeExe
+    $psi.Arguments = '"' + $probe + '" "' + $tmp + '"'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    if ($p.WaitForExit(20000)) {
+      $out = ''
+      try { $out = $p.StandardOutput.ReadToEnd() } catch { /* ignore */ }
+      $null = $p.StandardError.ReadToEnd()
+      if ($p.ExitCode -eq 0) { $online = @($out -split ',') }
+    } else {
+      try { $p.Kill() } catch { /* ignore */ }
+      Write-Log 'probe timeout (20s), skipped'
+    }
+  } catch {
+    Write-Log ('probe failed: ' + $_.Exception.Message)
+  }
 }
 
 # 真正必须活着的应用。
