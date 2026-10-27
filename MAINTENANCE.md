@@ -638,6 +638,49 @@ node patcher/check-coverage.mjs
 （`public/vendor/`、`test/`、`tools/`、`schemas/`、`packs/`、`nginx/`、`package*.json`、
 图片、以及上游 gitignore 禁止提交的 `matchmaker/public/admin.html`）。
 
+### 9.11 5–20 人局的结算显示（2026-10-27 修复）
+
+本服有 5–20 人实验房，但结算界面是从官方 4 人模式继承来的，有两处按 4/6 人写死，
+多人局会**看不到人**。两处都已修，但**务必记住它们是两件不同的事**：
+
+| 位置 | 原来的问题 | 现在 |
+|---|---|---|
+| `public/js/ui/stats.js` `MAX_PLAYERS` | 写死 `6`（注释还写着「the game seats 4」），`normalizeRecord` 读**和写**都截断 | 取 `shared/playerCapacity.js` 的 `MAX_PLAYER_CAPACITY`（20） |
+| `public/js/screens/settle.js` `TeamPage` | `Math.min(i, 7)` 把第 8 张之后的入场索引全压成 7，20 人时后 12 张同时冒出来 | `staggerOf(i, n)`：索引唯一，步长按人数自适应（8 人内 120ms，20 人 47ms），整排约 1 秒入完 |
+
+**最关键的一条：`public/js` 不是 junction。** 它是每个节点各自的副本，改完必须
+`node deploy/sync-nodes.cjs --apply` 分发，否则只有 node-1 是新代码，玩家连到别的节点
+看到的还是旧行为（2026-10-27 就因此白查了一轮：改完 node-1 刷新仍是 6 个）。
+
+```powershell
+$env:SP_ROOT = 'D:\Stronghold-Protocol'
+node repo-sync\deploy\sync-nodes.cjs          # 先看差异
+node repo-sync\deploy\sync-nodes.cjs --apply  # 再复制
+node repo-sync\deploy\sync-nodes.cjs          # 复检，必须「0 处差异」
+```
+
+生效方式：**`public/js` 和 `public/css` 只需玩家刷新页面，不用重启节点**。
+
+#### 已经存下的旧记录救不回来
+
+截断发生在 `normalizeRecord`，而它对**写入**也生效 —— 也就是第 7 名以后的玩家
+**从来没进过 localStorage**。修复只对**之后新打的局**有效；已经存成 6 条的记录，
+无论怎么改显示层都补不出数据。遇到玩家反馈「以前的记录也缺人」，要如实说明。
+
+#### 结算开场动画（`SettleIntro`）保持官方原样 —— 已确认的决定
+
+> 维护者原话：「结算开场动画还是按照原来的就行了。」
+
+那个「01 02 03 04」的过场是**官方素材驱动的固定演出**：`SEAT_BOX` 只有 4 个坐标，
+素材只有 `settle/before_middle_{s,f}_01~04` 四套。它**不是数据界面**，几秒就过、可点击跳过。
+按「作者没有做区分就按照作者的设计保存」的原则保持原样，**不要**为了多人局去改它。
+
+真正的数据显示在三个地方，都支持 5–20 人（每个都用 4/5/6/8/10/12/16/20 实测过）：
+
+1. 当场结算 →「数据详情」（`screens/result.js` `ResultView`，纵向滚动）
+2. 当场结算 →「同盟战报」（`screens/settle.js` `TeamPage`，横向滚动，自动定位到自己那张）
+3. 统计 → 对局记录 → 点一行回看（`recordToResult` → `ResultView`）
+
 ### 9.2 不能提交的内容
 
 | 禁止 | 原因 |
