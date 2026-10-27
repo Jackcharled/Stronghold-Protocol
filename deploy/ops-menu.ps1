@@ -190,9 +190,18 @@ function Restart-Nginx {
   C ''
   $m = 0; $hm = 0
   foreach ($n in 1..30) { try { $h = Invoke-RestMethod "http://127.0.0.1:$((3000 + $n))/healthz" -TimeoutSec 2; $m += (N $h.matches); $hm += (N $h.humans) } catch { } }
-  C "  影响：$m 局对局、$hm 位玩家会断线 1–2 秒自动重连（对局数据不丢）" Yellow
+  C "  影响：$m 局对局、$hm 位玩家会断线（浏览器自动重连，对局数据不丢）" Yellow
+  C '        站点会中断大约 5–20 秒（脚本要先清干净再启动，不会新旧混在一起）' Yellow
   C ''
-  C '  重启方式：通过计划任务（SYSTEM → Session 0），不会挂在当前窗口。' DarkGray
+  C '  流程（顺序不能改，2026-10-27 踩过坑）：' DarkGray
+  C '    1. quit 让正在传输的请求收尾' DarkGray
+  C '    2. 等进程归零，没退的强制结束 —— 不归零就不启动' DarkGray
+  C '    3. 确认 443 释放' DarkGray
+  C '    4. 触发计划任务（SYSTEM → Session 0）' DarkGray
+  C '    5. 校验进程数 / session 0 / HTTPS 200 / 素材加载速度' DarkGray
+  C ''
+  C '  ⚠ 不要在 nginx 还在跑的时候点重启：残留 worker 会让计划任务的「已在运行」保护跳过启动，' Yellow
+  C '    结果进程越积越多（实测从 14 涨到 17）。本脚本已经避免了这个顺序。' Yellow
   $ans = Read-Host '  确认重启 nginx？输入 y 回车'
   if ($ans -ne 'y') { C '  已取消' DarkGray; return }
   C ''

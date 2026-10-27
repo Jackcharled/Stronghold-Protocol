@@ -363,12 +363,50 @@ pid=9024   session=2   worker（10-27 04:05 启动）  ⚠ 不在 Session 0
 | 重启 nginx | `node tools/restart-nginx.mjs --apply`（内部也走计划任务） |
 | **禁止** | 在终端 / AI 助手 shell 里直接 `nginx.exe` 或 `Start-Process nginx.exe` |
 
-`tools/restart-nginx.mjs` 做的事：
-1. 列出所有 nginx 进程及其 `SessionId`，标出不在 Session 0 的
+`tools/restart-nginx.mjs` 做的事（**2026-10-27 重写，顺序不能改**）：
+1. 列出所有 nginx 进程及其 `SessionId`，标出不在 Session 0 的、标出超出 `worker_processes+1` 的残留
 2. 统计当前对局数（提醒会影响多少玩家）
-3. `-s quit` 优雅停止 → 等 worker 全部退出
-4. **用 `schtasks /Run /TN "SP-Nginx-Start"` 启动** → 新进程必然在 Session 0
-5. 校验：进程数、是否全部 `session=0`、HTTPS 是否 200
+3. `-s quit` 优雅停止（给正在传输的请求收尾的机会）
+4. **确认进程归零；没退的强制 `Kill()`** —— 不归零就中止，**绝不带着残留去启动**
+5. **确认 443 已释放**
+6. 用 `schtasks /Run /TN "SP-Nginx-Start"` 启动 → 新进程必然在 Session 0
+7. 校验：进程数 ≤ 3、全部 `session=0`、HTTPS 200、**素材加载速度**
+
+#### ⚠ 2026-10-27 第二次事故：`quit` 清不掉卡住的 worker
+
+维护者要求「现在就重启」，`restart-nginx.mjs --apply` 跑完的结果却是**进程从 14 变成 17、HTTPS 一度 FAIL**。
+
+两个原因，都是这次重写修掉的：
+
+| 坑 | 现象 | 现在怎么做 |
+|---|---|---|
+| `nginx -s quit` **只让 master 退出**，卡住的 worker 不响应 | 16 个进程只退了 1 个 | 等 10 秒仍不归零 → **强制 `Kill()`**，归零才继续 |
+| `_start-nginx.ps1` 开头有「已经在跑就直接退出」的保护 | 看到残留进程 → 什么都不做 → 旧 worker + 新进程混在一起 | 先保证归零、443 释放，**再**触发计划任务 |
+
+还有一条容易忽略的：**`schtasks /Run` 会继承触发者的会话**。若在 nginx 仍在运行时触发，
+新任务可能落在桌面会话。所以「先杀干净再启动」同时也是保证 `Session 0` 的前提。
+
+清理后的正常状态（实测）：
+
+```
+pid=8744   session=0   ← master，父进程已退出，由内核接管
+pid=26956  session=0   ← worker
+pid=28708  session=0   ← worker
+素材 6.4 MB scene.bin：60–81 秒 → 0.245 秒
+```
+
+**判断「有没有挂在你的进程下」的方法**（维护者最关心这一点）：
+
+```powershell
+# 1) nginx 的父进程链里【不能】出现当前 shell
+Get-CimInstance Win32_Process -Filter "Name='nginx.exe'" |
+  ForEach-Object { "$($_.ProcessId) session=$($_.SessionId) 父=$($_.ParentProcessId)" }
+"我的 shell = $PID"
+# 正常情况下 master 的父进程「已退出」—— 它是孤儿进程，由内核接管
+```
+
+父进程断链 + 全部 `session=0` 才算达标。**只有父进程断链、但 session 还是 2，不算达标**
+（2026-10-27 中间态就是这样：不会因会话退出而死，但仍挂在桌面会话里）。
 
 **随时自查**：
 
@@ -376,7 +414,7 @@ pid=9024   session=2   worker（10-27 04:05 启动）  ⚠ 不在 Session 0
 Get-CimInstance Win32_Process -Filter "Name='nginx.exe'" |
   Sort-Object CreationDate |
   Select-Object ProcessId, SessionId, CreationDate
-# SessionId 必须全是 0
+# SessionId 必须全是 0，进程数必须是 3
 ```
 
 **为什么用计划任务就能保证 Session 0**：
