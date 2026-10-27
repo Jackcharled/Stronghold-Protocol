@@ -313,7 +313,33 @@ function wireNet() {
     if (err.code === 'SESSION_IN_USE') identity.rejectToken();
     toastError(err);
   });
-  net.on('replaced', () => toast(t('该身份已在其他页面登录，本页已断开'), 'warn', { ttl: 6000 }));
+  // 同一账号在另一个标签页/浏览器登录时，服务端会关闭本页的 socket（4001），
+  // 并让新的那个接管座位。本页从此不会自动重连（net.js _onClose 的注释：不要跟新页面抢）。
+  //
+  // 以前这里只弹一条 toast，界面什么都不做 —— 于是被接管的那一页会**永远停在原画面**：
+  // 实测「两个标签页登同一账号」时，旧页卡在「正在进入模拟…」不动，玩家以为是加载失败。
+  // 服务端那局其实还在（由新页接着打），所以刷新本页也没用，看起来像"闪退后恢复不了"。
+  //
+  // 现在：提示保留，同时把页面清理到可理解的状态 ——
+  // 清掉对局/房间的内存状态（让它回到大厅）、收掉残留的过渡遮罩与倒计时浮层。
+  net.on('replaced', () => {
+    toast(t('该身份已在其他页面登录，本页已断开。要继续在这页玩，请刷新页面。'), 'warn', { ttl: 8000 });
+    try {
+      // 交还座位：本页不再持有这一局，让 UI 回到大厅而不是钉在旧画面上。
+      // 只清 room / match，外加 ui.pendingJoin（那是"/r/CODE 待加入"的占位，
+      // 不清的话本页会继续尝试自己加入一个已经由新页面接管的对局）。
+      store.set({ room: null, match: null });
+      store.patch('ui', { pendingJoin: null, restoring: false });
+    } catch { /* ignore */ }
+    try {
+      for (const id of ['mm-overlay', 'mm-back']) {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      }
+      const timer = document.getElementById('mm-room-timer');
+      if (timer) timer.remove();
+    } catch { /* ignore */ }
+  });
   // 这些错误码由具体流程自己处理并给出更具体的提示（例如 mm/client.js 的 joinFlow 会显示
   // 「加入失败：未找到该同盟密钥对应的房间」）。若这里再弹一次，玩家会同时看到两条几乎相同的红条。
   const QUIET_CODES = new Set(['ROOM_NOT_FOUND', 'ROOM_STARTED', 'ROOM_FULL', 'NOT_IN_ROOM']);

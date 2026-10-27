@@ -671,6 +671,8 @@ const JOIN_COOKIE = (() => {
   }
 
   // 进入对局时的全屏过渡，盖住中间的「同盟等待室」，开局后自动消失
+  let transitionTimer = null;
+  let transitionWatch = null;
   function showTransition() {
     if (document.getElementById('mm-transition')) return;
     const ov = document.createElement('div');
@@ -687,13 +689,28 @@ const JOIN_COOKIE = (() => {
         <span class="mm-ov__foundsub" id="mm-transition-sub">正在进入模拟…</span>
       </div>`;
     document.body.appendChild(ov);
-    // 兜底：90 秒还没开局就把界面让出来，避免卡死
-    setTimeout(() => hideTransition(), 90_000);
+    // 兜底：90 秒还没开局就把界面让出来，避免卡死。
+    // 顺带把定时器记下来：如果遮罩被正常收掉，这个定时器也一并取消，
+    // 免得它 90 秒后再对一个新的遮罩动手。
+    transitionTimer = setTimeout(() => hideTransition(), 90_000);
+    // 更快的一道保险：8 秒后如果还没进对局、而且连接已经断了（被接管/掉线），
+    // 立刻收掉遮罩 —— 那种情况永远不会再"进入"了。
+    transitionWatch = setInterval(() => {
+      try {
+        const s = window.__SP__?.store?.get?.() || {};
+        const dead = s.match == null && !(s.room && s.room.inMatch);
+        if (window.__SP_RESTART_PENDING || dead) { hideTransition(); return; }
+        const st = window.__SP__?.net?.status;
+        if (st === 'closed') hideTransition();
+      } catch { /* ignore */ }
+    }, 2000);
   }
 
   function hideTransition() {
     const el = document.getElementById('mm-transition');
     if (el) el.remove();
+    if (transitionTimer) { try { clearTimeout(transitionTimer); } catch { /* ignore */ } transitionTimer = null; }
+    if (transitionWatch) { try { clearInterval(transitionWatch); } catch { /* ignore */ } transitionWatch = null; }
   }
 
   try { if (!document.querySelector('meta[name="mm-no-referrer"]')) { const m = document.createElement('meta'); m.name = 'mm-no-referrer'; m.setAttribute('name', 'referrer'); m.content = 'no-referrer'; document.head.appendChild(m); } } catch { /* ignore */ }
@@ -727,10 +744,24 @@ const JOIN_COOKIE = (() => {
     const tick = () => {
       const s = store.get();
       const room = s.room;
-      if (window.__SP_RESTART_PENDING) return; // 返回同盟提示还在：不要自动开下一局
+      // ★ 「重启中断」标志不能让过渡遮罩永远盖着。
+      //   以前这里直接 return，于是只要 __SP_RESTART_PENDING 为真，
+      //   hideTransition() 就永远走不到 —— 玩家被钉在「正在进入模拟…」上。
+      //   而那个标志恰恰是在「对局被打断」时置上的（mark()：room.inMatch && !match.result），
+      //   正是玩家最需要看见下面界面的时候。现在即使有该标志，也先把遮罩收掉：
+      //   遮罩只是"正在进入"的装饰，不该成为阻断。
+      if (window.__SP_RESTART_PENDING) {
+        try { hideTransition(); } catch { /* ignore */ }
+        return;
+      }
       // A started / in-match room already moved to the game: do not leave the transition
       // overlay covering it while waiting for the first m.public frame.
       if (s.room?.inMatch || s.match?.public) { autoDone = true; hideTransition(); return; }
+      // 被其他标签页接管（net 已 closed 且是 4001）时，本页不会再收到任何服务端推送：
+      // 遮罩留着只会让人以为还在加载。收掉它，让 main.js 的 replaced 处理把界面带回大厅。
+      try {
+        if (net.status === 'closed') { hideTransition(); return; }
+      } catch { /* ignore */ }
       if (autoDone) return;   // 已经开过一局：返回房间后不要自动重开
       if (!room) { enteredAt = Date.now(); readySent = false; startSent = false; return; }
       const me = s.me.playerId;
@@ -1556,15 +1587,34 @@ const JOIN_COOKIE = (() => {
     const tick = () => {
       const s = sp.store.get();
       const room = s.room;
-      // 只在「真的坐在一个房间里」时显示倒计时。
-      // 以前只判断 !room 与「已进对局」，于是恢复失败后 s.room 里残留的旧房间数据
-      // 会让浮层一直挂在页面顶部（实测：玩家人不在房间，头顶却显示「1457秒后同盟将自动解散」，
-      // 而 TTL 只有 15 分钟 —— 那个数字是过期缓存算出来的）。
-      // 现在再加两条：进入对局后不显示；没有有效房间码/会话已断开也不显示。
-      const connStatus = s.connection && s.connection.status;
-      const roomOk = !!room && typeof room.code === 'string' && room.code.length === 4
+      // 只在「真的坐在同盟房间里、还没开始模拟」时显示倒计时。
+      // 这个浮层表达的是「同盟/独立模拟的等待室多久后自动销毁」，所以：
+      //   * 没进大厅（标题页）→ 不显示
+      //   * 进了对局（match.public 存在）→ 不显示（对局中不存在"销毁"这回事）
+      //   * 有结算结果 → 不显示
+      //   * 房间码不是有效的四字符 → 说明拿到的是残留数据，不显示
+      //   * **界面上没有房间容器 → 不显示**
+      //
+      // 最后一条是必须的：只靠 store 里的状态判断会漏掉「过渡/异常」中间态——
+      // 比如"正在进入模拟…"遮罩（mm-ov）挡在前面、或者被别的标签页接管后本页还留着一份
+      // 旧的 s.room。那种时候 store 看着像"在房间里"，界面却根本不是房间，
+      // 浮层就被 position:fixed 硬贴在页面顶部（实测玩家在对局/过渡画面上头看到
+      // 「管理员房 · 不自动销毁」，以为房间要没了）。
+      const entered = !!(s.session && s.session.entered);
+      const roomOk = entered && !!room && typeof room.code === 'string' && room.code.length === 4
         && !(s.match && s.match.public) && !(s.match && s.match.result);
       if (!roomOk) {
+        const dead = document.getElementById('mm-room-timer');
+        if (dead) dead.remove();
+        return;
+      }
+      // 真在房间界面上吗？(房间/大厅容器存在，且没有过渡遮罩挡着)
+      let onRoomScreen = false;
+      try {
+        const overlay = document.getElementById('mm-overlay') || document.getElementById('mm-back');
+        onRoomScreen = !overlay && !!document.querySelector('.room-screen');
+      } catch { /* ignore */ }
+      if (!onRoomScreen) {
         const dead = document.getElementById('mm-room-timer');
         if (dead) dead.remove();
         return;

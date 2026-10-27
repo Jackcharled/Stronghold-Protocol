@@ -48,27 +48,96 @@ function adoptAccountSeat(msg) {
   return true;
 }
 
-/** Ask the current node for this account's seat; resolves only after the takeover event was adopted. */
+/** 等 socket 进入 online 的最长时间：页面刚打开时 hello 可能还没走完。 */
+const RESUME_WAIT_ONLINE_MS = 6000;
+/** 单次 account.resume 的等待上限（服务端处理 + 回包）。 */
+const RESUME_TIMEOUT_MS = 8000;
+
+/**
+ * Ask the current node for this account's seat; resolves only after the takeover event was adopted.
+ *
+ * 这里修过三个会让「恢复对局」莫名其妙失败的问题：
+ *
+ * 1) **socket 还没 online 就发请求**。刚打开页面时 hello/welcome 可能还没完成，
+ *    服务端这时收到的 account.resume 里 session.accountId 还是空的（或根本没建会话），
+ *    于是回 'account login required' / 'guest cannot resume'。
+ *    现在先等 net 进入 online（最多 RESUME_WAIT_ONLINE_MS），等不到才算失败。
+ *
+ * 2) **accountToken 还没送到服务端**。令牌由账号接口异步取回后随 hello 补发，
+ *    比 socket 连上更晚。令牌没到时 resumeAccount 会把我们当游客拒绝。
+ *    现在要求 window.__SP_ACCOUNT_TOKEN 已存在再发（同样有上限）。
+ *
+ * 3) **3.5 秒就放弃**。跨境/弱网下服务端回包经常超过 3.5 秒，
+ *    以前会在回来的前一刻主动 reject，前端于是以为"对局没了"。
+ *    现在放到 RESUME_TIMEOUT_MS，并且在超时后**重试一次**
+ *    （服务端 resumeAccount 是幂等的：拿不到候选会话就拒绝，不会重复占用座位）。
+ */
 export function requestAccountResume() {
   if (resumePromise) return resumePromise;
   try { window.__SP_ACCOUNT_RESUME_PENDING = true; } catch { /* ignore */ }
-  resumePromise = new Promise((resolve, reject) => {
+
+  const waitFor = (pred, ms) => new Promise((resolve) => {
+    if (pred()) { resolve(true); return; }
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      if (pred()) { clearInterval(iv); resolve(true); return; }
+      if (Date.now() - t0 >= ms) { clearInterval(iv); resolve(false); }
+    }, 100);
+    // 同时监听状态变化，比轮询更早反应
+    try {
+      const off = net.on('status', () => { if (pred()) { clearInterval(iv); off(); resolve(true); } });
+    } catch { /* ignore */ }
+  });
+
+  const attempt = () => new Promise((resolve, reject) => {
     let off = () => {};
     let timer = null;
+    let settled = false;
     const done = (fn, value) => {
+      if (settled) return;
+      settled = true;
       if (timer) clearTimeout(timer);
       off();
-      try { window.__SP_ACCOUNT_RESUME_PENDING = false; } catch { /* ignore */ }
-      resumePromise = null;
       fn(value);
     };
     off = net.on('account.resume', (msg) => {
       if (adoptAccountSeat(msg)) done(resolve, msg);
       else done(reject, new Error('seat token missing'));
     });
-    timer = setTimeout(() => done(reject, new Error('account resume timeout')), 3500);
+    timer = setTimeout(() => done(reject, new Error('account resume timeout')), RESUME_TIMEOUT_MS);
     net.request('account.resume').catch((e) => done(reject, e));
   });
+
+  resumePromise = (async () => {
+    try {
+      // 1+2：等 online 且令牌已就绪
+      const ready = await waitFor(
+        () => net.status === 'online' && !!window.__SP_ACCOUNT_TOKEN,
+        RESUME_WAIT_ONLINE_MS,
+      );
+      if (!ready) {
+        // 令牌或连线没到位：这不是"对局没了"，属于可重试的暂时状态
+        const e = new Error('account resume not ready');
+        e.code = 'NOT_READY';
+        e.detail = { online: net.status === 'online', token: !!window.__SP_ACCOUNT_TOKEN };
+        throw e;
+      }
+      try {
+        return await attempt();
+      } catch (e1) {
+        // 超时/连接抖动才重试；服务端明确拒绝（无候选会话、游客）重试也没用
+        const code = String((e1 && (e1.code || e1.message)) || '');
+        const retriable = /timeout|DISCONNECTED|REPLACED/i.test(code);
+        if (!retriable) throw e1;
+        await new Promise((r) => setTimeout(r, 400));
+        return await attempt();
+      }
+    } finally {
+      try { window.__SP_ACCOUNT_RESUME_PENDING = false; } catch { /* ignore */ }
+      resumePromise = null;
+    }
+  })();
+
   return resumePromise;
 }
 
@@ -145,6 +214,16 @@ export function installAccountObserver() {
     log('request', { attempt: autoAttempts, status: net.status });
     requestAccountResume().then(() => { autoWanted = false; silentResume = false; log('success'); try { sessionStorage.removeItem(RESUME_HOP_KEY); } catch { /* ignore */ } }).catch(async (e) => {
       log('failed', { attempt: autoAttempts, code: e?.code || String(e?.message || e) });
+      // NOT_READY = socket 还没 online 或 accountToken 还没送到。
+      // 这不是"对局没了"，**绝不能**拿它去跳转 /r/CODE 或弹"对局已结束"——
+      // 以前没有这个分支，页面刚打开时几乎必踩：请求在令牌到达前发出，被服务端当游客拒绝，
+      // 前端随即判定恢复失败并给出误导性提示（玩家看到的"刷新后恢复对局失败"多半就是这么来的）。
+      // 现在只是等一会儿再试，次数与 tryAuto 共用一个上限。
+      if (e && e.code === 'NOT_READY') {
+        if (autoWanted && autoAttempts < 4) setTimeout(tryAuto, 800);
+        else { autoWanted = false; try { window.__SP_ACCOUNT_RESUME_PENDING = false; } catch { /* ignore */ } log('not-ready-gave-up'); }
+        return;
+      }
       // If this page started on a random node, follow the account's room to the node that owns it.
       // One hop only: a room that keeps refusing the takeover must not reload between /r/CODE and
       // /?room=CODE forever (the old tab/device can still be reclaiming the seat).
