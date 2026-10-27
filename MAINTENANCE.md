@@ -335,7 +335,61 @@ Get-Content nginx\logs\assets.log | ForEach-Object { if ($_ -match ' (\d+\.\d+)s
 
 也可以随时清空：`Clear-Content nginx\logs\assets.log`
 
+#### 🚫 nginx 也绝不能挂在你的进程/会话上（2026-10-27 维护者要求）
 
+> 维护者原话：「确保你要是操作 Nginx 不会让他的进程挂载在你的进程上」
+
+**nginx 和 pm2 是同一个道理**：进程的父进程链如果挂在某个交互式会话（终端 / AI 助手 / 桌面 shell）下，
+那个应用一重启，nginx 就可能被一起带走 —— 全站立刻 502。
+
+**实测发现的历史问题**（2026-10-27）：
+
+```
+pid=16740  session=2   master（10-25 14:59 启动）  ⚠ 不在 Session 0
+pid=9024   session=2   worker（10-27 04:05 启动）  ⚠ 不在 Session 0
+... 全部 8 个进程 session 都是 2（桌面会话）
+```
+
+对比 pm2（由 `SP-PM2-Resurrect` 以 SYSTEM 启动）：`SessionId = 0` ✓。
+
+说明 nginx 当初**是从交互式会话启动的**，不是计划任务。虽然父进程已退出（暂时还活着），
+但这属于随时可能出事的定时炸弹。
+
+**正确做法**：
+
+| 操作 | 必须这样做 |
+|---|---|
+| 启动 nginx | `schtasks /Run /TN "SP-Nginx-Start"`（SYSTEM + ServiceAccount） |
+| 重启 nginx | `node tools/restart-nginx.mjs --apply`（内部也走计划任务） |
+| **禁止** | 在终端 / AI 助手 shell 里直接 `nginx.exe` 或 `Start-Process nginx.exe` |
+
+`tools/restart-nginx.mjs` 做的事：
+1. 列出所有 nginx 进程及其 `SessionId`，标出不在 Session 0 的
+2. 统计当前对局数（提醒会影响多少玩家）
+3. `-s quit` 优雅停止 → 等 worker 全部退出
+4. **用 `schtasks /Run /TN "SP-Nginx-Start"` 启动** → 新进程必然在 Session 0
+5. 校验：进程数、是否全部 `session=0`、HTTPS 是否 200
+
+**随时自查**：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='nginx.exe'" |
+  Sort-Object CreationDate |
+  Select-Object ProcessId, SessionId, CreationDate
+# SessionId 必须全是 0
+```
+
+**为什么用计划任务就能保证 Session 0**：
+`SP-Nginx-Start` 的 Principal 是 `SYSTEM` + `LogonType: ServiceAccount`，任务由任务计划程序
+（svchost）拉起，父进程是系统服务，与任何登录会话无关 —— 它 fork 出来的 nginx 必然在 Session 0。
+
+**还有一个陷阱**：`deploy/_start-nginx.ps1` 老版本用 `cmd /c start "" /b nginx.exe` 启动，
+这会**继承调用者的会话**。由计划任务调用时没问题（继承 SYSTEM 的 Session 0），
+但**在桌面终端里直接运行这个脚本，nginx 就会挂到你的会话上** —— 2026-10-27 发现的
+8 个 Session 2 进程就是这么来的。现在脚本已改为用 `ProcessStartInfo` 启动并会在日志里
+警告「nginx is NOT in session 0」。**永远通过 `schtasks /Run` 或 `tools/restart-nginx.mjs` 启动。**
+
+#### 这一轮的标准流程（照做即可）
 
 ```powershell
 # 1) 找出空闲节点（matches=0）
