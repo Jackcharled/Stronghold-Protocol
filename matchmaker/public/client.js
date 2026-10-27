@@ -1534,7 +1534,15 @@ const JOIN_COOKIE = (() => {
     const tick = () => {
       const s = sp.store.get();
       const room = s.room;
-      if (!room || (s.match && s.match.public)) {
+      // 只在「真的坐在一个房间里」时显示倒计时。
+      // 以前只判断 !room 与「已进对局」，于是恢复失败后 s.room 里残留的旧房间数据
+      // 会让浮层一直挂在页面顶部（实测：玩家人不在房间，头顶却显示「1457秒后同盟将自动解散」，
+      // 而 TTL 只有 15 分钟 —— 那个数字是过期缓存算出来的）。
+      // 现在再加两条：进入对局后不显示；没有有效房间码/会话已断开也不显示。
+      const connStatus = s.connection && s.connection.status;
+      const roomOk = !!room && typeof room.code === 'string' && room.code.length === 4
+        && !(s.match && s.match.public) && !(s.match && s.match.result);
+      if (!roomOk) {
         const dead = document.getElementById('mm-room-timer');
         if (dead) dead.remove();
         return;

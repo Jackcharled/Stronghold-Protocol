@@ -115,6 +115,8 @@ export function installAccountObserver() {
   log('install', { autoResume, token: !!window.__SP_ACCOUNT_TOKEN, status: net.status });
   let autoWanted = autoResume;
   let autoAttempts = 0;
+  /** 「恢复对局失败」这条提示在本页面周期内只弹一次（tryAuto 有多处触发点，见下方去重注释）。 */
+  let resumeFailShown = false;
   if (autoResume) {
     // A fresh device can be sitting on the title screen: net is only connected, not online, until
     // the player enters. Enter the lobby with the account name so account.resume can be sent.
@@ -172,7 +174,14 @@ export function installAccountObserver() {
             }
             // 「请关闭其他设备」这句话会误导：绝大多数失败并不是因为别的设备占着座位，
             // 而是这个节点重启过 / 对局已结束 / 会话过期。据实说明，并提示接下来怎么办。
-            toast(t('恢复对局失败：本局所在节点可能刚重启过，或对局已结束。可回到大厅重新开始'), 'warn', { ttl: 8000 });
+            //
+            // 去重：tryAuto 可能在多处被触发（status 变 online、accountToken 到达、重试定时器），
+            // 每次失败都会走到这里，而 toasts.js 对相同文案只做「合并 + 计数」——
+            // 玩家看到的就是一条后面挂个「×4」，像是被重复轰炸。同一个页面周期内只提示一次。
+            if (!resumeFailShown) {
+              resumeFailShown = true;
+              toast(t('恢复对局失败：本局所在节点可能刚重启过，或对局已结束。可回到大厅重新开始'), 'warn', { ttl: 8000 });
+            }
             return;
           }
           autoRedirected = true;
