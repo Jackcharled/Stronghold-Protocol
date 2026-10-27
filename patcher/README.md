@@ -92,6 +92,7 @@ patcher\
 | 恢复对局（仅大厅显示按钮） | `matchmaker/public/client.js:installResumeButton` | `matching-party` | 刷新页面 |
 | 账号恢复失败提示（不再误导） | `public/js/ui/accountObserver.js` | `account-and-dashboard` | **重启节点** |
 | 同账号同房间接管座位 | `server/lobby.js:room.join` 的 takeover 分支 | `game-core-server` | 重启节点 |
+| **回自己房间时先接管、不清房间**（`room.join` 的冲突判定顺序：同房间 → 接管；别的房间 → `dropStaleAccountSeats`） | `server/lobby.js:room.join` | `game-core-server` | 重启节点 |
 | **DOCTOR # 显示真实账号 tag** | `server/lobby.js`（`room.state seats[].tag`）、`public/js/screens/room.js:seatNo()` | `game-core-server` / `server-player-capacity` | **重启节点**（前端回退到哈希） |
 | **名片立绘跟随账号** | `matchmaker/account.cjs`（DOMAINS + validatePrefPayload + decodePrefPayload）、`matchmaker/public/account-title.js:PREF_MAP.card`、`public/js/ui/seatArt.js` | `account-and-dashboard` / `matching-party` | 重启 matchmaker |
 | 账号登录 / 管理后台 | `matchmaker/account.cjs`、`matchmaker/public/admin.html` | `account-and-dashboard` | 重启 matchmaker |
@@ -148,6 +149,15 @@ patcher\
    `buildTag` **不含 `matchmaker/`**。所以改 `matchmaker/public/client.js` 后，要么等玩家
    自己刷新，要么靠 `/api/pulse` 带回来的 `clientBuild` 自检（本服新增，见上表）。
    验证方式：看 access.log 里新端点是否开始被大量调用，而不是只看文件已部署。
+6. **改 `server/` 后不能只跑 `deploy/sync-nodes.cjs --apply`** —— 它把 **node-1 当母版**，
+   只保证 node-2…30 和 node-1 一致；如果改动是在 `repo-sync/server/` 里做的、还没进 node-1，
+   脚本会诚实地报 `0 处差异`（因为大家一样旧），**改动等于没发**。
+   正确的判断方式：拿 `repo-sync/server/<file>` 的哈希和节点上的比（参考第 3 条）。
+   2026-10-27 的 `room.join` 修复就差点在这上面漏掉（见第 7 条）。
+7. **`room.join` 的冲突判定顺序必须"同房间 → 接管"在前** —— 先无条件
+   `dropStaleAccountSeats()` 会把**同一账号在目标房间自己的座位**当成遗留座位删掉；
+   若那是房间唯一的人类座位，房间会直接 `disposed (empty)`，玩家开新标签页回来时
+   报「未找到该同盟密钥对应的房间」。回归测试：`node test/join-takeover-order.mjs`。
 
 ## 两个一键脚本（在仓库根目录）
 

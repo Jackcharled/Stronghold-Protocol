@@ -1339,17 +1339,20 @@ export class Lobby {
     if (cur === room && !room.spectatorOf(session.playerId)) { this.sendState(room, session); return OK; }
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
     let conflict = this.accountRoomConflict(session);
-    // 同账号的遗留座位（刷新/换设备后的旧会话）先清掉，不再挡加入房间。
-    if (conflict && conflict.stale) {
-      this.dropStaleAccountSeats(session);
-      conflict = this.accountRoomConflict(session);
-    }
-    // ★ 冲突的座位就在**目标房间**里（同一账号、同一房间、只是换了标签页/设备）：
-    //   这不是「在别的房间」，而是「回到自己的房间」，应当允许接管，不该拒绝。
-    //   以前只看 connected 就判成「正在使用」并回 SESSION_IN_USE，导致玩家用第二个
-    //   标签页或换设备后回不到自己正在对局的房间（表现为「恢复对局失败，回不去」）。
-    //   接管方式与 resumeAccount 一致：把座位换到当前会话，旧 socket 断开。
-    if (conflict && conflict.room === room && conflict.kind === 'player' && !room.match) {
+    // ★ 顺序很关键：先判断「能不能在本房间接管」，再考虑清理遗留座位。
+    //
+    // 以前这里先无条件 dropStaleAccountSeats()：同一账号在**目标房间自己的座位**被当成
+    // "遗留"删掉，而那个座位往往是房间里唯一的人类座位 —— 删完房间就空了、被解散。
+    // 实测事故（13:53）：玩家开新标签页想回到自己正在对局的 ZUHW，
+    // 服务端把旧会话的座位清了 → 「ZUHW disposed (empty)」→
+    // 新旧标签页都失去房间，加入时报「未找到该同盟密钥对应的房间」。
+    //
+    // 正确做法：同房间的座位应当**接管**（下面的 takeover 分支会把 playerId 换成当前会话、
+    // 关掉旧 socket），清理只用于「账号在**别的**房间留下的座位」。
+    if (conflict && conflict.room === room && conflict.kind === 'player') {
+      // 同房间：无论对局是否在跑，都走接管（旧设备让位），绝不删除座位。
+    } else if (conflict && conflict.stale) {
+      // 账号在别的房间留下了旧座位：清掉，不再挡住这次加入
       this.dropStaleAccountSeats(session);
       conflict = this.accountRoomConflict(session);
     }
