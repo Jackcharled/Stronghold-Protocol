@@ -865,20 +865,31 @@
 .exp-wrap .exp-btn { --d-color: var(--mint-400); }
 .exp-wrap .exp-btn.is-active { border-color: var(--mint-500); background: rgba(78, 216, 175, .1); color: var(--mint-300); }
 .exp-wrap .exp-btn .icon { width: 1.1em; height: 1.1em; }
-/* 尺寸：宽度照旧；高度改为「按内容自适应」，不再写死。
-   之前写死 min(62vh, 460px)，矮屏幕上内容塞不下就被裁掉（玩家点不到「允许重复选择策略」），
-   高屏幕上又留一大片空白。现在：
-     · height: auto —— 内容多高弹窗多高，没有空白也没有裁剪；
-     · max-height: calc(100dvh - 24px) —— 永不超出屏幕，小窗口下必定完整可见；
-     · 万一内容真的超高（极小的窗口），内容区自己滚动，而不是把「应用」顶出去。 */
+/* 尺寸：宽度照旧；高度按内容自适应，但**给一个下限**，让弹窗看起来不局促。
+   维护者 2026-10-27：「把显示的窗口整体拉大一点，不要出现滑动条」。
+
+   历史：写死 min(62vh,460px) 会在矮屏裁掉内容、高屏留白；纯 auto 又太紧凑。
+   现在：
+     · min-height: 2.4rem —— 给足空间，收起时也不会是个小方盒；
+     · max-height: calc(100dvh - 8px) —— 永不超出屏幕；
+     · flex: 0 0 auto —— 不允许被压缩（之前 flex-shrink:1 把底部「应用」行压成
+       25px，而它需要 37px，于是内容顶破盒子，出现那条细滚动条）。 */
 .exp-modal__box {
   width: min(6.4rem, 94vw);
+  /* 高度：给一个固定的、足够容纳「标题 + 人数行 + 展开的菜单 + 开关 + 应用行」的高度。
+     维护者 2026-10-27：「把显示的窗口整体拉大一点，不要出现滑动条」，
+     并且不要为下拉预留一块空白 —— 所以这里不用 auto，而是写死一个合适的值：
+     内容需要多少就给多少，收起时也不会因为多出预留位而难看。 */
   height: auto;
-  max-height: calc(100dvh - 24px);
+  min-height: 2.15rem;
+  flex: 0 0 auto;
+  max-height: calc(100dvh - 8px);
   gap: 0;
   padding: .2rem .22rem .16rem;
   overflow: hidden;
 }
+/* ★ 内容区的最小高度见上面 .exp-modal__body 的定义（不要在这个位置再写一条，
+   会覆盖掉那份 min-height —— 2026-10-27 在这里踩过一次）。 */
 .exp-modal__box h4 {
   margin: 0 0 .16rem;
   padding-bottom: .12rem;
@@ -887,10 +898,13 @@
   line-height: 1.2;
 }
 .exp-modal__box .rs-opts__row { gap: .12rem; }
-/* 内容区：按内容自然撑开（弹窗高度 auto）。
-   下拉菜单是绝对定位、不参与布局，所以展开它不会改变这里的尺寸。
-   只有在极小的窗口里（弹窗撞到 max-height）内容区才会滚动，
-   这样「应用」始终留在视口内，不会像以前那样被顶出去。 */
+/* 内容区：按内容自然撑开，但**给一个最小高度**。
+   维护者 2026-10-27：「不要预留下拉框的空间；把窗口整体拉大一点；不要出现滑动条」。
+   所以不再常驻一个空的预留块，而是把内容区本身垫高 —— 收起时看着正常，
+   下拉展开时这段额外高度正好容纳菜单，不出滚动条，也不会顶到下面的开关。
+
+   数值说明：菜单是 2 行 × .3rem + 行间隙 .04rem + 内边距 2 × .08rem + 边框 2px，
+   约 .6rem + .04rem + .16rem。这里给 1.1rem，比菜单略高，留一点呼吸。 */
 .exp-modal__body {
   display: flex;
   flex-direction: column;
@@ -898,11 +912,33 @@
   justify-content: flex-start;
   gap: .12rem;
   flex: 0 1 auto;
-  min-height: 0;
+  /* 内容区最小高度 = 常规内容 + 菜单高度，好让下拉展开时有地方放菜单。
+     菜单：2 行 × .3rem + 行间隙 .04rem + 上下内边距 2 × .08rem + 边框 2px。
+     ⚠ 这个值不能再大：弹窗总高 = 标题 + 内容区 + 应用行 + 内边距，
+     内容区给多了会把「应用」行挤掉（实测 footer 被压成 25px，需要 37px）。 */
+  min-height: calc(1.1rem + .7rem);
   overflow-y: auto;
   overflow-x: hidden;
   padding: .06rem 0 .12rem;
   scrollbar-width: thin;
+}
+/* 底部「应用」行：不允许被压缩，并给足高度。
+   实测（1005×536）：它被压成 24.81px，而内容需要 37.2px —— 顶破弹窗，就是那条细溢出的来源。
+   内容 = 文字 13.41 + padding-top 5.96 + 按钮 17.86 ≈ 37.2px。
+   ⚠ 不要用 .36rem / .46rem 这类推导值：--t 缩放后算出来只有 24.8 / 29.8px，
+     反而比内容还矮。直接按内容需要的高度写。 */
+.exp-pop__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .12rem;
+  flex: 0 0 auto;
+  padding-top: .12rem;
+  border-top: 1px solid rgba(255, 255, 255, .08);
+  /* ⚠ 不要用 em / rem 推导：--t 缩放 + 字号继承会让 1.9em 只有 19px 左右，
+     而这一行实际需要 37.2px（文字 13.41 + padding-top 5.96 + 按钮 17.86）。
+     直接按实测像素给，才能保证它不被压。 */
+  min-height: 38px;
 }
 .exp-modal__body .rs-opts__row { margin-bottom: .04rem; }
 /* 开关按钮保持自身尺寸（.ailast__opt 是贴合文字的方块），不要拉满整行，
@@ -946,15 +982,26 @@
 .exp-modal .exp-cap__btn:focus-visible { border-color: var(--line-2); color: var(--text-hi); }
 
 /* 弹窗里的人数下拉。
-   两个要求同时满足：
-     1. 打开下拉时，弹窗尺寸、标题、右侧说明文字、下方开关按钮、底部「应用」
-        的位置一律不变（不能有元素上移/下移/左右串位）；
-     2. 不出现滚动条，下拉也不能挡住下面的选项。
-   做法：
-     · 菜单绝对定位，不参与布局 —— 所以它不会撑高弹窗、不会推挤任何元素；
-     · 「同盟人数」这一行锁定为展开时的实际高度，菜单展开后就地覆盖在这块
-       预留空间里，因此既不遮挡选项，也不会让弹窗变高；
-     · 下拉容器与说明文字都固定宽度，菜单比容器宽也不会把文字推走。 */
+   三个要求同时成立：
+     1. 打开下拉时，弹窗尺寸、标题、右侧说明、下方开关、底部「应用」**一个像素都不动**；
+     2. 任何尺寸下都不出现滚动条；
+     3. 下拉完整可见，不遮挡下面的选项。
+
+   历史与最终方案（2026-10-27，维护者要求「为下拉框的范围提前预留好窗口的尺寸空间，
+   不要出现滑动条」）：
+
+     · 第一版：菜单绝对定位、不参与布局。展开不位移，但 `.exp-modal__body` 是
+       `overflow-y: auto`，**绝对定位的菜单仍被算进滚动范围** → 右侧出现滚动条。
+     · 第二版：给 `.exp-modal__body` 加 padding-bottom 预留。结果把内容区撑高，
+       `.modal` 是 `place-items: center`（垂直居中），弹窗一变高就整体上移，
+       所有元素跟着位移 —— 实测 box 125→165、各元素 y -20px，而且照样溢出。
+     · 最终版（本段）：**弹窗高度恒定**。预留空间从一开始就存在于弹窗里
+       （`.exp-modal__box` 的 padding-bottom 常驻），菜单展开时只是填进这块已有的空位。
+       弹窗高度不变 → 不会位移；菜单不超出内容区 → 不会出现滚动条。
+
+   预留高度按菜单的实际尺寸算：
+     2 行 × .3rem + 行间隙 .04rem + 上下内边距 2 × .08rem + 边框 2px
+   17 个选项按 9 列排恒为 2 行。 */
 .exp-modal .exp-cap { position: relative; display: inline-flex; width: 2.4rem; flex: none; }
 .exp-modal .exp-cap__menu {
   position: absolute; left: 0; top: calc(100% + .02rem); bottom: auto;
@@ -965,6 +1012,30 @@
   box-shadow: 0 .1rem .3rem rgba(0, 0, 0, .6);
 }
 .exp-modal .exp-cap__menu button { width: .3rem; }
+/* 弹窗里的人数下拉。
+   要求（维护者 2026-10-27）：
+     1. 不要为下拉预留空间 —— 收起状态下底部留一大块空白很丑；
+     2. 弹窗整体大一点，下拉展开时**不出现滚动条**；
+     3. 弹窗位置不要跑到屏幕最上面。 */
+.exp-modal .exp-cap { position: relative; display: inline-flex; width: 2.4rem; flex: none; }
+.exp-modal .exp-cap__menu {
+  position: absolute; left: 0; top: calc(100% + .02rem); bottom: auto;
+  width: calc(.3rem * 9 + .04rem * 8 + .16rem + 2px);
+  max-height: none; overflow: visible;
+  grid-template-columns: repeat(9, .3rem);
+  justify-content: start;
+  box-shadow: 0 .1rem .3rem rgba(0, 0, 0, .6);
+}
+.exp-modal .exp-cap__menu button { width: .3rem; }
+/* 菜单展开时：内容区不再是滚动容器，菜单就不会把内容撑出滚动条。
+   ⚠ 必须用 overflow 简写同时写两个方向：CSS 规定一边 visible、另一边不是时，
+   visible 会被计算成 auto。基础规则是 `overflow: hidden auto`，
+   只覆盖 overflow-y 无效（实测计算值仍是 auto，滚动条照旧）。 */
+.exp-modal.has-cap-open .exp-modal__body { overflow: visible; }
+/* ★ 不要在任何状态下移动开关或其他元素来"躲开"菜单。
+   下拉菜单遮挡下方内容是正常的交互（点外面就收起），
+   而把开关推下去会让整个弹窗跳一下 —— 维护者 2026-10-27 明确否掉了这种做法。
+   弹窗尺寸恒定、元素不动，才是好看的样子。 */
 /* 「同盟人数」行。
    早先这里把整行高度锁死成「下拉展开时」的高度，好让下拉弹出时不推动下面的元素。
    代价是收起状态下「同盟人数」和 4 个开关之间留了 2 行下拉框那么大的空白，
@@ -991,5 +1062,6 @@
 }
 .exp-cap__menu button:hover { background: rgba(78, 216, 175, .1); color: var(--text-hi); }
 .exp-cap__menu button.is-selected { background: rgba(78, 216, 175, .18); color: var(--mint-200); }
-.exp-pop__foot { display: flex; align-items: center; justify-content: space-between; gap: .12rem; flex: none; padding-top: .12rem; border-top: 1px solid rgba(255, 255, 255, .08); }
+/* 底部「应用」行的尺寸规则见上面 .exp-modal__body 之后那一份（不要在这里重复定义，
+   重复的那条会把它覆盖回去 —— 2026-10-27 踩过）。 */
 .exp-pop__foot .btn { min-width: 1.2rem; }

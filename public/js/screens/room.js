@@ -482,7 +482,7 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
         <${Icon} name="gear" class=${open ? 'is-on' : ''} />${t('实验性功能')}
       </button>
     <//>
-    ${open ? html`<div class="modal exp-modal" role="dialog" aria-modal="true" aria-label=${t('实验性选项')} onClick=${() => setOpen(false)}>
+    ${open ? html`<div class=${`modal exp-modal${capOpen ? ' has-cap-open' : ''}`} role="dialog" aria-modal="true" aria-label=${t('实验性选项')} onClick=${() => setOpen(false)}>
       <div class="modal__box exp-modal__box" onClick=${(e) => e.stopPropagation()}>
       <h4>${t('实验性选项')}</h4>
       <div class="exp-modal__body">

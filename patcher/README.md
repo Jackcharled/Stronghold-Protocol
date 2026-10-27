@@ -208,6 +208,19 @@ patcher\
       `if (inRoom) code = s.room.code` 用**当前房间**把它覆盖掉，然后只 `location.reload()`。
       在新标签页点就等于原地刷新新房。现在以标记里的房间码为准，不一致就显式跳过去。
     回归测试：`node test/restart-panel-scope.mjs`。
+14. **实验性选项弹窗的下拉：不要"预留空间"，也不要移动元素躲菜单** ——
+    维护者 2026-10-27 的原话：「不要预留下拉框的空间」「窗口整体拉大、不要出现滑动条」
+    「下拉框可以遮挡下面的按钮的」「这个界面一直弹来弹去的好看吗」。
+    结论：**弹窗尺寸恒定 + 元素零位移 + 菜单正常遮挡下方内容**（点外面收起），
+    这才是要的效果。踩过的三个坑：
+    - 给 `.exp-modal__body` 加 `padding-bottom` 预留 → 内容区被撑高，
+      `.modal` 是 `place-items:center`，弹窗一变高就整体上移，所有元素位移 20px。
+    - 写 `align-self: start` 想让布局稳定 → 弹窗被钉到屏幕最上方。
+    - 展开时把开关推下去 → 弹窗跳一下，比遮挡更难看。
+    另一个隐性问题：`overflow-y: visible` 单独写**无效**。基础规则是
+    `overflow: hidden auto`，CSS 规定一边 visible、另一边不是时 visible 会被计算成 auto，
+    必须用 `overflow` 简写把两个方向都设成 visible。
+    回归测试：`node test/exp-modal-dropdown.mjs`（四档尺寸，检查位移/滚动条/可点击）。
 
 ### 回归测试清单（改相关代码后要跑）
 
