@@ -188,6 +188,18 @@ patcher\
     `node test/identity-members-exist.mjs`（把全仓 `identity.xxx` 和 net.js 实际成员比对）。
     真实链路验证：`node tools/_verify-crossdevice-resume.mjs 4 --start`
     （注意必须模拟前端「拿 token 后断开重连」那一步，否则是假阴性）。
+11. **重启节点前要先清 Redis 里的死房间，否则重启后房间又被恢复** ——
+    房间状态会持久化到 Redis（`sp:nN:lobby:rooms` 是 **hash**，`type` 是 hash，
+    用 `get` 会报 WRONGTYPE，要用 `hkeys` / `hdel`）。只重启进程的话，
+    服务端启动时会把 Redis 里的房间读回内存，`rooms` 数不变 ——
+    表现为"重启了什么都没变"。清理顺序：`hdel sp:nN:lobby:rooms <CODE>` → 再重启节点。
+    **删之前先确认 `matches=0` 且 `sockets=0`**（无人连接），别误删活房间。
+12. **判断"能否重启"只看 `matches`，不要看 `rooms`** ——
+    维护者明确的口径：**有对局（`matches>0`）就不动；`matches=0` 就可以重启**，
+    哪怕是开着未开局的房间、有待机连接、有旁观者。
+    `rooms>0 && matches=0` 的节点（空壳房、等待室）都能安全重启。
+    现成的工具：`tools/_restart-when-idle.ps1`（默认只报告，`-Apply` 才重启；
+    重启前会自己复查一次 `matches`）。
 
 ## 两个一键脚本（在仓库根目录）
 
