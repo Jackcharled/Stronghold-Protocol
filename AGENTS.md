@@ -102,10 +102,10 @@ node patcher/check-coverage.mjs
   不要在前端硬编码域名字面量
 - 站点相关的密钥一律走 `.secrets/` 或环境变量
 
-### 3.5 🚫 红线：绝不能在交互式 shell 里启动 PM2（2026-10-27 全体玩家断线）
+### 3.5 🚫 红线：服务器进程不能依赖任何登录会话（2026-10-27 全体玩家断线）
 
-**在 AI 助手 / 终端 / 任何交互式 shell 里跑 `pm2 start` / `pm2 resurrect` / `pm2 reload`，
-都会让 pm2 挂到那个会话的进程树下面。那个应用一重启，pm2 跟着死，30 个节点全断。**
+**在 AI 助手 / 终端 / 任何交互式 shell 里跑 `pm2 start` / `pm2 resurrect`，会让 pm2 守护进程
+挂到那个会话的进程树下面。那个应用一重启，pm2 跟着死，30 个节点全断。**
 
 当天维护者重启 AI 助手，玩家看到「与服务器的连接已中断，正在重连」。更糟的是当时的看门狗
 只写 `ALERT` 从不修复，**断了整整 3 分钟没有任何人/程序去救**。
@@ -113,8 +113,18 @@ node patcher/check-coverage.mjs
 | 场景 | 正确做法 |
 |---|---|
 | 启动 / 恢复服务器 | 双击 **`启动服务器.bat`**（内部 = `schtasks /Run /TN "SP-PM2-Resurrect"`，SYSTEM + Session 0） |
-| 重启单个节点 | `pm2 restart node-N --update-env`（这是**操作已有进程**，不改变归属，安全） |
+| 重启单个节点 | `pm2 restart node-N --update-env`（见下：这个**安全**） |
 | 检查应用是否齐全 | `pm2 list` / `deploy\_start-pm2.ps1`（只补缺的，**不要**用 `pm2 start ecosystem`，它会重启全部并打断对局） |
+
+**「危险」与「安全」的分界**（2026-10-27 实测确认）：
+
+| 动作 | 谁 fork 新进程 | 安全吗 |
+|---|---|---|
+| `pm2 start` / `pm2 resurrect`（守护进程不在时） | **当前 shell** 拉起 pm2 | ❌ **危险**：pm2 挂在这个会话下，会话死服务器死 |
+| `pm2 restart node-N` / `startOrReload`（守护进程已在跑时） | **pm2 自己** fork | ✅ **安全**：实测重启前后父进程都是 pm2，SessionId 都是 0 |
+
+`pm2 restart` 用的命令行客户端只是临时进程，发完指令就退出，**不持有任何应用**。
+所以在 AI 助手 / 终端里重启节点没问题 —— 前提是 pm2 守护进程已经是 SYSTEM 托管的那个。
 
 **每次动过运维配置（计划任务、watchdog、ecosystem）都要做冷杀测试**：
 杀掉 pm2 → 60 秒内必须自己回来 → 且新 pm2 的 `SessionId` 仍是 `0`。

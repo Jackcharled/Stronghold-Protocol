@@ -195,6 +195,75 @@ $r = Invoke-WebRequest "https://stronghold.luobomiao.love/?n=20" -UseBasicParsin
 
 > 当前进度与每次的节点清单记录在仓库根目录 `PENDING-RESTART.md`。
 
+#### ⚠ 「哪些节点已更新」不能只看 `lobby.js`（2026-10-27 踩过）
+
+`tools\_restart-when-idle.ps1` 判断「进程是否跑着新代码」用的是
+**`node-N/server/lobby.js` 的 mtime**。这只在改动正好落在 `lobby.js` 时成立。
+
+那天改的是 `server/sim/content/bands/meta.js`（鸭爵补抽），结果脚本报
+「已载入新代码: 30 / 30」，**实际 30 个节点全是旧的**（进程 15:36 启动，
+`meta.js` 16:30 才改）。差点据此以为不用重启。
+
+**正确做法：拿本次真正改过的文件的 mtime 去比**，而不是固定某一个文件：
+
+```powershell
+# 改成你这次动过的那个文件
+$mt = (Get-Item 'repo-sync\server\sim\content\bands\meta.js').LastWriteTime
+$now = Get-Date
+foreach ($n in 1..30) {
+  $h = Invoke-RestMethod "http://127.0.0.1:$((3000+$n))/healthz" -TimeoutSec 3
+  $started = $now.AddSeconds(-[double]$h.uptimeSec)
+  if ($started -lt $mt) { "node-$n 还没加载新代码  matches=$($h.matches)" }
+}
+```
+
+更稳的做法是直接比 **`server/` 目录下最新的 mtime**（`_restart-stale.ps1` 就是这么做）：
+
+```powershell
+$mt = (Get-ChildItem node-1\server -Recurse -File -Include *.js | Measure-Object LastWriteTime -Maximum).Maximum
+```
+
+#### ⚠ 重启后必须同步改开放列表，否则新玩家仍然会进旧代码节点
+
+`matches = 0` 只说明「这个节点现在可以安全重启」，不代表它「已经更新」。
+重启完要把**还没重启的节点从 nginx 开放列表里摘掉**，否则 `split_clients`
+仍会把新玩家随机分到那些跑着旧代码的节点上，表现为「改了但玩家没看到效果」。
+
+| 状态 | nginx `split_clients` | `$sp_cookie_open` |
+|---|---|---|
+| 已重启、跑新代码 | 保留 | `1` |
+| 有对局、还没重启 | **移除** | `0` |
+
+**正在对局的玩家不受影响**：`sp_route` cookie 对开放列表是无关的，
+带房间上下文的请求（`?room=` / `n=` / `adminWatch=1`）也强制回原节点。
+受限只影响「新来的玩家首次落点」。
+
+工具：`tools\_set-open-nodes.ps1`（只改 nginx，自动校验百分比合计 = 100%），
+改完 `nginx -t` + `-s reload`。
+
+#### 这一轮的标准流程（照做即可）
+
+```powershell
+# 1) 找出空闲节点（matches=0）
+& tools\_restart-when-idle.ps1
+
+# 2) 重启（它自己会再复查一次 matches）
+& tools\_restart-when-idle.ps1 -Apply
+
+# 3) 重建开放列表（只改 nginx）
+& tools\_set-open-nodes.ps1
+```
+
+`_set-open-nodes.ps1` **不需要传参数**：它自己计算 `node-1/server` + `node-1/shared`
+下最新的文件 mtime，凡是「进程启动时间晚于它」的节点算已更新 → 开放，其余关闭。
+所以**必须先重启、再跑它**，顺序反了会把所有节点都关掉（脚本检测到空列表会拒绝写入并退出，
+不会把站点搞挂）。
+
+> 它只改 `split_clients` 与 `$sp_cookie_open`，不动 `MM_DISABLED_NODES`（见「对外开放哪些节点」一节）。
+> 写完会跑 `nginx -t`：**通过才 reload**；不通过则把配置还原成写之前的样子并退出
+> （脚本自己备份/回滚，失败不会留下坏配置，也不会中途 reload 出错）。
+
+
 ---
 
 ## 三、管理后台
@@ -747,7 +816,64 @@ Get-ScheduledTaskInfo -TaskName 'SP-Stack-Watchdog'
 | 任务实例堆积？ | `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" \| ? CommandLine -match '_start-pm2'` | 0 个（有则说明卡死，见 `ReadToEnd` 坑） |
 | 看门狗有动手吗 | `Get-Content logs\stack-watchdog.log -Tail 10` | 有 `PM2 daemon is down -> resurrect`，不是只有 `ALERT` |
 
+#### ✅ 「重启节点」这个动作本身是安全的（2026-10-27 实测确认）
 
+维护者问过：「你确认重启的进程不是在你的进程中的。」**确认，实测数据如下。**
+
+**关键区别**（这是整件事的核心）：
+
+| 动作 | 谁 fork 新进程 | 结果 |
+|---|---|---|
+| 在交互式 shell 里 `pm2 start` / `pm2 resurrect` | **shell** 拉起 pm2 守护进程 | pm2 挂在该会话下 → **会话死 = 服务器死**（事故就是这么来的） |
+| `pm2 restart node-N` / `pm2 startOrReload` | **pm2 守护进程自己** | 新进程父进程永远是 pm2 → **与会话无关** |
+
+`pm2 restart` 的命令行客户端只是个**临时进程，发完指令就退出**，它不持有任何应用。
+
+**实测（2026-10-27）**：
+
+```
+重启前  node-2 pid=30196  父=33768(pm2)  SessionId=0
+执行    pm2 restart node-2 --update-env      ← 由 AI 助手会话发起
+重启后  node-2 pid=30384  父=33768(pm2)  SessionId=0   ← 父进程没变
+对比    我的 shell pid=31876  SessionId=2
+```
+
+新进程的父进程仍然是 pm2，**不是发起命令的会话**。
+
+**完整进程树**：
+
+```
+任务计划程序 (SYSTEM, Session 0)
+   └─ pm2 Daemon (33768, Session 0)   ← 父进程已退出，完全脱离启动者
+        ├─ node-1 … node-30  (33 个应用, Session 0)
+        ├─ matchmaker
+        └─ dashboard
+
+executive shell / AI 助手 (Session 2)  ← 只是「发命令的手」，不持有任何进程
+```
+
+**随时可以自查**（三条命令）：
+
+```powershell
+# 1) pm2 是否在 Session 0
+$g = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -match 'pm2[\\/]lib[\\/]Daemon\.js' } | Select-Object -First 1
+"pm2 SessionId = $($g.SessionId)"        # 必须是 0
+
+# 2) 有没有游离的 node 进程（不挂在 pm2 下）
+$all = Get-CimInstance Win32_Process -Filter "Name='node.exe'"
+$all | Where-Object { $_.ParentProcessId -ne $g.ProcessId -and $_.ProcessId -ne $g.ProcessId } |
+  ForEach-Object { "⚠ 游离: pid=$($_.ProcessId) parent=$($_.ParentProcessId)" }
+# 应该没有任何输出
+
+# 3) 重启后复查：新进程的父进程必须还是 pm2
+pm2 restart node-N --update-env
+$c = Get-NetTCPConnection -LocalPort (3000+N) -State Listen
+(Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)").ParentProcessId   # 必须 = $g.ProcessId
+```
+
+**结论**：AI 助手 / 终端里执行 `pm2 restart` **完全安全**；危险的是 `pm2 start` / `pm2 resurrect`
+（首次拉起守护进程）。这就是为什么本手册要求启动一律走「双击 `启动服务器.bat`」或计划任务。
 
 #### 相关文件
 
