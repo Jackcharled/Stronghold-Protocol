@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { duckPicks } from '../server/sim/content/bands/meta.js';
+import { duckPicks, duckCandidates } from '../server/sim/content/bands/meta.js';
 import { createRng } from '../server/sim/rng.js';
 import { getData } from '../server/data.js';
 
@@ -121,4 +121,53 @@ test('源码结构：未开启时走 duckReplace 并 return，不进补抽循环
   assert.ok(iStack > 0 && iLoop > iStack, '补抽循环必须在 "if (!stack) return" 之后');
   // 第 0 路不传 exclude（保持与上游同一条随机流）
   assert.match(src, /const taken = i === 0 \? null : new Set\(bySlot\.keys\(\)\);/);
+});
+
+test('候选已经全部换完时，applyDuckPicks 不会重复替换', () => {
+  // 把候选全部选中，再叠加：不可能出现「同一敌人被换两次」
+  const wave = makeWave(20);
+  const cand = duckCandidates(gd, wave, params, {});
+  assert.ok(cand.length > 0, '应该有候选');
+  const picks = cand.map((slot) => {
+    const [action, k] = slot.split('#');
+    return { action: Number.isNaN(Number(action)) ? action : Number(action), k: Number(k), enemyKey: params.enemylist.split(',')[0] };
+  });
+  // 用 picks 去应用：每个槽位只写一次
+  const slots = new Set(picks.map((p) => `${p.action}#${p.k}`));
+  assert.equal(slots.size, cand.length, '槽位应互不相同');
+});
+
+test('duckCandidates 不消耗随机流（与 duckPicks 的候选过滤一致）', () => {
+  const wave = makeWave(30);
+  const a = duckCandidates(gd, wave, params, {});
+  const b = duckCandidates(gd, wave, params, {});
+  assert.deepEqual(a, b, '两次调用结果必须一致（说明没有随机性）');
+
+  // 与 duckPicks 的候选数量一致：把 want 拉到最大也抽不完时，抽到的必定是候选的子集
+  for (let s = 0; s < 200; s++) {
+    const picks = duckPicks(gd, createRng((1000 + s * 7919) >>> 0), wave, params, {});
+    for (const pk of picks) {
+      assert.ok(a.includes(`${pk.action}#${pk.k}`), `抽到的 ${pk.action}#${pk.k} 必须在候选里`);
+    }
+  }
+});
+
+test('候选为 0 时（全是 BOSS）不产生任何替换', () => {
+  const wave = Array.from({ length: 5 }, (_, i) => ({ actionIndex: i, enemyKey: 'enemy_1007_slime', time: i, routeIndex: 0, count: 1, tag: 'boss' }));
+  const cand = duckCandidates(gd, wave, params, {});
+  assert.equal(cand.length, 0, 'BOSS 不计入候选');
+  // duckPicks 也应返回空（ok 过滤掉了）
+  for (let s = 0; s < 50; s++) {
+    assert.deepEqual(duckPicks(gd, createRng((300 + s) >>> 0), wave, params, {}), []);
+  }
+});
+
+test('源码结构：叠加循环有「耗尽即停」保护', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'server/sim/content/bands/meta.js'), 'utf8');
+  assert.match(src, /const candidates = duckCandidates\(/, '必须先算出候选池');
+  assert.match(src, /if \(bySlot\.size >= candidates\.length\) break;/, '耗尽后必须 break，停止触发');
+  // break 必须在 duckPicks 调用之前（否则还是会空跑一次）
+  const iBreak = src.indexOf('if (bySlot.size >= candidates.length) break;');
+  const iCall = src.indexOf('for (const pk of duckPicks(ctx.gd, rngFor(i), base, p');
+  assert.ok(iBreak > 0 && iCall > iBreak, 'break 必须在 duckPicks 之前');
 });

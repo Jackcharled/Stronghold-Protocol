@@ -509,6 +509,52 @@ export function duckPicks(gd, rng, base, p, { routes = null, side = null, exclud
 }
 
 /**
+ * 本回合可被鸭爵替换的槽位总数（`${action}#${k}` 的数组），不消耗随机流。
+ *
+ * 叠加时用来判断「还有没有能换的」：全部被换过之后就应该停止触发，
+ * 而不是让后面每个持有者都空跑一次抽取（那会白白消耗随机流、日志也难看）。
+ *
+ * 与 duckPicks 的候选过滤条件完全一致（同一份 ok 规则），所以两者永远同步。
+ */
+export function duckCandidates(gd, base, p, { routes = null, side = null } = {}) {
+  const ducks = list(p.enemylist).filter((k) => gd.enemy(k));
+  if (!ducks.length || !Array.isArray(base)) return [];
+  const half = side === 'L' || side === 'R';
+  const onHalf = (s) => {
+    if (!half) return true;
+    const r = Array.isArray(routes) ? routes[s.routeIndex] : null;
+    const c = r && Array.isArray(r.end) ? Number(r.end[1]) : NaN;
+    return side === 'R' ? c > BOSS_MID_COL : c < BOSS_MID_COL;
+  };
+  const flat = [];
+  const seen = new Map();
+  let pos = -1;
+  for (let i = 0; i < base.length; i++) {
+    const s = base[i];
+    if (notOwn(s)) continue;
+    pos++;
+    const action = unitAction(s, pos);
+    const cnt = Math.max(1, int(s.count, 1));
+    const k0 = seen.get(action) ?? 0;
+    seen.set(action, k0 + cnt);
+    if (!onHalf(s) || s.tag === 'boss' || s.tag === 'part') continue;
+    for (let k = 0; k < cnt; k++) flat.push({ i, action, k: k0 + k, t: num(s.time, 0) + k * num(s.interval, 0) });
+  }
+  flat.sort((a, b) => a.t - b.t || a.i - b.i || a.k - b.k);
+  const w0 = num(p.minweight, 0), w1 = num(p.maxweight, 1);
+  const n = flat.length;
+  return flat
+    .filter((f, j) => {
+      const s = base[f.i];
+      const e = gd.enemy(s.enemyKey);
+      const frac = n > 1 ? j / (n - 1) : 0;
+      return !s.tag && s.countInTotal !== false && e && e.rank !== 'BOSS' && !e.notCountInTotal && e.stats?.motion !== 'FLY'
+        && frac >= w0 - 1e-9 && frac <= w1 + 1e-9;
+    })
+    .map((f) => `${f.action}#${f.k}`);
+}
+
+/**
  * Apply the round's swaps to a player's spawn list in place (exported for tests): the k-th own unit of each picked
  * action — counted over the list's own specs of that action in list order, so a run re-timed around bounty units
  * (waves.js withBounties) still finds it — becomes the swap at that player's own time and route. Returns the swaps.
@@ -585,7 +631,13 @@ const duckGlobal = {
     //   改前：20 人叠加时有 33% 的抽取因为撞车被浪费（实测 20 路抽 21 次只落下 14 个不同槽位）。
     //   改后：每人次的抽取都有效，覆盖数提升到 min(总抽取次数, 候选池大小)。
     //   第 0 路不传 exclude，随机流与上游逐字相同（单持有者时行为不变）。
+    //
+    // ★ 还会「耗尽即停」（维护者要求）：「如果已经没有怪可以变了就停止触发效果」。
+    //   候选池被换完之后，后面的持有者**不再抽取** —— 既不做无意义的随机、也不产生空转。
+    //   这在 20 人叠加 + 小波次时很常见（候选只有 1~3 个，第一个持有者就换完了）。
+    const candidates = duckCandidates(ctx.gd, base, p, { routes: ev.routes, side: ev.side });
     for (let i = 0; i < holders.length; i++) {
+      if (bySlot.size >= candidates.length) break;   // 没有可换的了，停止触发
       const taken = i === 0 ? null : new Set(bySlot.keys());
       for (const pk of duckPicks(ctx.gd, rngFor(i), base, p, { routes: ev.routes, side: ev.side, exclude: taken })) {
         const slot = `${pk.action}#${pk.k}`;
