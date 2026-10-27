@@ -221,6 +221,15 @@ patcher\
     `overflow: hidden auto`，CSS 规定一边 visible、另一边不是时 visible 会被计算成 auto，
     必须用 `overflow` 简写把两个方向都设成 visible。
     回归测试：`node test/exp-modal-dropdown.mjs`（四档尺寸，检查位移/滚动条/可点击）。
+15. **🚫 红线：绝不能在 AI 助手 / 终端 / 任何交互式 shell 里启动 PM2**（2026-10-27 全体玩家断线）——
+    pm2 会挂在那个会话的进程树下面，**那个应用一重启，pm2 跟着死，30 个节点全没**。
+    当天维护者重启 AI 助手，玩家看到「与服务器的连接已中断，正在重连（第 7 次）」。
+    而当时的看门狗只写 `ALERT` 从不修复，所以断了 3 分钟没人救。
+    **正确做法**：双击 `启动服务器.bat`（内部走 `schtasks /Run /TN "SP-PM2-Resurrect"`，
+    SYSTEM 身份 + Session 0，与任何登录会话无关）。
+    **每次动过运维配置都要做冷杀测试**：杀掉 pm2 → 60 秒内必须自己回来。
+    完整经过、验证命令、排查表见 [MAINTENANCE.md](../MAINTENANCE.md) **§9.9**。
+    同一条红线也在 [AGENTS.md](../AGENTS.md) 的「更新 GitHub 前必查清单」里。
 
 ### 回归测试清单（改相关代码后要跑）
 

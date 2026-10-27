@@ -102,6 +102,25 @@ node patcher/check-coverage.mjs
   不要在前端硬编码域名字面量
 - 站点相关的密钥一律走 `.secrets/` 或环境变量
 
+### 3.5 🚫 红线：绝不能在交互式 shell 里启动 PM2（2026-10-27 全体玩家断线）
+
+**在 AI 助手 / 终端 / 任何交互式 shell 里跑 `pm2 start` / `pm2 resurrect` / `pm2 reload`，
+都会让 pm2 挂到那个会话的进程树下面。那个应用一重启，pm2 跟着死，30 个节点全断。**
+
+当天维护者重启 AI 助手，玩家看到「与服务器的连接已中断，正在重连」。更糟的是当时的看门狗
+只写 `ALERT` 从不修复，**断了整整 3 分钟没有任何人/程序去救**。
+
+| 场景 | 正确做法 |
+|---|---|
+| 启动 / 恢复服务器 | 双击 **`启动服务器.bat`**（内部 = `schtasks /Run /TN "SP-PM2-Resurrect"`，SYSTEM + Session 0） |
+| 重启单个节点 | `pm2 restart node-N --update-env`（这是**操作已有进程**，不改变归属，安全） |
+| 检查应用是否齐全 | `pm2 list` / `deploy\_start-pm2.ps1`（只补缺的，**不要**用 `pm2 start ecosystem`，它会重启全部并打断对局） |
+
+**每次动过运维配置（计划任务、watchdog、ecosystem）都要做冷杀测试**：
+杀掉 pm2 → 60 秒内必须自己回来 → 且新 pm2 的 `SessionId` 仍是 `0`。
+
+完整事故经过、验证命令、两分钟排查表见 [MAINTENANCE.md](MAINTENANCE.md) **§9.9**。
+
 ### 4. 改到运行时代码时：区分「刷新生效」与「重启生效」
 
 | 改动位置 | 生效方式 |

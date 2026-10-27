@@ -574,30 +574,52 @@ D:\Redis\redis-cli.exe hdel  sp:n2:lobby:rooms <CODE>
 ### 9.9 服务器必须自启动，**绝不能依赖任何登录会话**（2026-10-27 事故）
 
 > 维护者原话：「不要让我必须启动你我才能启动服务器」
+> 以及事后：「把这些记在维护手册上，以后不要出现了」
 
-#### 事故经过
+**这是本手册里优先级最高的一条红线。** 违反它的后果是全体玩家断线，而且当时没有任何自动恢复。
 
-维护者重启了一个桌面应用（AI 助手 DSH）。这个动作不该影响服务器，结果 **30 个节点全部断开**，
-玩家看到「与服务器的连接已中断，正在重连（第 7 次）」。
+#### 事故经过（完整时间线）
 
-根因：**PM2 是在那个应用的交互式 shell 里启动的。**
+| 时间 | 发生了什么 |
+|---|---|
+| 某时 | 某个 AI 助手会话里执行了 `pm2 start` 之类的命令 —— 服务器从此**挂在了那个会话下面** |
+| 15:13 | 维护者重启那个桌面应用（AI 助手 DSH） |
+| 15:13:20 | 那个应用的 shell 被杀 → **pm2 收到退出信号跟着死** → 30 个节点全部消失 |
+| 15:13–15:16 | 全体玩家看到「**与服务器的连接已中断，正在重连**」（第 7 次重试） |
+| 15:16 | 2 分钟一次的看门狗写了条 `ALERT missing PM2 apps`，然后**什么都不做**（见下） |
+| 之后 | 直到有人手动恢复才回来 |
 
-```
-pm2 Daemon.js  ← 父进程 = DSH 的 pwsh shell
-```
+根因两步：
 
-应用的 shell 一被杀，pm2 收到退出信号跟着死，30 个节点全没了。
-而当时那个「看门狗」`deploy\_stack-watchdog.ps1` 的注释白纸黑字写着
-`Alert only: this watchdog never starts or restarts nginx / PM2 / game nodes` ——
-**只写日志，从不拉起**。于是必须有人手动 `pm2 resurrect` 才能恢复。
+1. **`pm2 Daemon.js` 的父进程 = DSH 的 pwsh shell**。父进程链挂在那个应用下，
+   应用一重启，pm2 就跟着死。
+2. **当时的看门狗只报警不修复**。`deploy\_stack-watchdog.ps1` 的注释白纸黑字写着：
 
-#### 现在的机制（三层，都与登录会话无关）
+   ```
+   Alert only: this watchdog never starts or restarts nginx / PM2 / game nodes.
+   ```
+
+   于是「有监控」= 「有日志」，等于没有。
+
+#### 现在的机制（三层，全部与登录会话无关）
 
 | 层 | 机制 | 作用 |
 |---|---|---|
-| 1 | 计划任务 `SP-PM2-Resurrect`（SYSTEM） | **开机触发（延迟 30s）+ 每 1 分钟**运行 `deploy\_start-pm2.ps1`；pm2 守护进程不在就 resurrect |
+| 1 | 计划任务 `SP-PM2-Resurrect`（SYSTEM，`PT1M`） | **开机触发（延迟 30s）+ 每 1 分钟**运行 `deploy\_start-pm2.ps1`；pm2 守护进程不在就 resurrect |
 | 2 | 计划任务 `SP-Stack-Watchdog`（SYSTEM，每 2 分钟） | `deploy\_stack-watchdog.ps1` 现在会**真的修复**：pm2 不在 → 拉起；应用缺失 → 逐个 start；最后 `pm2 save` |
 | 3 | `pm2 save` 的进程表 | 任何时刻 resurrect 都能复原 32 个应用 |
+
+角色分工（这是关键）：
+
+```
+任务计划程序 (SYSTEM, Session 0)
+        │
+        └─→ pm2 Daemon → 30 个游戏节点 + matchmaker + dashboard
+                ▲
+                └── 每 60 秒被 SP-PM2-Resurrect 检查一次
+
+DSH / 终端 / 任何交互式程序  ←  与上面这条链【毫无关系】
+```
 
 #### 怎么验证它真的独立（每次改动后都要做）
 
@@ -654,16 +676,18 @@ else { $p.Kill() }
 | `267009` / `0x00041301` | 任务正在运行中 | 不用管 |
 | `2147946720` / `0x800710E0` | 上一次还没跑完，本次被跳过 | 不用管；**但若每次都这样**，说明脚本卡死了（见第 2 条） |
 
-#### ⚠ 绝对不要做的事
+#### 🚫 绝对不要做的事（红线）
 
-| 禁止 | 原因 |
-|---|---|
-| 在 AI 助手 / 终端 / 任何交互式 shell 里跑 `pm2 start` | pm2 会挂在那个会话下，会话一死服务器全断 |
-| 关掉或删除 `SP-PM2-Resurrect` / `SP-Stack-Watchdog` 计划任务 | 失去自愈能力 |
-| 把看门狗改回「只报警」 | 事故就是这么发生的 |
-| 依赖「我手动 resurrect 一下就好」 | 凌晨崩溃时没人手动 |
+| 禁止 | 原因 | 后果 |
+|---|---|---|
+| **在 AI 助手 / 终端 / 任何交互式 shell 里跑 `pm2 start` / `pm2 resurrect` / `pm2 reload`** | pm2 会挂在那个会话的进程树下面 | 该应用一重启，**服务器全断** |
+| 关掉或删除 `SP-PM2-Resurrect` / `SP-Stack-Watchdog` 计划任务 | 失去自愈能力 | 下次崩溃需人工恢复 |
+| 把看门狗改回「只报警、不修复」 | 事故就是这么发生的 | 有监控等于没监控 |
+| 让服务器「先手动起一下、以后再做成自启动」 | 临时方案会变成永久 | 迟早再断一次 |
+| 用 `pm2 start ecosystem.config.cjs` 做「检查/恢复」 | 它会对**已在跑**的应用逐个 `restartProcessId` | **打断正在进行的对局** |
+| 依赖「我手动 resurrect 一下就好」 | 凌晨崩溃时没人在 | 玩家长时间无法游戏 |
 
-**正确启动方式**（三种，任选）：
+#### ✅ 唯一正确的启动方式（三种，任选）
 
 | 方式 | 操作 |
 |---|---|
@@ -675,6 +699,54 @@ else { $p.Kill() }
 
 `启动服务器.bat` 做的事：调计划任务 → 等 25 秒 → 打印 `pm2 list` 与 30 个节点 + 3080/3090 端口的检查结果。
 它只是**触发器**，不是服务器的宿主 —— 这正是它能安全关闭的原因。
+
+#### 🔍 「以后不要出现了」——每次动过运维配置就跑这三条
+
+**第 1 条：确认 pm2 不在任何交互式会话里**
+
+```powershell
+$g = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -match 'pm2[\\/]lib[\\/]Daemon\.js' } | Select-Object -First 1
+
+"SessionId = $($g.SessionId)"                 # 必须是 0
+"我的 shell = $((Get-Process -Id $PID).SessionId)"   # 应该是 2
+
+# 往上追父进程：必须【不在】任何 Harness / pwsh / explorer 的树里
+$cur = Get-CimInstance Win32_Process -Filter "ProcessId=$($g.ParentProcessId)" -ErrorAction SilentlyContinue
+for ($i=0; $i -lt 6 -and $cur; $i++) {
+  "$($cur.Name) (pid $($cur.ProcessId))"
+  $cur = Get-CimInstance Win32_Process -Filter "ProcessId=$($cur.ParentProcessId)" -ErrorAction SilentlyContinue
+}
+```
+
+**第 2 条：冷杀测试（这是唯一能证明它独立的证据）**
+
+```powershell
+Stop-Process -Id $g.ProcessId -Force
+# 等 60–90 秒
+pm2 list        # 应该自己回来了
+```
+
+**第 3 条：确认计划任务还在、还在跑**
+
+```powershell
+Get-ScheduledTaskInfo -TaskName 'SP-PM2-Resurrect'   # NextRunTime 要一直更新
+Get-ScheduledTaskInfo -TaskName 'SP-Stack-Watchdog'
+```
+
+#### 🆘 再出问题时：两分钟定位
+
+按顺序看，第一处「否」就是问题所在：
+
+| 检查 | 命令 | 正常 |
+|---|---|---|
+| 计划任务存在吗 | `schtasks /Query /TN "SP-PM2-Resurrect"` | 存在 |
+| 它最近跑过吗 | `Get-ScheduledTaskInfo -TaskName 'SP-PM2-Resurrect'` | `NextRunTime` 持续更新 |
+| 跑了但没效果？ | `Get-Content logs\pm2-resurrect.log -Tail 10` | 有 `start-pm2 done` |
+| 日志报 `PM2 not found`？ | 见上面「SYSTEM 路径坑」 | — |
+| 任务实例堆积？ | `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" \| ? CommandLine -match '_start-pm2'` | 0 个（有则说明卡死，见 `ReadToEnd` 坑） |
+| 看门狗有动手吗 | `Get-Content logs\stack-watchdog.log -Tail 10` | 有 `PM2 daemon is down -> resurrect`，不是只有 `ALERT` |
+
 
 
 #### 相关文件
