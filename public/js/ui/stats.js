@@ -54,6 +54,7 @@
 // saveStats / their helpers.
 
 import { PHASE } from '../../../shared/constants.js';
+import { MAX_PLAYER_CAPACITY } from '../../../shared/playerCapacity.js';
 import { sanitizeName } from './playerName.js';
 import { DEFAULT_VERSION, versionById } from '../../../shared/versions.js';
 
@@ -137,7 +138,10 @@ const bool = (v, d = false) => (typeof v === 'boolean' ? v : d);
 const str = (v, max = 64) => (typeof v === 'string' && v.length ? v.slice(0, max) : null);
 
 // per-record bounds (an imported file is foreign data: nothing a row holds may grow without limit)
-const MAX_PLAYERS = 6; // the game seats 4
+// ⚠ 2026-10-27: 本服有 5–20 人实验房（shared/playerCapacity.js MAX_PLAYER_CAPACITY），
+// 这里原本写死 6（「the game seats 4」），是对局记录只显示前 6 名成员的根因。
+// 截断发生在 normalizeRecord，读写都会走 —— 也就是说超额玩家【连存都没存进去】，改显示层没用。
+const MAX_PLAYERS = MAX_PLAYER_CAPACITY; // 20；与上游官方模式的 4 座兼容（4 ≤ 20）
 const MAX_LINEUP = 12;
 const MAX_ITEMS = 4;
 const MAX_BONDS = 24;

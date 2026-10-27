@@ -478,8 +478,11 @@ describe('local stats: bounded storage', () => {
       })),
       bigUnknown: 'y'.repeat(1e6),
     });
-    assert.ok(JSON.stringify(rec).length < 40_000, `${JSON.stringify(rec).length} chars`);
-    assert.equal(rec.players.length, 6);
+    // 边界要留得下 20 名玩家各自被裁剪后的行（恶意导入仍被 20 行 + 每行上限挡住）。
+    // 真实 20 人记录约 24 KB；这里是所有上限都打满的极端值。
+    assert.ok(JSON.stringify(rec).length < 120_000, `${JSON.stringify(rec).length} chars`);
+    // 本服有 5–20 人实验房，所以上限是 20 而不是官方模式的 4/6（见 stats.js MAX_PLAYERS）
+    assert.equal(rec.players.length, 20);
     assert.equal(rec.players[0].lineup.length, 12);
     assert.equal(rec.players[0].lineup[0].items.length, 4);
     assert.equal(rec.players[0].name.length, 24);
