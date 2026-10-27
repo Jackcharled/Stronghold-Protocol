@@ -241,6 +241,51 @@ $mt = (Get-ChildItem node-1\server -Recurse -File -Include *.js | Measure-Object
 工具：`tools\_set-open-nodes.ps1`（只改 nginx，自动校验百分比合计 = 100%），
 改完 `nginx -t` + `-s reload`。
 
+#### ⚠ 改 nginx.conf 的编码陷阱：加 BOM 会让 nginx 直接起不来（2026-10-27 踩过）
+
+`tools\_set-open-nodes.ps1` 用 `Set-Content -Encoding UTF8` 写文件 —— 在 **Windows PowerShell 5.1**
+下这个参数会**加 BOM**，nginx 把第一行读成 `\ufeffworker_processes`，报：
+
+```
+nginx: [emerg] unknown directive "﻿worker_processes" ... :1
+```
+
+同时它读原文件的编码也不稳，实测把中文注释读成乱码（`鍏朵綰`）再写回去。
+
+**服务当时没断**，因为 nginx 跑的是内存里的旧配置 —— **但下次 reload 一定炸**。这是最危险的那种坏：
+文件坏了、服务看着好、直到下次重启。
+
+**正确做法：用 `tools\_set-open-nodes.mjs`**（Node 读写，天然 UTF-8 无 BOM，写前校验、写后 `nginx -t`、
+失败自动还原）：
+
+```powershell
+node tools\_set-open-nodes.mjs 2,4,7,12,13,14,16,18,20,21,24,25,27,30
+```
+
+它输出的最后两行必须是这样：
+
+```
+BOM: 无 ✓   中文完好: ✓
+nginx 已 reload
+```
+
+（`tools\_set-open-nodes.ps1` 保留作参考，但在 PowerShell 5.1 下不要用。）
+
+**任何脚本改完 nginx.conf 后都检查这三个**：
+
+```powershell
+$b = [System.IO.File]::ReadAllBytes('nginx\conf\nginx.conf')
+"BOM: $(if($b[0] -eq 0xEF){'有 ✗'}else{'无 ✓'})"
+(Get-Content nginx\conf\nginx.conf -TotalCount 1)      # 中文不能是乱码
+.\nginx\nginx.exe -p "$PWD\nginx" -c conf/nginx.conf -t # 必须 successful
+```
+
+**改前一定要备份**（`_set-open-nodes.mjs` 失败会自己还原，手工改的时候就得靠自己）：
+
+```powershell
+Copy-Item nginx\conf\nginx.conf "nginx\conf\nginx.conf.bak-$(Get-Date -Format 'MMdd-HHmmss')"
+```
+
 #### 这一轮的标准流程（照做即可）
 
 ```powershell
@@ -251,8 +296,15 @@ $mt = (Get-ChildItem node-1\server -Recurse -File -Include *.js | Measure-Object
 & tools\_restart-when-idle.ps1 -Apply
 
 # 3) 重建开放列表（只改 nginx）
-& tools\_set-open-nodes.ps1
+node tools\_set-open-nodes.mjs <已重启的节点号，逗号分隔>
 ```
+
+> ⚠ 第 1、2 步的脚本按 **`lobby.js`** 的 mtime 判断「是否已更新」。
+> **如果你这次改的不是 `lobby.js`（比如 `meta.js`、`match.js`），它会误报「30 个都已载入新代码」
+> 然后什么都不做。** 这种情况要自己按上面「不能只看 `lobby.js`」那节的办法列出待重启节点，
+> 再用 `pm2 startOrReload ecosystem.config.cjs --only node-a,node-b --update-env` 手动重启。
+
+> `_set-open-nodes.mjs` 要传**已重启的节点号**（不是全部节点）。传错会把没更新的节点也开放出去。
 
 `_set-open-nodes.ps1` **不需要传参数**：它自己计算 `node-1/server` + `node-1/shared`
 下最新的文件 mtime，凡是「进程启动时间晚于它」的节点算已更新 → 开放，其余关闭。
