@@ -183,6 +183,34 @@
   </div>
 </section>
 
+<section class="ngx" id="ops-bar" data-group="ops" style="flex-direction:column;align-items:stretch;gap:10px">
+  <div class="ngx-info" style="width:100%">
+    <span class="dot" id="ops-dot"></span>
+    <b>运维</b>
+    <span id="ops-state">检查中…</span>
+    <span class="muted" id="ops-code"></span>
+  </div>
+  <div class="muted" id="ops-summary" style="font-size:12px"></div>
+
+  <!-- 可重启的节点 -->
+  <div id="ops-box" style="border:1px solid #27393b;border-radius:10px;padding:12px;background:#0b1214;display:flex;flex-direction:column;gap:8px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b style="color:#dff">可以重启的节点</b>
+      <span class="muted" style="font-size:12px">跑旧代码 + 没有对局。这些节点上的玩家会断线 1–2 秒，浏览器自动重连，对局数据不丢。</span>
+    </div>
+    <div id="ops-restartable"></div>
+    <div id="ops-busy" class="muted" style="font-size:12px"></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button id="ops-restart">重启这些空闲节点</button>
+      <button id="ops-open" style="background:#131c1f;border:1px solid #27393b;color:#9fb4b8;border-radius:8px;padding:6px 12px">更新 nginx 开放列表</button>
+      <span class="muted" id="ops-open-now" style="font-size:12px"></span>
+    </div>
+    <div class="muted" style="font-size:12px">顺序不能反：先重启、后开放。开放列表只影响新访客，正在对局的玩家永远回原节点。</div>
+    <div class="muted" style="font-size:12px">卡片颜色说明：绿=在线可访问 · 黄=进程在但网页无响应 · 灰=已停止 · 红=异常</div>
+    <pre id="ops-out" style="display:none;margin:0;max-height:180px;overflow:auto;font-size:12px;background:#0d1417;border:1px solid #27393b;border-radius:6px;padding:8px;color:#9fb4b8"></pre>
+  </div>
+</section>
+
 <section class="ngx" id="ttl-bar" data-group="settings">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <span class="dot"></span><b>同盟解散时间</b>
@@ -333,7 +361,7 @@
     overview: ['grid', 'trendCard'],
     match: ['mm-bar', 'rooms-bar'],
     settings: ['ttl-bar', 'gate-bar', 'ann-bar', 'ann-board-bar'],
-    ops: ['ngx-bar', 'ab-bar', 'consistency-bar'],
+    ops: ['ngx-bar', 'ab-bar', 'consistency-bar', 'ops-bar'],
   };
   const buttons = [...document.querySelectorAll('#dashTabs button')];
   function show(g) {
@@ -350,6 +378,8 @@
   buttons.forEach((b) => { b.onclick = () => show(b.dataset.g); });
   let g = 'overview';
   try { g = localStorage.getItem('dash.tab') || 'overview'; } catch (e) { /* ignore */ }
+  // URL hash 优先（#ops / #match …），方便直接发给别人一个具体标签页的链接
+  if (location.hash) g = location.hash.slice(1) || g;
   show(g);
 })();
 </script>

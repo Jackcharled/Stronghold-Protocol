@@ -863,3 +863,105 @@ if (document.getElementById('trendSvg')) {
   refreshTrend();
   setInterval(refreshTrend, 30000);
 }
+
+// ---- 运维：哪些节点能安全重启 / 重启 / 更新 nginx 开放列表 ----
+// 与部署根目录的 `运维.bat` 菜单是同一套判断口径，这里是网页版。
+let opsData = null;
+
+function fmtList(arr) {
+  return arr && arr.length ? arr.map((n) => NAMES[n - 1] || `node-${n}`).join('、') : '—';
+}
+
+async function loadOps() {
+  const box = $('ops-restartable');
+  if (!box) return;
+  try {
+    const r = await fetch('/api/ops/state', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    opsData = await r.json();
+  } catch (e) {
+    $('ops-state').textContent = '读取失败：' + e.message;
+    $('ops-dot').style.background = '#e05252';
+    return;
+  }
+  const s = opsData.summary;
+  $('ops-dot').style.background = '#3fb27f';
+  $('ops-state').textContent = `${opsData.fresh.length} / ${NODES} 个节点已跑最新代码`;
+  const codeT = opsData.codeAt ? new Date(opsData.codeAt) : null;
+  $('ops-code').textContent = codeT
+    ? `代码时间 ${codeT.toLocaleString('zh-CN', { hour12: false })}`
+    : '读不到代码时间';
+  $('ops-summary').textContent =
+    `节点响应 ${s.alive}/${NODES} · 房间 ${s.rooms} · 对局 ${s.matches} · 在线 ${s.players}`;
+
+  // 可重启：绿；跑旧代码但有对局：黄（不能动）
+  const can = opsData.restartable;
+  const oldBusy = opsData.nodes.filter((x) => !x.fresh && x.alive && x.matches > 0);
+  box.innerHTML = can.length
+    ? can.map((n) => {
+        const x = opsData.nodes.find((y) => y.n === n);
+        return `<span class="chip" style="display:inline-flex;align-items:center;gap:6px;margin:2px 4px 2px 0;padding:4px 10px;border:1px solid #2c6b52;border-radius:20px;background:#0f211b">
+          <b style="color:#5fd39b">${esc(NAMES[n - 1])}</b><span class="muted" style="font-size:11px">node-${n} · ${x.rooms} 房 / ${x.sockets} 连</span></span>`;
+      }).join('')
+    : '<span class="muted">（没有空闲且需要更新的节点——都还在对局里，等空闲了刷新这里）</span>';
+  $('ops-busy').textContent = oldBusy.length
+    ? `⛔ 跑旧代码但正在对局，不能动（${oldBusy.length}）：` +
+      oldBusy.map((x) => `${NAMES[x.n - 1]}(${x.matches}局)`).join('、')
+    : '';
+  $('ops-restart').disabled = !can.length;
+  $('ops-restart').textContent = can.length ? `重启这 ${can.length} 个空闲节点` : '没有可重启的节点';
+
+  const open = opsData.openList;
+  $('ops-open').disabled = !opsData.fresh.length;
+  $('ops-open-now').textContent = open
+    ? `当前开放 ${open.length} 个；已跑新代码 ${opsData.fresh.length} 个`
+    : '读不到 nginx 配置';
+  if (open) {
+    const missing = opsData.fresh.filter((n) => !open.includes(n));
+    const extra = open.filter((n) => !opsData.fresh.includes(n)); // 旧代码却开放 = 违反红线
+    if (extra.length) $('ops-open-now').textContent += `　⚠ 有 ${extra.length} 个旧代码节点还开着：${fmtList(extra)}`;
+    else if (missing.length) $('ops-open-now').textContent += `　可再开放 ${missing.length} 个`;
+  }
+}
+
+async function opsPost(path, label, btn) {
+  const out = $('ops-out');
+  if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = '执行中…'; }
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    });
+    const j = await r.json();
+    if (out) {
+      out.style.display = 'block';
+      out.textContent = [j.message || label, j.err || '', j.out || ''].filter(Boolean).join('\n');
+    }
+    toast(j.ok ? (j.message || label + '完成') : (j.error || j.message || label + '失败'));
+  } catch (e) {
+    toast(label + '失败：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || btn.textContent; }
+    loadOps();
+  }
+}
+
+if (document.getElementById('ops-bar')) {
+  $('ops-restart').onclick = () => {
+    const n = opsData ? opsData.restartable : [];
+    if (!n.length) return toast('没有可重启的节点');
+    const busy = opsData ? opsData.nodes.filter((x) => x.matches > 0).length : 0;
+    if (!confirm(`将重启 ${n.length} 个空闲节点：\n${fmtList(n)}\n\n这些节点上的玩家会断线 1–2 秒，浏览器自动重连，对局数据不丢。\n另有 ${busy} 个节点正在对局，不会动。\n\n确认重启？`)) return;
+    opsPost('/api/ops/restart-idle', '重启空闲节点', $('ops-restart'));
+  };
+  $('ops-open').onclick = () => {
+    const f = opsData ? opsData.fresh : [];
+    if (!f.length) return toast('没有任何已更新节点');
+    if (!confirm(`把 nginx 开放列表改成「所有已跑新代码的节点」共 ${f.length} 个：\n${fmtList(f)}\n\n自动备份配置，nginx -t 校验，失败会自动回滚。\n正在对局的玩家不受影响（sp_route 永远回原节点）。\n\n确认更新？`)) return;
+    opsPost('/api/ops/open-list', '更新开放列表', $('ops-open'));
+  };
+  loadOps();
+  setInterval(loadOps, 15000);
+}
+

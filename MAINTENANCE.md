@@ -1107,6 +1107,42 @@ $c = Get-NetTCPConnection -LocalPort (3000+N) -State Listen
 > ⚠ `tools\_set-open-nodes.ps1` 是**废弃**的旧版：`Set-Content -Encoding UTF8` 会给 `nginx.conf`
 > 加 BOM，导致 `nginx: [emerg] unknown directive "﻿worker_processes"`。只留作参考，不要用。
 
+#### 同样的功能也在节点控制台里（网页版，2026-10-27 整合）
+
+> 维护者原话：「那你把他整合进节点控制台吧」
+
+打开 **`http://127.0.0.1:3080/#ops`**（节点控制台 →「防护与日志」标签页最下面的「运维」块），
+不用开终端就能做同样的事：
+
+| 界面 | 对应菜单 | 说明 |
+|---|---|---|
+| `19 / 30 个节点已跑最新代码` + 代码时间 | 菜单 1 | 口径与脚本一致：**进程启动时间 ≥ `server/` 下最新 .js 的 mtime** 才算新代码 |
+| 「可以重启的节点」绿色标签 | 菜单 2 | 逐节点显示房间数/连接数；下面黄色一行列出「跑旧代码但正在对局，不能动」的节点及局数 |
+| 「重启这 N 个空闲节点」 | 菜单 3 | 弹窗列出节点名 + 影响，确认后执行 |
+| 「更新 nginx 开放列表」 | 菜单 4 | 弹窗确认；调同一个 `tools\_set-open-nodes.mjs`（备份 / `nginx -t` / 失败回滚） |
+| 「当前开放 N 个；已跑新代码 M 个」 | — | 若出现 `⚠ 有旧代码节点还开着` 就是违反了红线，要立刻处理 |
+
+后端是 `dashboard/server.js` 的三个接口：`GET /api/ops/state`、`POST /api/ops/restart-idle`、
+`POST /api/ops/open-list`（两个 POST 都**必须**带 `confirm: true`，否则 400）。
+
+**三道防误伤的闸**（网页版比命令行更需要，点错一下就可能打断对局）：
+
+1. 前端弹窗确认，列出具体节点名和影响；
+2. 后端要求 `confirm: true`；
+3. 执行前**再逐个 `probe()` 复查 `matches === 0`**，有变化就剔除并在结果里报 `skipped`。
+
+> 控制台标签页支持 hash 直达：`#overview` / `#match` / `#settings` / `#ops`。
+
+**改了 `dashboard/` 之后必须同步并重启 dashboard**：
+
+```powershell
+Copy-Item dashboard\server.js, dashboard\public\app.js, dashboard\public\index.html repo-sync\dashboard\ -Force
+pm2.cmd restart dashboard --update-env     # 注意是 pm2.cmd，不是 pm2.ps1
+```
+
+`dashboard/` 在仓库里也是**独立一份**（不是 junction），漏同步就会「线上改了、仓库没改」。
+dashboard 重启不影响任何对局（它只读 `pm2 jlist` 和各节点 `/healthz`）。
+
 ### 9.8 提交前最终检查
 
 ```powershell

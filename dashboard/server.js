@@ -282,6 +282,164 @@ function runPm2(args) {
   });
 }
 
+// ===================================================================
+// 运维（原 `运维.bat` 菜单的网页版）
+//
+// 判断「节点跑的是新代码还是旧代码」用的是同一个口径：进程启动时间 vs
+// 该节点 server/ 下所有 .js 的最新 mtime。pm2 的 pm_uptime 来自 jlist，
+// 比 /healthz 的 uptimeSec 更准（后者会被节点自己算错）。
+//
+// 安全规则（手册 §9.9 / 重启纪律）：
+//   * matches > 0 的节点【永远】不动，前端传什么都不行 —— 这里再复查一次；
+//   * matches = 0 的节点即使有房间/连接也安全，浏览器会自动重连；
+//   * 重启必须 confirm:true，不做静默执行。
+// ===================================================================
+const OPS_STALE_MS = 3000;
+let opsCache = { at: 0, data: null };
+
+/** 所有节点 server/ 下 .js 的最新 mtime —— 超过它启动的进程才算载入了新代码。 */
+function latestCodeMtime() {
+  let max = 0;
+  for (let n = 1; n <= NODES; n++) {
+    const dir = path.join(BASE, `node-${n}`, 'server');
+    const stack = [dir];
+    while (stack.length) {
+      const cur = stack.pop();
+      let ents;
+      try { ents = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
+      for (const e of ents) {
+        const full = path.join(cur, e.name);
+        if (e.isDirectory()) { stack.push(full); continue; }
+        if (!e.name.endsWith('.js')) continue;
+        try {
+          const t = fs.statSync(full).mtimeMs;
+          if (t > max) max = t;
+        } catch { /* 权限/正在写 */ }
+      }
+    }
+  }
+  return max;
+}
+
+/** nginx.conf 里当前对外开放的节点（解析 split_clients 的权重行）。 */
+function readOpenList() {
+  try {
+    const conf = fs.readFileSync(path.join(BASE, 'nginx', 'conf', 'nginx.conf'), 'utf8');
+    const out = [];
+    const re = /^\s*[\d.]+%\s+(?:\$sp_route_)?(\d+);/gm;
+    let m;
+    while ((m = re.exec(conf))) out.push(Number(m[1]));
+    return Array.from(new Set(out)).sort((a, b) => a - b);
+  } catch {
+    return null;
+  }
+}
+
+async function opsState() {
+  if (opsCache.data && Date.now() - opsCache.at < OPS_STALE_MS) return opsCache.data;
+  const codeAt = latestCodeMtime();
+  const list = await pm2Jlist();
+  const byName = new Map((list || []).map((p) => [p.name, p]));
+  const nodes = await Promise.all(Array.from({ length: NODES }, async (_, i) => {
+    const n = i + 1;
+    const app = byName.get(nodeName(n));
+    const env = (app && app.pm2_env) || {};
+    const pr = await probe(n);
+    const h = pr.health || {};
+    const startedAt = env.pm_uptime || null;
+    const fresh = !!(startedAt && codeAt && startedAt >= codeAt);
+    return {
+      n,
+      name: nodeName(n),
+      status: env.status || 'missing',
+      fresh,
+      startedAt,
+      matches: Number(h.matches) || 0,
+      rooms: Number(h.rooms) || 0,
+      sockets: Number(h.sockets) || 0,
+      players: (Number(h.humans) || 0) + (Number(h.bots) || 0),
+      alive: pr.httpOk,
+      // 只有「跑旧代码 + 没对局 + 进程活着」才允许重启
+      restartable: !fresh && Number(h.matches) === 0 && pr.httpOk,
+    };
+  }));
+  const restartable = nodes.filter((x) => x.restartable).map((x) => x.n);
+  const stale = nodes.filter((x) => !x.fresh && x.alive).map((x) => x.n);
+  const data = {
+    at: Date.now(),
+    codeAt,
+    nodes,
+    restartable,
+    stale,
+    fresh: nodes.filter((x) => x.fresh).map((x) => x.n),
+    openList: readOpenList(),
+    summary: {
+      alive: nodes.filter((x) => x.alive).length,
+      matches: nodes.reduce((s, x) => s + x.matches, 0),
+      rooms: nodes.reduce((s, x) => s + x.rooms, 0),
+      players: nodes.reduce((s, x) => s + x.players, 0),
+    },
+  };
+  opsCache = { at: data.at, data };
+  return data;
+}
+
+/** 重启空闲节点：重新取一次状态（不信前端传来的列表），逐个复查 matches。 */
+async function opsRestartIdle(want) {
+  opsCache = { at: 0, data: null };
+  const st = await opsState();
+  let targets = st.restartable;
+  if (Array.isArray(want) && want.length) targets = targets.filter((n) => want.includes(n));
+  if (!targets.length) return { ok: true, restarted: [], skipped: [], message: '没有可以重启的空闲节点' };
+
+  // 最后一道闸：重启前立刻再逐个确认 matches=0，有变化就剔除
+  const safe = [];
+  const skipped = [];
+  for (const n of targets) {
+    const pr = await probe(n);
+    const m = Number((pr.health || {}).matches) || 0;
+    if (m === 0) safe.push(n); else skipped.push({ n, matches: m });
+  }
+  if (!safe.length) return { ok: true, restarted: [], skipped, message: '复查时有节点开始了对局，已全部跳过' };
+
+  const res = await runPm2(['startOrReload', 'ecosystem.config.cjs', '--only', safe.map(nodeName).join(','), '--update-env']);
+  await runPm2(['save']);
+  opsCache = { at: 0, data: null };
+  return {
+    ok: res.ok,
+    restarted: safe,
+    skipped,
+    out: res.out.slice(-1500),
+    err: res.err.slice(-800),
+    message: `已重启 ${safe.length} 个：${safe.join(', ')}`,
+  };
+}
+
+/** 把 nginx 开放列表改成「所有已跑新代码的节点」。 */
+function opsSetOpenList() {
+  return new Promise((resolve) => {
+    const script = path.join(BASE, 'tools', '_set-open-nodes.mjs');
+    if (!fs.existsSync(script)) return resolve({ ok: false, error: '找不到 tools/_set-open-nodes.mjs' });
+    opsCache = { at: 0, data: null };
+    opsState().then((st) => {
+      if (!st.fresh.length) return resolve({ ok: false, error: '没有任何已更新节点，拒绝执行（会把站点关掉）' });
+      execFile(process.execPath, [script, st.fresh.join(',')],
+        { cwd: BASE, timeout: 60000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+        (err, stdout, stderr) => {
+          opsCache = { at: 0, data: null };
+          resolve({
+            ok: !err,
+            nodes: st.fresh,
+            out: String(stdout || '').slice(-2000),
+            err: String(stderr || (err && err.message) || '').slice(-1000),
+            message: err ? '更新失败（已自动回滚）' : `已开放 ${st.fresh.length} 个节点`,
+          });
+        });
+    });
+  });
+}
+
+
 function logFiles(name) {
   let files = [];
   try { files = fs.readdirSync(LOG_DIR); } catch { return null; }
@@ -573,6 +731,43 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === '/api/health') return sendJson(res, 200, { ok: true, ts: Date.now() });
+
+  // ---- 运维（对应 运维.bat 菜单）：判断哪些节点可以安全重启 / 一键重启 / 更新 nginx 开放列表 ----
+  if (pathname === '/api/ops/state') {
+    if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+    return sendJson(res, 200, await opsState());
+  }
+  if (pathname === '/api/ops/restart-idle' && req.method === 'POST') {
+    if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', async () => {
+      let payload = {};
+      try { payload = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
+      // 前端必须显式传 confirm:true —— 这个动作会打断玩家，不做静默执行
+      if (payload.confirm !== true) return sendJson(res, 400, { error: '需要 confirm:true' });
+      const want = Array.isArray(payload.nodes) ? payload.nodes.map(Number) : null;
+      const result = await opsRestartIdle(want);
+      refresh();
+      return sendJson(res, 200, result);
+    });
+    return;
+  }
+  if (pathname === '/api/ops/open-list' && req.method === 'POST') {
+    if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', async () => {
+      let payload = {};
+      try { payload = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
+      if (payload.confirm !== true) return sendJson(res, 400, { error: '需要 confirm:true' });
+      const result = await opsSetOpenList();
+      refresh();
+      return sendJson(res, 200, result);
+    });
+    return;
+  }
+
   return serveStatic(req, res, pathname);
 });
 
