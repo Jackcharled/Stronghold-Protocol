@@ -37,13 +37,38 @@ async function accountRoomCode() {
   } catch { return null; }
 }
 
+/**
+ * 换设备接管：把服务端刚轮换出来的座位 token 收归本页，然后用它重连把座位接过来。
+ *
+ * ★ 2026-10-27 修复（玩家反馈「换设备点恢复对局，一直卡在正在进入模拟…」）：
+ *   这里原来写的是 `identity.adopt(msg.token)`，但 `identity` **根本没有 adopt 这个成员**
+ *   （net.js 的 createIdentity 只暴露 saveToken / rejectToken / getToken / getTokenClaim …），
+ *   于是每次接管都抛 TypeError：token 从没被采用 → 不重连 → 服务端不会再推 room.state →
+ *   前端永远停在「正在进入模拟」。而且异常是从 net 事件回调里抛出的，
+ *   `done()` 不会被调用，只能等 8 秒超时，玩家看到的就是转圈然后卡死。
+ *
+ *   正确做法：用 saveToken 收下 token（它会写 sessionStorage、更新 owned/current，
+ *   让下一次 hello 带上这个 token 走到 registry.byToken 拿回原会话与座位）。
+ */
 function adoptAccountSeat(msg) {
-  if (!msg || typeof msg.token !== 'string' || !identity.adopt(msg.token)) return false;
+  if (!msg || typeof msg.token !== 'string' || !msg.token) return false;
+  try {
+    identity.saveToken(msg.token);
+  } catch (e) {
+    console.warn('[account] 收下座位 token 失败', e);
+    return false;
+  }
   identity.setEntered(true);
   store.patch('session', { entered: true });
-  net.close();
-  net.setName(msg.name || net.name);
-  net.connect();
+  // 重连：新的 hello 会带上刚保存的 token，服务端 byToken 命中原会话 → 推 room.state / resync。
+  try {
+    net.close();
+    net.setName(msg.name || net.name);
+    net.connect();
+  } catch (e) {
+    console.warn('[account] 接管后重连失败', e);
+    return false;
+  }
   return true;
 }
 
@@ -100,7 +125,11 @@ export function requestAccountResume() {
       fn(value);
     };
     off = net.on('account.resume', (msg) => {
-      if (adoptAccountSeat(msg)) done(resolve, msg);
+      // adoptAccountSeat 内部已经不再抛异常，但这里再兜一层：
+      // 以前它抛 TypeError 时 done() 不会被调用，只能干等 8 秒超时，玩家看到的就是卡住。
+      let ok = false;
+      try { ok = adoptAccountSeat(msg); } catch (e) { console.warn('[account] 接管失败', e); }
+      if (ok) done(resolve, msg);
       else done(reject, new Error('seat token missing'));
     });
     timer = setTimeout(() => done(reject, new Error('account resume timeout')), RESUME_TIMEOUT_MS);

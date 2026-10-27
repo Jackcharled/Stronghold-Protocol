@@ -177,6 +177,17 @@ patcher\
    （读完即删，所以刷新不会再触发）。
    **改这块之前先跑 `node test/manual-resume-only.mjs`**，它会扫全站确认没有任何
    「不由点击触发」的 `accountResume` 跳转。
+10. **换设备点「恢复对局」卡在「正在进入模拟…」的真凶是 `identity.adopt` 不存在** ——
+    `adoptAccountSeat` 里写了 `identity.adopt(msg.token)`，但 `net.js` 的 `createIdentity()`
+    只暴露 `saveToken / rejectToken / getToken …`，**没有 `adopt`**。于是每次接管都抛
+    `TypeError`：token 从未被采用 → 不重连 → 服务端不再推 `room.state`/`m.public` →
+    页面永远停在「正在进入模拟…」。异常从 net 事件回调里抛出，`done()` 不会执行，
+    所以还要干等 8 秒超时，看起来像"转圈然后卡死"。
+    **正确写法：`identity.saveToken(msg.token)` 然后用新 token 重连。**
+    这类"调用不存在的成员"语法检查发现不了（合法 JS），所以专门加了守卫：
+    `node test/identity-members-exist.mjs`（把全仓 `identity.xxx` 和 net.js 实际成员比对）。
+    真实链路验证：`node tools/_verify-crossdevice-resume.mjs 4 --start`
+    （注意必须模拟前端「拿 token 后断开重连」那一步，否则是假阴性）。
 
 ## 两个一键脚本（在仓库根目录）
 
