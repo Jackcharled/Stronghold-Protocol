@@ -230,6 +230,22 @@ patcher\
     **每次动过运维配置都要做冷杀测试**：杀掉 pm2 → 60 秒内必须自己回来。
     完整经过、验证命令、排查表见 [MAINTENANCE.md](../MAINTENANCE.md) **§9.9**。
     同一条红线也在 [AGENTS.md](../AGENTS.md) 的「更新 GitHub 前必查清单」里。
+16. **验证 nginx 配置改动必须「绕过缓存」**（2026-10-27 踩过）——
+    `/assets-cdn/` 的语义是 `proxy_pass .../assets/`：请求 `/assets-cdn/spine/x` → 源站
+    `/assets/spine/x`。有人（包括我）会以为 `/assets-cdn/assets/spine/x` 才是对的，
+    改成 `proxy_pass https://assets.luobomiao.love/;` —— **这是错的，会把原本正常的
+    路径也弄坏**，因为源站只有 `/assets/...` 一种路径（`/spine/...` 直接 404）。
+
+    最坑的是：改完测试**全部 200**，看起来修好了 —— 实际是**命中了旧缓存**
+    （`X-SP-Asset-Cache: HIT`），根本没回源。
+
+    **正确验证方式**：
+    - 换一个**从未请求过**的文件（`Get-ChildItem shared/assets -Recurse | Select -Skip N`）；
+    - 或看响应头 `X-SP-Asset-Cache`：`MISS`/`BYPASS` 才是真的走了新逻辑，`HIT` 什么都不算；
+    - 注意 `proxy_cache_key "$sp_asset_cache_uri"` **不受 proxy_pass 影响**，
+      改回源路径不会让旧缓存失效，所以你测到的可能是几天前的条目。
+
+    `deploy/nginx.conf` 是这份配置的备份（`nginx/conf/nginx.conf` 不进仓库）。
 
 ### 回归测试清单（改相关代码后要跑）
 
