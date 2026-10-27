@@ -7,7 +7,6 @@ import { t } from '../../../shared/i18n.js';
 
 let installed = false;
 let pendingRoom = null;
-let switching = false;
 let resumePromise = null;
 let autoRedirected = false;
 let silentResume = false;
@@ -395,23 +394,27 @@ export function installAccountObserver() {
   net.on('account.detached', (msg) => {
     pendingRoom = typeof msg?.roomCode === 'string' ? msg.roomCode : pendingRoom;
     if (!pendingRoom) return;
-    toast(t('对局已转移到另一设备，当前设备改为只读观战'), 'warn', { ttl: 6000 });
-    switching = true;
-    // The old socket is about to be replaced; open a fresh session and join as a spectator.
-    setTimeout(() => {
-      try { net.close(); net.connect(); } catch { /* next status event reports it */ }
-    }, 200);
+    // ★ 这里以前会「重连 → 用 room.spectate 降级成旁观」，结果是必然失败：
+    //   接管走的是同一个账号，房间里那个座位（现在是新设备的）accountId 还是自己，
+    //   room.spectate 的 accountRoomConflict 会判成「该账号已在其他房间中」→ SESSION_IN_USE，
+    //   前端只能报「观战席不可用」。玩家实测看到的就是
+    //   「对局已转移到另一设备，当前设备改为只读观战」+「对局已转移，但观战席不可用」两条。
+    //
+    //   现在按「一台设备占用一个对局」的既定规则处理：这台设备已经让位，就回大厅，
+    //   不再尝试旁观自己的座位 —— 想在这台继续玩，刷新页面走正常的恢复流程即可。
+    pendingRoom = null;
+    toast(t('对局已转移到另一设备，当前设备已断开局内连接。想在这台继续玩，请刷新页面。'), 'warn', { ttl: 8000 });
+    try { store.set({ room: null, match: null }); } catch { /* ignore */ }
+    try { store.patch('ui', { pendingJoin: null, restoring: false }); } catch { /* ignore */ }
+    for (const id of ['mm-overlay', 'mm-back', 'mm-room-timer']) {
+      try { document.getElementById(id)?.remove(); } catch { /* ignore */ }
+    }
   });
   net.on('welcome', () => {
-    if (switching && pendingRoom) {
-      const code = pendingRoom;
-      pendingRoom = null;
-      switching = false;
-      net.request('room.spectate', { code }).catch(() => {
-        toast(t('对局已转移，但观战席不可用'), 'warn');
-      });
-      return;
-    }
+    // 旧的「被接管后重连 → room.spectate 降级旁观」分支已经整段删掉：
+    // 那个旁观请求必然被 accountRoomConflict 拒成 SESSION_IN_USE（座位还是同一个账号的），
+    // 玩家只会看到「对局已转移，但观战席不可用」。现在这台设备直接回大厅，
+    // 想继续玩就刷新页面走正常的对局恢复。
     if (autoResume) {
       // The account-title script may still be fetching /auth/me; the status/token retries above
       // wait for the signed token and the next online/welcome cycle.

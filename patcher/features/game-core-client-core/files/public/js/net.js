@@ -163,6 +163,9 @@ export class Net {
     this._helloRid = null;
     this._helloSentName = null;
     this._helloToken = null;
+    // hello 已发出、welcome 未回：此间服务端的会话身份可能与 store 里的 me.playerId 不同
+    // （重发 hello 换新 playerId / 同账号接管），room.state 不能拿旧 id 判定"我还在不在座位上"。
+    this.playerIdPending = false;
     this._lastRx = 0;
     this._unansweredSince = null; // time of the oldest ping sent since the last inbound frame
     this._clockSamples = [];   // [{ offset, rtt }]
@@ -418,6 +421,11 @@ export class Net {
     this._helloToken = token;
     this._helloRid = rid;
     this._helloSentName = this.name;
+    // ★ 从这一刻到 welcome 回来之间，服务端看到的会话身份可能已经和本页 store 里的 me.playerId 不一致：
+    //   重发 hello（账号令牌后到）会换一个新 playerId，同账号接管也会把座位换成新会话。
+    //   这段时间里收到的 room.state 不能拿旧的 me.playerId 去判断「我还在不在座位上」，
+    //   否则会把刚接管的房间当成"已被踢出"清掉，界面卡在「正在进入模拟…」。
+    this.playerIdPending = true;
     if (this.status !== 'handshaking') this._setStatus('handshaking');
     if (!this._sendRaw(msg)) return;
     this._clearTimer('_helloTimer', 'clearTimeout');
@@ -436,6 +444,8 @@ export class Net {
   _onWelcome(msg) {
     this._clearTimer('_helloTimer', 'clearTimeout');
     this._helloRid = null;
+    // 新会话身份已经确定，下面的 room.state 可以正常比对了（见 _sendHello 的 playerIdPending）。
+    this.playerIdPending = false;
     // Compare future setName() calls against what we sent (the server may normalise the name).
     this.helloName = this._helloSentName;
     this.serverName = typeof msg.name === 'string' && msg.name ? msg.name : this._helloSentName;
@@ -451,6 +461,8 @@ export class Net {
   _onHelloError(msg) {
     this._clearTimer('_helloTimer', 'clearTimeout');
     this._helloRid = null;
+    // hello 被拒不会有 welcome，标志必须在这里清掉，否则 room.state 的身份比对会一直被跳过。
+    this.playerIdPending = false;
     this.lastError = new NetError(msg.code, msg.msg, msg.detail);
     this._setStatus('connected');
     // Queued requests can't be sent without a session.

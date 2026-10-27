@@ -93,6 +93,8 @@ patcher\
 | 账号恢复失败提示（不再误导） | `public/js/ui/accountObserver.js` | `account-and-dashboard` | **重启节点** |
 | 同账号同房间接管座位 | `server/lobby.js:room.join` 的 takeover 分支 | `game-core-server` | 重启节点 |
 | **回自己房间时先接管、不清房间**（`room.join` 的冲突判定顺序：同房间 → 接管；别的房间 → `dropStaleAccountSeats`） | `server/lobby.js:room.join` | `game-core-server` | 重启节点 |
+| **接管后不再误清房间**（`room.state` 早于 `welcome` 到达时，用 `net.playerIdPending` 跳过身份比对，避免卡「正在进入模拟…」） | `public/js/main.js:onRoomState`、`public/js/net.js`（`_sendHello` / `_onWelcome` / `_onHelloError`） | `account-and-dashboard` | **刷新页面** |
+| **被接管的旧标签页回大厅**（不再尝试 `room.spectate` 旁观自己的座位，杜绝「观战席不可用」） | `public/js/ui/accountObserver.js:account.detached` | `account-and-dashboard` | **刷新页面** |
 | **DOCTOR # 显示真实账号 tag** | `server/lobby.js`（`room.state seats[].tag`）、`public/js/screens/room.js:seatNo()` | `game-core-server` / `server-player-capacity` | **重启节点**（前端回退到哈希） |
 | **名片立绘跟随账号** | `matchmaker/account.cjs`（DOMAINS + validatePrefPayload + decodePrefPayload）、`matchmaker/public/account-title.js:PREF_MAP.card`、`public/js/ui/seatArt.js` | `account-and-dashboard` / `matching-party` | 重启 matchmaker |
 | 账号登录 / 管理后台 | `matchmaker/account.cjs`、`matchmaker/public/admin.html` | `account-and-dashboard` | 重启 matchmaker |
@@ -158,6 +160,15 @@ patcher\
    `dropStaleAccountSeats()` 会把**同一账号在目标房间自己的座位**当成遗留座位删掉；
    若那是房间唯一的人类座位，房间会直接 `disposed (empty)`，玩家开新标签页回来时
    报「未找到该同盟密钥对应的房间」。回归测试：`node test/join-takeover-order.mjs`。
+8. **接管后的三条前端提示要一起看** —— 玩家实测同时看到「该身份已在其他页面登录」
+   「正在进入模拟…（卡住）」「对局已转移，但观战席不可用」，这是**一条链上的三个坑**，
+   只修其中一个仍然不可用：
+   - `room.state` 可能早于 `welcome` 到达，这期间 `store.me.playerId` 还是旧会话的，
+     `onRoomState` 会误判「座位里没有我」而清空房间 → 卡「正在进入模拟…」；
+     用 `net.playerIdPending` 跳过这段时间的身份比对。
+   - 旧标签页被接管后**不要**再去 `room.spectate`：那座位现在的 `accountId` 还是自己，
+     `accountRoomConflict` 必然判 `SESSION_IN_USE` →「观战席不可用」。直接回大厅。
+   回归测试：`node test/takeover-full-chain.mjs`；真实链路：`node tools/_verify-join-takeover-live.mjs 1`。
 
 ## 两个一键脚本（在仓库根目录）
 

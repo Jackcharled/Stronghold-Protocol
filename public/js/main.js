@@ -271,7 +271,15 @@ function onRoomState(msg) {
       return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
     } catch { return false; }
   })();
-  if (!adminWatch && myId != null && seats.length && !seats.some((s) => s && s.playerId === myId) && !isSpectating(room, myId)) {
+  // ★ 服务端可能在 welcome 之前就推 room.state（同账号接管座位时，
+  //   lobby.js 的 join 分支先 broadcastState 再回 OK）。那一刻本页的 me.playerId
+  //   还是**上一个会话**的 id，而房间里的座位已经换成新会话的 playerId ——
+  //   下面「座位里没有我」的判断会误判成「已被踢出」，把刚接管的房间和 match 一起清空，
+  //   界面就永远停在「正在进入模拟…」（玩家实测的正是这个画面）。
+  //   所以先认出「本页是刚换过身份、新 welcome 还在路上」的情况，此时不清房间。
+  const identityPending = net.playerIdPending === true;
+  if (!adminWatch && !identityPending && myId != null && seats.length
+    && !seats.some((s) => s && s.playerId === myId) && !isSpectating(room, myId)) {
     // We are no longer seated (kicked / left elsewhere) — neither in a player seat nor a spectator seat.
     if (store.get().room) toast(t('你已不在该同盟中'), 'warn');
     store.set({ room: null, match: emptyMatch() });

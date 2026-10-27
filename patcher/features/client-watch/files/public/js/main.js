@@ -271,7 +271,15 @@ function onRoomState(msg) {
       return /(?:^|[?&])adminWatch=1(?:&|$)/.test(location.search) || !!sessionStorage.getItem('sp_admin_watch_code');
     } catch { return false; }
   })();
-  if (!adminWatch && myId != null && seats.length && !seats.some((s) => s && s.playerId === myId) && !isSpectating(room, myId)) {
+  // ★ 服务端可能在 welcome 之前就推 room.state（同账号接管座位时，
+  //   lobby.js 的 join 分支先 broadcastState 再回 OK）。那一刻本页的 me.playerId
+  //   还是**上一个会话**的 id，而房间里的座位已经换成新会话的 playerId ——
+  //   下面「座位里没有我」的判断会误判成「已被踢出」，把刚接管的房间和 match 一起清空，
+  //   界面就永远停在「正在进入模拟…」（玩家实测的正是这个画面）。
+  //   所以先认出「本页是刚换过身份、新 welcome 还在路上」的情况，此时不清房间。
+  const identityPending = net.playerIdPending === true;
+  if (!adminWatch && !identityPending && myId != null && seats.length
+    && !seats.some((s) => s && s.playerId === myId) && !isSpectating(room, myId)) {
     // We are no longer seated (kicked / left elsewhere) — neither in a player seat nor a spectator seat.
     if (store.get().room) toast(t('你已不在该同盟中'), 'warn');
     store.set({ room: null, match: emptyMatch() });
@@ -313,7 +321,33 @@ function wireNet() {
     if (err.code === 'SESSION_IN_USE') identity.rejectToken();
     toastError(err);
   });
-  net.on('replaced', () => toast(t('该身份已在其他页面登录，本页已断开'), 'warn', { ttl: 6000 }));
+  // 同一账号在另一个标签页/浏览器登录时，服务端会关闭本页的 socket（4001），
+  // 并让新的那个接管座位。本页从此不会自动重连（net.js _onClose 的注释：不要跟新页面抢）。
+  //
+  // 以前这里只弹一条 toast，界面什么都不做 —— 于是被接管的那一页会**永远停在原画面**：
+  // 实测「两个标签页登同一账号」时，旧页卡在「正在进入模拟…」不动，玩家以为是加载失败。
+  // 服务端那局其实还在（由新页接着打），所以刷新本页也没用，看起来像"闪退后恢复不了"。
+  //
+  // 现在：提示保留，同时把页面清理到可理解的状态 ——
+  // 清掉对局/房间的内存状态（让它回到大厅）、收掉残留的过渡遮罩与倒计时浮层。
+  net.on('replaced', () => {
+    toast(t('该身份已在其他页面登录，本页已断开。要继续在这页玩，请刷新页面。'), 'warn', { ttl: 8000 });
+    try {
+      // 交还座位：本页不再持有这一局，让 UI 回到大厅而不是钉在旧画面上。
+      // 只清 room / match，外加 ui.pendingJoin（那是"/r/CODE 待加入"的占位，
+      // 不清的话本页会继续尝试自己加入一个已经由新页面接管的对局）。
+      store.set({ room: null, match: null });
+      store.patch('ui', { pendingJoin: null, restoring: false });
+    } catch { /* ignore */ }
+    try {
+      for (const id of ['mm-overlay', 'mm-back']) {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      }
+      const timer = document.getElementById('mm-room-timer');
+      if (timer) timer.remove();
+    } catch { /* ignore */ }
+  });
   // 这些错误码由具体流程自己处理并给出更具体的提示（例如 mm/client.js 的 joinFlow 会显示
   // 「加入失败：未找到该同盟密钥对应的房间」）。若这里再弹一次，玩家会同时看到两条几乎相同的红条。
   const QUIET_CODES = new Set(['ROOM_NOT_FOUND', 'ROOM_STARTED', 'ROOM_FULL', 'NOT_IN_ROOM']);
@@ -578,6 +612,11 @@ async function boot() {
     splash.classList.add('is-done');
     setTimeout(() => splash.remove(), 300);
   }
+  // 启动成功：通知 boot.js 清掉「首屏加载失败重试计数」。
+  // 那个计数只该在连续失败时累加，成功一次就该归零，否则玩家网络抖过一次后，
+  // 之后每次刷新都会被直接判到错误页（表现为「一直刷新都不能好」）。
+  try { document.dispatchEvent(new Event('sp-boot-ok')); } catch { /* ignore */ }
+  try { sessionStorage.removeItem('sp_boot_retry'); } catch { /* ignore */ }
   globalThis.__SP__ = { store, net, data, version: 1 };
   // A page keeps the modules it imported at load time for its whole lifetime, so a deploy cannot reach an open tab
   // (ui/buildGuard.js): watch `/healthz.build`. Never reload on our own: show the banner and let the player press
