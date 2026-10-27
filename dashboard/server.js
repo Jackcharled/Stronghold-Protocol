@@ -8,18 +8,26 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const updateFile = require(path.join(BASE, 'guard\\update-file.cjs'));
 const path = require('node:path');
 const { execFile, spawn } = require('node:child_process');
+// ★ 2026-10-27 修复：原来这一行在 path require 之前就用了 path / BASE，启动即抛
+//   `ReferenceError: Cannot access 'path' before initialization`，dashboard 无限重启。
+//   一直没暴露是因为它从 10-26 起就没重启过（跑内存里的旧版本）。
+//   BASE = 部署根（含 node-1 的那一级），优先 SP_ROOT。
+const BASE = process.env.SP_ROOT || (() => {
+  const up = path.resolve(__dirname, '..');
+  return fs.existsSync(path.join(up, 'node-1')) ? up : __dirname;
+})();
+const updateFile = require(path.join(BASE, 'guard', 'update-file.cjs'));
 
 // 防护 / 补丁相关的本地路径（面板只监听 127.0.0.1，这些操作不会被外网触发）
 const GUARD = {
-  heartbeat: path.join(BASE, '\guard\\heartbeat.txt'),
-  state: path.join(BASE, '\guard\\state.json'),
+  heartbeat: path.join(BASE, 'guard', 'heartbeat.txt'),
+  state: path.join(BASE, 'guard', 'state.json'),
   task: 'SP-Nginx-AutoBan',
 };
 const SCHTASKS = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'schtasks.exe');
-const GATE_PATH = path.join(BASE, '\content\\game-gate.json');
+const GATE_PATH = path.join(BASE, 'content', 'game-gate.json');
 function readGameGate() {
   try {
     const j = JSON.parse(fs.readFileSync(GATE_PATH, 'utf8'));
@@ -53,7 +61,7 @@ function protectionSnapshot() {
 
 // 部署根目录：优先环境变量 SP_ROOT，否则由本文件位置推导（dashboard/ 的上一级）。
 // 不写死盘符与用户名，仓库公开时不会泄露部署机的目录结构。
-const BASE = process.env.SP_ROOT || require('node:path').resolve(__dirname, '..');
+// ⚠ BASE 已在文件顶部定义（那里要先 require guard 模块），这里不再重复声明。
 const NODES = 30;
 
 // ---- 节点一致性检查（只读）：对比 node-2..30 与 node-1 的关键服务端文件 ----
@@ -124,7 +132,7 @@ const nodeUrl = (n, host) => `http://${host}:${nodePort(n)}/`;
 
 let snapshot = { ts: 0, nodes: [], summary: { online: 0, total: NODES, players: 0, rooms: 0, mem: 0 }, error: null };
 // ---- 指标历史（点线图用）：30 秒采样一次，保留 24 小时 ----
-const HISTORY_FILE = path.join(BASE, 'content\\metrics-history.json');
+const HISTORY_FILE = path.join(BASE, 'content', 'metrics-history.json');
 const HISTORY_STEP_MS = 30_000;
 const HISTORY_MAX = 2880; // 24h / 30s
 let history = [];
@@ -404,7 +412,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (pathname === '/api/announcements' && req.method === 'GET') {
     try {
-      const raw = fs.readFileSync(path.join(BASE, 'content\\announcements.json'), 'utf8');
+      const raw = fs.readFileSync(path.join(BASE, 'content', 'announcements.json'), 'utf8');
       return sendJson(res, 200, JSON.parse(raw));
     } catch { return sendJson(res, 200, []); }
   }
@@ -417,7 +425,7 @@ const server = http.createServer(async (req, res) => {
         const list = JSON.parse(body || '[]');
         if (!Array.isArray(list)) return sendJson(res, 400, { error: 'must be an array' });
         fs.mkdirSync(path.join(BASE, 'content'), { recursive: true });
-        fs.writeFileSync(path.join(BASE, 'content\\announcements.json'), JSON.stringify(list, null, 2), 'utf8');
+        fs.writeFileSync(path.join(BASE, 'content', 'announcements.json'), JSON.stringify(list, null, 2), 'utf8');
         return sendJson(res, 200, { ok: true, count: list.length });
       } catch (e) {
         return sendJson(res, 400, { error: e.message });
@@ -447,7 +455,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === '/api/create-room' && req.method === 'GET') {
-    try { return sendJson(res, 200, JSON.parse(fs.readFileSync(path.join(BASE, 'shared\\data\\create-room.json'), 'utf8'))); }
+    try { return sendJson(res, 200, JSON.parse(fs.readFileSync(path.join(BASE, 'shared', 'data', 'create-room.json'), 'utf8'))); }
     catch { return sendJson(res, 200, { enabled: true }); }
   }
   if (pathname === '/api/create-room' && req.method === 'POST') {
@@ -458,8 +466,8 @@ const server = http.createServer(async (req, res) => {
       try { p = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
       const enabled = p.enabled === true;
       try {
-        fs.mkdirSync(path.join(BASE, 'shared\\data'), { recursive: true });
-        fs.writeFileSync(path.join(BASE, 'shared\\data\\create-room.json'), JSON.stringify({ enabled }, null, 2), 'utf8');
+        fs.mkdirSync(path.join(BASE, 'shared', 'data'), { recursive: true });
+        fs.writeFileSync(path.join(BASE, 'shared', 'data', 'create-room.json'), JSON.stringify({ enabled }, null, 2), 'utf8');
         return sendJson(res, 200, { ok: true, enabled });
       } catch (e) { return sendJson(res, 500, { error: String(e && e.message || e) }); }
     });
@@ -467,7 +475,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === '/api/room-ttl' && req.method === 'GET') {
-    try { return sendJson(res, 200, JSON.parse(fs.readFileSync(path.join(BASE, 'shared\\data\\room-ttl.json'), 'utf8'))); }
+    try { return sendJson(res, 200, JSON.parse(fs.readFileSync(path.join(BASE, 'shared', 'data', 'room-ttl.json'), 'utf8'))); }
     catch { return sendJson(res, 200, { minutes: 15 }); }
   }
   if (pathname === '/api/room-ttl' && req.method === 'POST') {
@@ -479,8 +487,8 @@ const server = http.createServer(async (req, res) => {
       const m = Number(p.minutes);
       if (!Number.isFinite(m) || m < 1 || m > 1440) return sendJson(res, 400, { error: 'minutes 需为 1~1440' });
       try {
-        fs.mkdirSync(path.join(BASE, 'shared\\data'), { recursive: true });
-        fs.writeFileSync(path.join(BASE, 'shared\\data\\room-ttl.json'), JSON.stringify({ minutes: Math.round(m) }, null, 2), 'utf8');
+        fs.mkdirSync(path.join(BASE, 'shared', 'data'), { recursive: true });
+        fs.writeFileSync(path.join(BASE, 'shared', 'data', 'room-ttl.json'), JSON.stringify({ minutes: Math.round(m) }, null, 2), 'utf8');
       } catch (e) { return sendJson(res, 500, { error: e.message }); }
       return sendJson(res, 200, { ok: true, minutes: Math.round(m) });
     });
@@ -489,7 +497,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === '/api/announcement' && req.method === 'GET') {
     try {
-      const raw = fs.readFileSync(path.join(BASE, '\guard\\announcement.json'), 'utf8');
+      const raw = fs.readFileSync(path.join(BASE, 'guard', 'announcement.json'), 'utf8');
       return sendJson(res, 200, JSON.parse(raw));
     } catch { return sendJson(res, 200, { enabled: false, text: '' }); }
   }
@@ -502,8 +510,8 @@ const server = http.createServer(async (req, res) => {
       try { payload = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
       const doc = { enabled: payload.enabled === true, text: String(payload.text || "").slice(0, 2000), updatedAt: new Date().toISOString() };
       try {
-        fs.mkdirSync(path.join(BASE, '\guard'), { recursive: true });
-        fs.writeFileSync(path.join(BASE, '\guard\\announcement.json'), JSON.stringify(doc, null, 1));
+        fs.mkdirSync(path.join(BASE, 'guard'), { recursive: true });
+        fs.writeFileSync(path.join(BASE, 'guard', 'announcement.json'), JSON.stringify(doc, null, 1));
       } catch (e) { return sendJson(res, 500, { error: e.message }); }
       return sendJson(res, 200, { ok: true, announcement: doc });
     });
