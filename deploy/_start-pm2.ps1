@@ -167,6 +167,20 @@ if (Test-Path $probe) {
 #   把它算进 expected 会让每次检查都徒劳去 start 一个永远起不来的 wrapper。
 $expected = @('matchmaker', 'dashboard')
 1..30 | ForEach-Object { $expected += ('node-' + $_) }
+
+# ⚠ 2026-10-28 事故：$online 为空时，下面会把**全部 32 个应用**判成「缺失」，
+#   然后逐个 start —— 等于每分钟都有可能全量重启一次，玩家对局被反复打断。
+#   `pm2 jlist` 会间歇性失败（尤其 pm2 忙的时候），而这里没有「读不到就别动」的保护。
+#   现在：读不到 / 读到的东西明显不完整 → 这一轮什么都不做。
+if ($online.Count -eq 0) {
+  Write-Log 'ALERT cannot read PM2 status -> skip (no action)'
+  exit 0
+}
+if ($online.Count -lt [Math]::Floor($expected.Count / 2)) {
+  Write-Log ('ALERT only ' + $online.Count + '/' + $expected.Count + ' apps visible -> treated as a read problem, skip')
+  exit 0
+}
+
 $missing = @($expected | Where-Object { $online -notcontains $_ })
 # 只处理 ecosystem 里定义过的名字，避免凭空 start 不存在的东西。
 # ⚠ node-1..node-30 是在 ecosystem.config.cjs 里用 Array.from({length: NODES})

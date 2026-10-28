@@ -79,41 +79,63 @@ if (-not $pm2Alive) {
 }
 
 # ---- 读取在线应用，找出缺失的 ----
+# ⚠ 2026-10-28 事故：这里原本在「缺失」分支里直接 `pm2 resurrect`。
+#   resurrect 会把**整张进程表重新拉起** —— 已在线（正在打对局）的节点也被连带重启，
+#   实测一次中断 10 局。而触发它的常常只是 `pm2 jlist` 抖动一次：
+#   `pm2-logrotate` 之类偶尔让 jlist 返回不完整，于是被误判成「应用缺失」。
+#
+#   现在三条防线：
+#     1. jlist 必须**连着两次**读到、且两次一致，才认为读数可信（单次抖动不算）；
+#     2. 只对**确实缺失**的应用逐个 start，**永不 resurrect**；
+#     3. 缺失超过一半时认定是读数问题而不是真故障，直接放弃（不碰任何进程）。
 $tmp = Join-Path $env:TEMP 'sp-pm2-jlist.json'
-$null = Invoke-HiddenOut 'cmd.exe' ('/c ""' + $pm2 + '" jlist > "' + $tmp + '" 2>nul"')
 $nodeExe = 'D:\nodejs\node.exe'
 if (-not (Test-Path $nodeExe)) { $nodeExe = 'node' }
-$r = Invoke-HiddenOut $nodeExe ('"' + (Join-Path $root 'deploy\_pm2-online.cjs') + '" "' + $tmp + '"')
-if ($r.code -ne 0) {
-  # 读不到状态时不要盲目 start（会把正在跑的进程重复拉起），只记录。
+
+function Read-Online {
+  if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+  $null = Invoke-HiddenOut 'cmd.exe' ('/c ""' + $pm2 + '" jlist > "' + $tmp + '" 2>nul"')
+  if (-not (Test-Path -LiteralPath $tmp)) { return $null }
+  # 空文件 / 明显过小的响应一律当读取失败
+  if ((Get-Item -LiteralPath $tmp).Length -lt 1000) { return $null }
+  $r = Invoke-HiddenOut $nodeExe ('"' + (Join-Path $root 'deploy\_pm2-online.cjs') + '" "' + $tmp + '"')
+  if ($r.code -ne 0) { return $null }
+  $list = @($r.out -split ',' | Where-Object { $_ })
+  if ($list.Count -eq 0) { return $null }
+  return $list
+}
+
+$a1 = Read-Online
+if ($null -eq $a1) {
   Write-Log 'ALERT cannot read PM2 status'
   exit 0
 }
-$online = @($r.out -split ',')
+Start-Sleep -Seconds 2
+$a2 = Read-Online
+if ($null -eq $a2 -or (($a1 -join ',') -ne ($a2 -join ','))) {
+  # 两次读数不一致 = 正在变动或读数不稳，这一轮什么都不做
+  Write-Log ('ALERT PM2 status unstable (' + $a1.Count + ' vs ' + $(if ($null -eq $a2) { 'null' } else { $a2.Count }) + '), skip this round')
+  exit 0
+}
+$online = $a2
 $expected = @('matchmaker', 'dashboard')
 1..30 | ForEach-Object { $expected += ('node-' + $_) }
 $missing = @($expected | Where-Object { $online -notcontains $_ })
 
+# 缺失太多 → 更可能是读数问题，不是真故障。绝不动进程。
+if ($missing.Count -gt [Math]::Floor($expected.Count / 2)) {
+  Write-Log ('ALERT ' + $missing.Count + '/' + $expected.Count + ' apps look missing - treated as a read problem, no action')
+  exit 0
+}
+
 if ($missing.Count -gt 0) {
-  Write-Log ('PM2 apps missing (' + $missing.Count + '): ' + ($missing -join ', ') + ' -> start')
-
-  # 先试「恢复上次保存的进程表」——最快、且只补缺的部分。
-  $null = Invoke-HiddenOut 'cmd.exe' ('/c ""' + $pm2 + '" resurrect >nul 2>nul"')
-  Start-Sleep -Seconds 6
-
-  # 再复核一次：还缺的单独 start（--update-env 保证环境变量与 ecosystem 一致）。
-  $null = Invoke-HiddenOut 'cmd.exe' ('/c ""' + $pm2 + '" jlist > "' + $tmp + '" 2>nul"')
-  $r2 = Invoke-HiddenOut $nodeExe ('"' + (Join-Path $root 'deploy\_pm2-online.cjs') + '" "' + $tmp + '"')
-  if ($r2.code -eq 0) {
-    $online2 = @($r2.out -split ',')
-    $still = @($expected | Where-Object { $online2 -notcontains $_ })
-    if ($still.Count -gt 0) {
-      foreach ($name in $still) {
-        Write-Log ('  start ' + $name)
-        $null = Invoke-HiddenOut 'cmd.exe' ('/c ""' + $pm2 + '" start "' + (Join-Path $root 'ecosystem.config.cjs') + '" --only ' + $name + ' --update-env >nul 2>nul"')
-      }
-    }
-    $null = Invoke-HiddenOut 'cmd.exe' ('/c ""' + $pm2 + '" save >nul 2>nul"')
-    Write-Log 'PM2 recovered and saved'
+  # 只 start 缺失的那几个。**不用 resurrect**：它会重启整张进程表，打断所有正在进行的对局。
+  Write-Log ('PM2 apps missing (' + $missing.Count + '): ' + ($missing -join ', ') + ' -> start each')
+  foreach ($name in $missing) {
+    Write-Log ('  start ' + $name)
+    $null = Invoke-HiddenOut 'cmd.exe' ('/c ""' + $pm2 + '" start "' + (Join-Path $root 'ecosystem.config.cjs') + '" --only ' + $name + ' --update-env >nul 2>nul"')
+    Start-Sleep -Seconds 2
   }
+  $null = Invoke-HiddenOut 'cmd.exe' ('/c ""' + $pm2 + '" save >nul 2>nul"')
+  Write-Log 'PM2 recovered and saved'
 }
