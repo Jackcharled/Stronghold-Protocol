@@ -2388,5 +2388,12 @@
   "申请在退出、断线、投票资格或阶段变化时取消。接替后的席位数据含 AI 此前表现，不计入你的个人统计或奖励。": "Requests are cancelled on leaving, disconnection, voter eligibility changes or phase changes. Inherited seat data includes earlier AI performance and does not count toward your personal statistics or rewards.",
   "允许观战者接替 AI": "Allow spectators to take over AI seats",
   "默认关闭。开启后，观战者可在休整期经同房间真人投票接替 AI；继承记录不计个人统计或奖励。": "Off by default. When enabled, spectators can take over AI seats during preparation with a room vote; inherited records do not count toward personal stats or rewards.",
-  "该同盟已被管理员关闭": "This Alliance was closed by an administrator"
+  "该同盟已被管理员关闭": "This Alliance was closed by an administrator",
+  "创建者已离开，模拟已结束": "The creator left; the simulation has ended",
+  "由于长时间断开连接，你已离开模拟": "You left the simulation after a long disconnection",
+  "你已被移出模拟": "You were removed from the simulation",
+  "模拟已过期": "The simulation has expired",
+  "服务器维护中，模拟已关闭": "Server maintenance: the simulation was closed",
+  "模拟超时未开始，已自动结束": "The simulation timed out before starting and was closed",
+  "该模拟已被管理员关闭": "This simulation was closed by an administrator"
 }
