@@ -504,17 +504,7 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
         <span class="t-dim">${t('每队人数上限')}</span>
       </div>
       <div class="exp-modal__switches">
-      <${Tooltip} text=${t('被淘汰的博士可以在队友存活时复活') + '\n\n' + [
-        t('触发条件（全部满足才能救援）：'),
-        t('① 目标博士的目标生命值刚耗尽，进入「等待救援」状态'),
-        t('② 救援者是本轮参与联防的队友，且他自己这轮没有漏怪'),
-        t('③ 救援者仍存活，且生命值至少 11 点（支付 10 点）'),
-        t('④ 在联防结算后的 15 秒救援窗口内点击'),
-        t('⑤ 目标博士本局还没被救过（每人每局最多 1 次）'),
-        '',
-        t('被救者恢复到 1 点生命，干员、装备和其他状态完整保留。'),
-        t('超过 15 秒或窗口关闭，死亡立即结算，无法再救。'),
-      ].join('\n')}>
+      <${Tooltip} text=${t('被淘汰的博士可以由没漏怪的队友消耗 10 点生命救回')}>
         <button type="button" role="switch" aria-checked=${revival ? 'true' : 'false'} data-testid="exp-revival"
             class=${`dpick__opt ailast__opt${revival ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
             onClick=${() => { setCapOpen(false); canEdit && setRevival(!revival); }}>
