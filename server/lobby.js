@@ -2972,6 +2972,17 @@ export class Lobby {
         // ② 会话仍然存活：也不清理
         const old = this.registry.byId(seat.playerId);
         if (old && old.connected === true) continue;
+        // ③ ★ 2026-10-28：对局进行中的座位绝不清理 —— 与 startGrace 的保护一致。
+        //
+        //   当天 nginx 重启（改分流规则）把所有人的 socket 都断了。玩家重连时拿到的是
+        //   **新的 playerId**，于是这里把旧座位判成「同账号遗留」，删掉。
+        //   实测事故：VAHS（node-1）里 4 人房的 seat 3 被删，那位玩家对自己座位
+        //   做任何操作都报「你不在房间中」，而 UI 上他还看着 4 个队友。
+        //
+        //   宽限期（startGrace）本来就有 if (room.match) return —— 对局中不踢人。
+        //   这个函数绕过了那一层，现在补回来：只要对局在跑，座位就留着，
+        //   让人自己重连回来（他会拿到原座位，因为 playerId 在接管时会被换回）。
+        if (room.match || room.matchCtx) continue;
         room.seats[i] = null;
         cleaned.push(room.code);
         this.log.info(`[lobby] ${room.code} 清理账号 ${accountId} 的遗留座位（旧会话 ${seat.playerId}，未连接）`);
