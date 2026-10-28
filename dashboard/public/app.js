@@ -932,9 +932,16 @@ async function loadOps() {
   const s = opsData.summary;
   $('ops-dot').style.background = '#3fb27f';
   $('ops-state').textContent = `${opsData.fresh.length} / ${NODES} 个节点已跑最新代码`;
-  const codeT = opsData.codeAt ? new Date(opsData.codeAt) : null;
-  $('ops-code').textContent = codeT
-    ? `代码时间 ${codeT.toLocaleString('zh-CN', { hour12: false })}`
+  // 代码时间：分开显示 server / shared。
+  // 这两块都是「每个节点一份副本，改完要分发 + 重启」；只写一个时间会让人以为改了 A 就等于改了 B
+  // （2026-10-28 就是改了 shared/protocol.js，控制台只看 server/，于是显示「都已最新」而复活其实没生效）。
+  const KIND_ZH = { server: '服务端', shared: '共享代码' };
+  const kAt = opsData.codeKindAt || {};
+  $('ops-code').textContent = opsData.codeAt
+    ? '代码时间 ' + Object.keys(KIND_ZH)
+        .filter((k) => kAt[k])
+        .map((k) => `${KIND_ZH[k]} ${new Date(kAt[k]).toLocaleString('zh-CN', { hour12: false })}`)
+        .join(' · ')
     : '读不到代码时间';
   $('ops-summary').textContent =
     `节点响应 ${s.alive}/${NODES} · 房间 ${s.rooms} · 对局 ${s.matches} · 在线 ${s.players}`;
@@ -942,16 +949,25 @@ async function loadOps() {
   // 可重启：绿；跑旧代码但有对局：黄（不能动）
   const can = opsData.restartable;
   const oldBusy = opsData.nodes.filter((x) => !x.fresh && x.alive && x.matches > 0);
+  // 落后在哪一块：server（服务端逻辑）/ shared（协议、常量、玩法规则）。两个都落后时都写出来。
+  const behindText = (x) => {
+    const b = (x.behind || []).map((k) => KIND_ZH[k] || k);
+    return b.length ? b.join('+') : '';
+  };
   box.innerHTML = can.length
     ? can.map((n) => {
         const x = opsData.nodes.find((y) => y.n === n);
+        const bw = behindText(x);
         return `<span class="chip" style="display:inline-flex;align-items:center;gap:6px;margin:2px 4px 2px 0;padding:4px 10px;border:1px solid #2c6b52;border-radius:20px;background:#0f211b">
-          <b style="color:#5fd39b">${esc(NAMES[n - 1])}</b><span class="muted" style="font-size:11px">node-${n} · ${x.rooms} 房 / ${x.sockets} 连</span></span>`;
+          <b style="color:#5fd39b">${esc(NAMES[n - 1])}</b><span class="muted" style="font-size:11px">node-${n} · ${x.rooms} 房 / ${x.sockets} 连</span>${bw ? `<span style="font-size:11px;color:#e8b25a">差${bw}</span>` : ''}</span>`;
       }).join('')
     : '<span class="muted">（没有空闲且需要更新的节点——都还在对局里，等空闲了刷新这里）</span>';
   $('ops-busy').textContent = oldBusy.length
     ? `⛔ 跑旧代码但正在对局，不能动（${oldBusy.length}）：` +
-      oldBusy.map((x) => `${NAMES[x.n - 1]}(${x.matches}局)`).join('、')
+      oldBusy.map((x) => {
+        const bw = behindText(x);
+        return `${NAMES[x.n - 1]}(${x.matches}局${bw ? '，差' + bw : ''})`;
+      }).join('、')
     : '';
   $('ops-restart').disabled = !can.length;
   $('ops-restart').textContent = can.length ? `重启这 ${can.length} 个空闲节点` : '没有可重启的节点';

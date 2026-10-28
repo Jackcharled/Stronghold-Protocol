@@ -304,12 +304,51 @@ function runPm2(args) {
 const OPS_STALE_MS = 3000;
 let opsCache = { at: 0, data: null };
 
-/** 所有节点 server/ 下 .js 的最新 mtime —— 超过它启动的进程才算载入了新代码。 */
-function latestCodeMtime() {
-  let max = 0;
-  for (let n = 1; n <= NODES; n++) {
-    const dir = path.join(BASE, `node-${n}`, 'server');
+/**
+ * 「最新代码」的时刻 —— 某个节点进程的启动时间超过它，才算载入了最新代码。
+ *
+ * ⚠ 2026-10-28 修正：原来只扫 `server/`，**漏掉了 `shared/`**。
+ * 这两个目录都是「每个节点各自一份副本」，改了都要分发 + 重启才生效：
+ *   * `server/`  —— 连接、会话、对局、路由
+ *   * `shared/`  —— 协议白名单（`protocol.js` 的 `C2S`）、常量、玩法规则
+ * 只扫 `server/` 的后果：改完 `shared/` 之后控制台照样显示「已跑最新代码」，
+ * 实际节点内存里还是旧的。复活（`g.revive`）就是这么被漏掉的 ——
+ * 控制台说 24 台最新，真正能用的只有 7 台。
+ *
+ * `public/` 不算在内：那些是浏览器加载的，玩家刷新页面即可，不需要重启节点。
+ *
+ * ---- 为什么不能只看 mtime ----
+ * 文件 mtime 会被「重新分发同样的内容」刷新（Copy-Item / 手工再复制一遍都会），
+ * 于是刚重启、明明已经加载新代码的节点，会因为文件时间变新而被判成「旧代码」。
+ * 2026-10-28 就实测踩到：node-9/14/22/25 启动于 22:44，复活实测可用，
+ * 但 22:47 重新分发把 mtime 刷成 22:47，它们立刻被误判成旧代码。
+ *
+ * 所以这里改成「按内容算」：把参与判定的所有 .js 的哈希合成一个指纹，
+ * 只在**指纹真的变了**才更新一个标记文件（content/ops-code-stamp.json）；
+ * 判定用标记文件里记下的时刻，而不是文件系统时间。重复分发同样的内容不会动它。
+ *
+ * @param {boolean} [breakdown] 为 true 时返回 {at, byKind, sig}
+ */
+const CODE_DIRS = ['server', 'shared'];   // 加目录前先确认它是不是「改完必须重启节点」
+const CODE_STAMP = path.join(BASE, 'content', 'ops-code-stamp.json');
+let __codeSigCache = { at: 0, sig: null, kindSig: null };
+
+/** 扫 CODE_DIRS，返回 {sig, kindSig:{server, shared}} —— 内容指纹，与文件时间无关。 */
+function codeFingerprint() {
+  if (__codeSigCache.sig && Date.now() - __codeSigCache.at < 5000) {
+    return { sig: __codeSigCache.sig, kindSig: __codeSigCache.kindSig };
+  }
+  const all = crypto.createHash('sha1');
+  const kindSig = {};
+  for (const kind of CODE_DIRS) kindSig[kind] = crypto.createHash('sha1');
+  // node-1 是母版（sync-nodes.cjs 的参照源），拿它算指纹即可代表「最新代码是什么样」。
+  // 用 node-1 而不是扫全部 30 台：扫描量小一个数量级，且语义正确 ——
+  // 我们关心的是「最新代码长什么样」，不是「有没有节点漏分发」。
+  const n = 1;
+  for (const kind of CODE_DIRS) {
+    const dir = path.join(BASE, `node-${n}`, kind);
     const stack = [dir];
+    const files = [];
     while (stack.length) {
       const cur = stack.pop();
       let ents;
@@ -318,14 +357,57 @@ function latestCodeMtime() {
         const full = path.join(cur, e.name);
         if (e.isDirectory()) { stack.push(full); continue; }
         if (!e.name.endsWith('.js')) continue;
-        try {
-          const t = fs.statSync(full).mtimeMs;
-          if (t > max) max = t;
-        } catch { /* 权限/正在写 */ }
+        files.push(full);
       }
     }
+    files.sort();                              // 顺序稳定，指纹才稳定
+    for (const f of files) {
+      let buf;
+      try { buf = fs.readFileSync(f); } catch { continue; }
+      const rel = path.relative(dir, f).replace(/\\/g, '/');
+      const h = crypto.createHash('sha1').update(buf).digest('hex');
+      all.update(`${kind}/${rel}:${h}\n`);
+      kindSig[kind].update(`${rel}:${h}\n`);
+    }
   }
-  return max;
+  const sig = all.digest('hex');
+  const kindOut = {};
+  for (const k of CODE_DIRS) kindOut[k] = kindSig[k].digest('hex');
+  __codeSigCache = { at: Date.now(), sig, kindSig: kindOut };
+  return { sig, kindSig: kindOut };
+}
+
+/** 读出（必要时新建）代码标记：{ sig, at, kindAt:{server,shared} }。只在指纹变化时更新 at。 */
+function codeStamp() {
+  const { sig, kindSig } = codeFingerprint();
+  let prev = null;
+  try { prev = JSON.parse(fs.readFileSync(CODE_STAMP, 'utf8')); } catch { /* 第一次 */ }
+  if (prev && prev.sig === sig && prev.at) {
+    return { sig, at: Number(prev.at), kindAt: prev.kindAt || {} };
+  }
+  // 指纹变了（或第一次运行）：把「现在」记为这批内容的生效时刻。
+  // 第一次运行时节点可能早就加载了同一批内容，会被判成旧代码 —— 这是保守方向，最多多等一次重启。
+  const now = Date.now();
+  const kindAt = {};
+  const prevKind = (prev && prev.kindSig) || {};
+  for (const k of CODE_DIRS) {
+    kindAt[k] = (prevKind[k] && prevKind[k] === kindSig[k] && prev && prev.kindAt && prev.kindAt[k])
+      ? Number(prev.kindAt[k]) : now;
+  }
+  try {
+    fs.mkdirSync(path.dirname(CODE_STAMP), { recursive: true });
+    fs.writeFileSync(CODE_STAMP, JSON.stringify({ sig, kindSig, at: now, kindAt, updatedAt: new Date(now).toISOString() }, null, 2));
+  } catch { /* 写不了就只是每次重算 */ }
+  return { sig, at: now, kindAt };
+}
+
+/**
+ * 「最新代码」的时刻。签名保持不变，调用方无需改动。
+ * @param {boolean} [breakdown]
+ */
+function latestCodeMtime(breakdown) {
+  const st = codeStamp();
+  return breakdown ? { at: st.at, byKind: st.kindAt, sig: st.sig } : st.at;
 }
 
 /** nginx.conf 里当前对外开放的节点（解析 split_clients 的权重行）。 */
@@ -344,7 +426,8 @@ function readOpenList() {
 
 async function opsState() {
   if (opsCache.data && Date.now() - opsCache.at < OPS_STALE_MS) return opsCache.data;
-  const codeAt = latestCodeMtime();
+  const codeInfo = latestCodeMtime(true);
+  const codeAt = codeInfo.at;
   const list = await pm2Jlist();
   const byName = new Map((list || []).map((p) => [p.name, p]));
   const nodes = await Promise.all(Array.from({ length: NODES }, async (_, i) => {
@@ -354,12 +437,24 @@ async function opsState() {
     const pr = await probe(n);
     const h = pr.health || {};
     const startedAt = env.pm_uptime || null;
-    const fresh = !!(startedAt && codeAt && startedAt >= codeAt);
+    // 没跟上时说是哪一块没跟上：server（服务端逻辑）还是 shared（协议/常量/规则）。
+    // ⚠ 必须分目录比对，不能拿「两者里最旧的那个时刻」统一比 ——
+    // server 是 21:18、shared 是 22:40，取最小值会把「21:30 启动、只加载了旧 shared」的节点
+    // 误判成最新（2026-10-28 实测踩到，17 台误报）。
+    const behind = [];
+    if (startedAt && codeInfo.byKind) {
+      for (const kind of CODE_DIRS) {
+        const t = Number(codeInfo.byKind[kind]) || 0;
+        if (t && startedAt < t) behind.push(kind);
+      }
+    }
+    const fresh = !!(startedAt && codeAt && behind.length === 0);
     return {
       n,
       name: nodeName(n),
       status: env.status || 'missing',
       fresh,
+      behind,
       startedAt,
       matches: Number(h.matches) || 0,
       rooms: Number(h.rooms) || 0,
@@ -375,6 +470,7 @@ async function opsState() {
   const data = {
     at: Date.now(),
     codeAt,
+    codeKindAt: codeInfo.byKind,
     nodes,
     restartable,
     stale,

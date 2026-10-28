@@ -50,6 +50,11 @@ test/e2e/out/
 logs/
 *.log
 
+# --- 控制台运行期产物（不是源码，每台机器自己生成） -------------------------------------------------
+# ops-code-stamp.json 记录「当前这版代码是什么时候开始生效的」，由 dashboard 自动维护；
+# 它跟着机器走，提交上去只会在别人的机器上造成误判。
+content/ops-code-stamp.json
+
 # --- per-machine config (scripts/install-service-windows.ps1) ------------------------------------
 scripts/service.env.cmd
 .env
