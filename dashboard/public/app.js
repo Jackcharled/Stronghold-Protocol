@@ -962,10 +962,30 @@ async function loadOps() {
     ? `当前开放 ${open.length} 个；已跑新代码 ${opsData.fresh.length} 个`
     : '读不到 nginx 配置';
   if (open) {
+    // 跑新代码但还没开放的节点。
+    // ⚠ 不能一律说成「可再开放」：节点上可能已经有房间/玩家了（他们是通过 ?room=房间号
+    // 直达进来的，nginx 的 arg_room 规则会绕过开放列表）。这时候把节点加进开放列表，
+    // 等于让新访客被分到一个别人正在等待开局的房间里去。
+    // 所以分开报：真的空着的才算「可开放」，有人的要单独标出来。
     const missing = opsData.fresh.filter((n) => !open.includes(n));
     const extra = open.filter((n) => !opsData.fresh.includes(n)); // 旧代码却开放 = 违反红线
-    if (extra.length) $('ops-open-now').textContent += `　⚠ 有 ${extra.length} 个旧代码节点还开着：${fmtList(extra)}`;
-    else if (missing.length) $('ops-open-now').textContent += `　可再开放 ${missing.length} 个`;
+    if (extra.length) {
+      $('ops-open-now').textContent += `　⚠ 有 ${extra.length} 个旧代码节点还开着：${fmtList(extra)}`;
+    } else if (missing.length) {
+      const busy = [];
+      const idle = [];
+      for (const n of missing) {
+        const x = opsData.nodes.find((y) => y.n === n) || {};
+        const ppl = (x.rooms || 0) + (x.sockets || 0);
+        (ppl > 0 ? busy : idle).push(ppl > 0 ? `${NAMES[n - 1]}(${x.rooms} 房/${x.sockets} 连)` : n);
+      }
+      if (idle.length) $('ops-open-now').textContent += `　可再开放 ${idle.length} 个`;
+      if (busy.length) {
+        $('ops-open-now').textContent += `　⚠ 有 ${busy.length} 个没开放但已经有房间/玩家：${busy.join('、')}`
+          + `（他们是用房间号直达的；再开放等于让新访客进到别人的等待室）`;
+      }
+      if (!idle.length && !busy.length) $('ops-open-now').textContent += '　（都已开放）';
+    }
   }
 }
 
@@ -1003,7 +1023,19 @@ if (document.getElementById('ops-bar')) {
   $('ops-open').onclick = () => {
     const f = opsData ? opsData.fresh : [];
     if (!f.length) return toast('没有任何已更新节点');
-    if (!confirm(`把 nginx 开放列表改成「所有已跑新代码的节点」共 ${f.length} 个：\n${fmtList(f)}\n\n自动备份配置，nginx -t 校验，失败会自动回滚。\n正在对局的玩家不受影响（sp_route 永远回原节点）。\n\n确认更新？`)) return;
+    // 有玩家在房间/等待室里的节点要单独讲清楚：开放之后新访客会直接落进去
+    const occupied = f
+      .map((n) => opsData.nodes.find((y) => y.n === n))
+      .filter((x) => x && ((x.rooms || 0) > 0 || (x.sockets || 0) > 0));
+    let msg = `把 nginx 开放列表改成「所有已跑新代码的节点」共 ${f.length} 个：\n${fmtList(f)}\n\n`;
+    if (occupied.length) {
+      msg += `⚠ 其中 ${occupied.length} 个节点上现在就有玩家：\n`
+        + occupied.map((x) => `  ${NAMES[x.n - 1]}：${x.rooms} 房 / ${x.sockets} 连（${x.players} 人）`).join('\n')
+        + `\n开放之后，新访客会被随机分到这些节点，直接进到那些人的等待室里。\n`
+        + `已经在房间里的人不受影响（他们一直回自己的节点）。\n\n`;
+    }
+    msg += `自动备份配置，nginx -t 校验，失败会自动回滚。\n正在对局的玩家不受影响（sp_route 永远回原节点）。\n\n确认更新？`;
+    if (!confirm(msg)) return;
     opsPost('/api/ops/open-list', '更新开放列表', $('ops-open'));
   };
 

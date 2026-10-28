@@ -561,23 +561,40 @@ function closeRoom(codeIn, nodeIn) {
   });
 }
 
-/** 把 nginx 开放列表改成「所有已跑新代码的节点」。 */function opsSetOpenList() {
+/** 把 nginx 开放列表改成「所有已跑新代码的节点」。
+ *
+ * 开放的口径是维护者定死的：**能更新重启的节点就对外开，不能重启的不开**，
+ * 所以这里取的是 `fresh`，跟节点上有没有人无关 —— 有人也照样开放，
+ * 因为开放只影响「新访客被随机分到哪」，正在房间里的人一直回自己的节点。
+ *
+ * 但「有人」这件事必须如实告诉维护者：那台节点上可能正有玩家在等待室，
+ * 开放之后新访客会直接落进去。所以下面把这些人列出来，不藏。 */
+function opsSetOpenList() {
   return new Promise((resolve) => {
     const script = path.join(BASE, 'tools', '_set-open-nodes.mjs');
     if (!fs.existsSync(script)) return resolve({ ok: false, error: '找不到 tools/_set-open-nodes.mjs' });
     opsCache = { at: 0, data: null };
     opsState().then((st) => {
       if (!st.fresh.length) return resolve({ ok: false, error: '没有任何已更新节点，拒绝执行（会把站点关掉）' });
+      // 这些节点上已经有人了（房间开着 / 有连接）：开放后新访客会直接进来
+      const occupied = st.nodes.filter((x) => x.fresh && (Number(x.rooms) > 0 || Number(x.sockets) > 0))
+        .map((x) => ({ n: x.n, rooms: Number(x.rooms) || 0, sockets: Number(x.sockets) || 0 }));
       execFile(process.execPath, [script, st.fresh.join(',')],
         { cwd: BASE, timeout: 60000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
         (err, stdout, stderr) => {
           opsCache = { at: 0, data: null };
+          let message = err ? '更新失败（已自动回滚）' : `已开放 ${st.fresh.length} 个节点`;
+          if (!err && occupied.length) {
+            message += `；其中 ${occupied.length} 个当时有玩家在房间/等待室里（开放后新访客会直接落进去）：`
+              + occupied.map((o) => `node-${o.n}(${o.rooms} 房/${o.sockets} 连)`).join('、');
+          }
           resolve({
             ok: !err,
             nodes: st.fresh,
+            occupied,
             out: String(stdout || '').slice(-2000),
             err: String(stderr || (err && err.message) || '').slice(-1000),
-            message: err ? '更新失败（已自动回滚）' : `已开放 ${st.fresh.length} 个节点`,
+            message,
           });
         });
     });
