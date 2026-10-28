@@ -98,22 +98,74 @@ nginx 里要改的只有三处（都在 `http` 块和 `location /` 里）：
 | 位置 | 作用 |
 |---|---|
 | `split_clients "$request_id" $sp_rand_node { … }` | 新玩家首次访问被随机分到这些节点，权重按数量等分 |
-| `map $cookie_sp_route $sp_cookie_open { … }` | cookie 指向的节点是否开放；`0` 会被重新分流 |
-| 已就位的 `location /` 分支 | cookie 指向开放节点才粘住；带房间上下文时强制回原节点 |
+| `map $cookie_sp_route $sp_cookie_open { … }` | cookie 指向的节点是否开放：开放记 `1`，受限记 `0` |
+| `location /` 里的四条 `if` | 真正决定落到哪台（见下） |
 
-```powershell
-# 改完必须验证 + 重载（nginx 会先 -t 校验，写错不会生效也不会中断服务）
-.\nginx\nginx.exe -t -c "$PWD\nginx\conf\nginx.conf" -p "$PWD\nginx"
-.\nginx\nginx.exe -s reload -c "$PWD\nginx\conf\nginx.conf" -p "$PWD\nginx"
+`tools\_set-open-nodes.mjs` 会**同时**改前两处，两份列表不会不同步 —— 不要手动只改一处。
+
+#### `location /` 的分流规则（2026-10-28 定稿，照这个思路操作）
+
+维护者原话：「虽然玩家可以通过观战代码和房间码进入到这些节点，但是新玩家的登录默认
+不往这些已经关闭对外的节点发。」
+
+```
+if ($sp_cookie_open = 0) { set $sp_node $sp_rand_node; }   # ① cookie 指向受限节点 → 改派
+if ($sp_cookie_open = 1) { set $sp_node $cookie_sp_route; } # ② 只粘「开放」节点的 cookie
+if ($arg_room ~ "^[A-Za-z0-9]{4,6}$") { … }                 # ③ 房间码 → 回原节点
+if ($sp_room_node) { … }                                    # ③ ?n=
+if ($arg_adminWatch = 1) { … }                              # ③ 观战
 ```
 
-**验证办法**：带一个受限节点的 `sp_route` cookie 访问站点，看响应头 `X-SP-Node`
-是不是被改派到了开放节点；再用开放节点的 cookie 确认它被粘住。
+nginx 的 `if` **按书写顺序执行，后面的覆盖前面的**，所以顺序不能改：
+
+| 场景 | 落点 | 结果 |
+|---|---|---|
+| 新玩家，没有 cookie | `$sp_rand_node` | 随机到开放节点 |
+| 老玩家，cookie 指向**开放**节点，打开首页 | cookie 的节点 | 粘住（体验不变） |
+| 老玩家，cookie 指向**受限**节点，打开首页 | `$sp_rand_node` | **改派到开放节点**（2026-10-28 新增） |
+| cookie 指向受限节点 + `?room=CODE` | cookie 的节点 | **回原节点**，正在玩的对局不受影响 |
+| cookie 指向受限节点 + `?n=N` / 观战码 | 指定节点 | **能进受限节点** |
+| 已连着受限节点的玩家 | — | 本次请求不走这里，**不断线** |
+
+**踩过的坑（两次，都记下来免得再来一次）**：
+
+1. **2026-10-20 之前**：这里曾是无条件的 `if ($sp_cookie_open = 0) { set $sp_node $sp_rand_node; }`。
+   它把「正在旧节点上打对局、只是刷新了页面」的人也一起改派走，
+   服务端找不到房间 →「**回不到对局**」。整个改派因此被移除。
+2. **2026-10-28 第一次修复没生效**：写成
+
+   ```nginx
+   if ($sp_cookie_open = 0) { set $sp_node $sp_rand_node; }
+   if ($cookie_sp_route ~ "^([1-9]|[12][0-9]|30)$") { set $sp_node $cookie_sp_route; }   # ← 又改回去了
+   ```
+
+   第二条对**任何**合法 cookie 都成立，把刚做的改派覆盖掉。
+   正确写法是给「粘住」加条件：`if ($sp_cookie_open = 1) { … }`。
+
+**改完的验证**（必须两个方向都测，只测一个会漏掉上面第 2 个坑）：
 
 ```powershell
-$r = Invoke-WebRequest "https://stronghold.luobomiao.love/" -UseBasicParsing -Headers @{ Cookie = "sp_route=9" }
-@($r.Headers['X-SP-Node'])[0]     # 不应是 9
+$env:NODE_TLS_REJECT_UNAUTHORIZED='0'
+# A) 受限节点的 cookie + 首页 → 必须被改派（连做 10 次，一次都不该落到受限节点）
+1..10 | ForEach-Object {
+  (Invoke-WebRequest 'https://127.0.0.1/' -UseBasicParsing -SkipCertificateCheck `
+    -Headers @{cookie='sp_route=1'}).Headers['X-SP-Node']
+}
+# B) 同一个 cookie + ?room= → 必须回到原节点（老玩家回房间）
+(Invoke-WebRequest 'https://127.0.0.1/?room=ABCD' -UseBasicParsing -SkipCertificateCheck `
+  -Headers @{cookie='sp_route=1'}).Headers['X-SP-Node']
 ```
+
+**改完必须 `nginx -t` 校验 + 重启生效**。⚠ 以 SYSTEM 身份运行的 nginx **不接受**普通管理员的
+`-s reload`（`OpenEvent ... Access is denied`），要用 `node tools\restart-nginx.mjs --apply`
+（它会先清干净再经计划任务重启）；**不要**直接在终端 `-s quit`/`-s reload`，
+今天就是这么把 worker 越堆越多的。
+
+**为什么受限节点上还有房间是正常的**：`sp_route` 的作用是让浏览器粘住它所属的节点。
+节点被摘出开放列表**不代表**上面的人要立刻走 —— 他们的对局还在，重连必须回得去。
+摘列表只影响「打开首页」这一步。2026-10-28 看到 node-1 已关闭却仍有 7 间房，
+原因就是这些玩家的 cookie 还指向 node-1；新规则生效后他们**这局还能打完**，
+但关掉页面重新打开会落到开放节点。
 
 > `MM_DISABLED_NODES` 只在临时需要「不让匹配器往某节点分发」时才用
 > （比如该节点磁盘满了），用完记得清空；清空后要 `pm2 delete matchmaker`
@@ -169,7 +221,8 @@ pm2 save
 |---|---|
 | 新玩家首次访问被 nginx 随机分配进来 | ❌ 不会（`split_clients` 里没有它） |
 | 匹配系统把新玩家分进来 | ❌ 不会（`DISABLED_NODES` 排除） |
-| 旧 `sp_route` cookie 指向它 | ❌ 会被重新分流到开放节点 |
+| 旧 `sp_route` cookie 指向它，**打开首页** | ❌ 会被改派到开放节点（2026-10-28 起） |
+| 旧 `sp_route` cookie + **`?room=CODE` 回房间** | ✅ **回原节点**，正在玩的对局不受影响 |
 | **房间里已有的玩家继续游玩** | ✅ **完全不受影响** |
 | **房间直连**（`?room=CODE`、`n=`、`adminWatch=1`） | ✅ **强制回原节点，绝不切走** |
 | 打完后在房间里再开一局 | ✅ 可以 |
@@ -182,16 +235,25 @@ pm2 save
 # 匹配器启动日志应打印
 Get-Content logs\matchmaker.out-*.log -Tail 5 | Select-String "暂停接收新玩家"
 
-# 带受限节点 cookie 访问，应被改派到开放节点
-$r = Invoke-WebRequest "https://stronghold.luobomiao.love/" -UseBasicParsing -Headers @{ Cookie = "sp_route=20" }
-@($r.Headers['X-SP-Node'])[0]     # 不应是 20
+# A) 带受限节点 cookie 打开首页 → 必须被改派（多试几次，一次都不该落到 20）
+$env:NODE_TLS_REJECT_UNAUTHORIZED='0'
+1..10 | ForEach-Object {
+  (Invoke-WebRequest "https://127.0.0.1/" -UseBasicParsing -SkipCertificateCheck `
+    -Headers @{ Cookie = "sp_route=20" }).Headers['X-SP-Node']      # 不应出现 20
+}
 
-# 房间直连必须仍回原节点
-$r = Invoke-WebRequest "https://stronghold.luobomiao.love/?n=20" -UseBasicParsing -Headers @{ Cookie = "sp_route=2" }
-@($r.Headers['X-SP-Node'])[0]     # 必须是 20
+# B) 房间直连必须仍回原节点（老玩家回房间）
+(Invoke-WebRequest "https://127.0.0.1/?n=20" -UseBasicParsing -SkipCertificateCheck `
+  -Headers @{ Cookie = "sp_route=2" }).Headers['X-SP-Node']          # 必须是 20
 ```
 
-**第五步：全部节点更新完**，把 nginx 的 `split_clients` 恢复成 30 个节点各 3.33%、`$sp_cookie_open` 全部记 `1`，再 `nginx -t` + `-s reload`。
+> 两条都要测。只测 B 会漏掉「改派被下一条 `if` 覆盖」的坑（§9.x `location /` 分流规则）。
+
+**第五步：全部节点更新完**，把 nginx 的 `split_clients` 恢复成 30 个节点各 3.33%、`$sp_cookie_open` 全部记 `1`，
+再 `nginx -t` 校验 + **`node tools\restart-nginx.mjs --apply`** 生效。
+
+> ⚠ 不要用 `nginx.exe -s reload`：以 SYSTEM 身份运行的 nginx 不接受普通管理员的信号
+> （`OpenEvent ... Access is denied`），而且 reload 会留下不退出旧 worker，越堆越多。
 
 > 当前进度与每次的节点清单记录在仓库根目录 `PENDING-RESTART.md`。
 
