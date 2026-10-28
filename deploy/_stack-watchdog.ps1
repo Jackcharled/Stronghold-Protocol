@@ -41,9 +41,27 @@ function Invoke-HiddenOut([string]$exe, [string]$argLine) {
   }
 }
 
-# ---- nginx：只报警（重启 nginx 会切断所有连接，风险高，交给人判断） ----
-if (-not (Get-Process nginx -ErrorAction SilentlyContinue)) {
-  Write-Log 'ALERT nginx is not running'
+# ---- nginx：进程不在就重新拉起（2026-10-28 接手旧看门狗的职责） ----
+#
+# 旧的 Stronghold-Server-Watchdog 会救 nginx，但它以 Interactive 身份运行在桌面会话，
+# 每分钟 flash 一个 PowerShell 窗口。现在它已 Disabled，这里补上同样的能力。
+#
+# 两种情况不插手：
+#   * 维护者正在手动重启（logs\.nginx-restarting 标记，90 秒内有效）；
+#   * 游戏入口被人为停止（data\watchdog-disabled）。
+# 注意：这里只处理「进程整个没了」。nginx 卡死但进程还在的情况由人判断，
+# 因为强杀会切断所有在线连接。
+$restartHint = Join-Path $root 'logs\.nginx-restarting'
+$busy = (Test-Path -LiteralPath $restartHint) -and ((Get-Date) - (Get-Item -LiteralPath $restartHint).LastWriteTime).TotalSeconds -lt 90
+if ($busy) {
+  Write-Log 'nginx restart in progress (manual) -> skip'
+} elseif (-not (Get-Process nginx -ErrorAction SilentlyContinue)) {
+  Write-Log 'nginx is not running -> start via SP-Nginx-Start (SYSTEM)'
+  # 走计划任务启动，新进程才会落在 Session 0（直接 Start-Process 会挂在当前会话）
+  $null = Invoke-HiddenOut 'schtasks.exe' '/Run /TN "SP-Nginx-Start"'
+  Start-Sleep -Seconds 6
+  if (Get-Process nginx -ErrorAction SilentlyContinue) { Write-Log 'nginx recovered via SP-Nginx-Start' }
+  else { Write-Log 'ALERT nginx did not come back' }
 }
 
 # ---- PM2 守护进程：不在就拉起来 ----

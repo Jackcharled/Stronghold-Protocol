@@ -1,13 +1,16 @@
-$ErrorActionPreference = 'Continue'
-# 根目录：优先 SP_ROOT，否则由脚本位置推导（deploy/ 的上一级）。不写死盘符与用户名。
-$root = if ($env:SP_ROOT) { $env:SP_ROOT } else { Split-Path -Parent $PSScriptRoot }
+﻿$ErrorActionPreference = 'Continue'
+$root = 'D:\Stronghold-Protocol'
 $log = Join-Path $root 'logs\server-watchdog.log'
-# pm2：优先 SP_PM2，否则按当前用户的 npm 全局目录推导。
-$pm2 = if ($env:SP_PM2) { $env:SP_PM2 } else { Join-Path $env:APPDATA 'npm\pm2.cmd' }
+$pm2 = 'C:\Users\Administrator\AppData\Roaming\npm\pm2.cmd'
 $nginx = Join-Path $root 'nginx\nginx.exe'
+# 维护者手动重启 nginx 期间先别插手（脚本自己最多 20 秒，取 90 秒留余量）。
+# 2026-10-28：昨天重启 nginx 时本脚本 3 分钟内抢着「救」了两次，干扰了操作。
+$restartHint = Join-Path $root 'logs\.nginx-restarting'
+$restarting = (Test-Path -LiteralPath $restartHint) -and ((Get-Date) - (Get-Item -LiteralPath $restartHint).LastWriteTime).TotalSeconds -lt 90
 
 # One-click stop creates this flag; do not fight an intentional shutdown.
 if (Test-Path -LiteralPath (Join-Path $root 'data\watchdog-disabled')) { return }
+if ($restarting) { return }
 
 function Write-WatchdogLog([string]$message) {
   $line = '{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $message

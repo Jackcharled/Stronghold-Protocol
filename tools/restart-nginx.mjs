@@ -90,7 +90,15 @@ if (!APPLY) {
 }
 
 // ---- 1) 优雅停止 ----
-// ⚠ 2026-10-28：nginx 以 SYSTEM 运行时，普通管理员账户发 quit 会被拒绝：
+// 先放一个「正在重启」标记：server-watchdog 每 60 秒检查 443，发现没监听就会去「救」，
+// 与这里的重启打架（2026-10-27 实测 3 分钟内抢了两次）。脚本结束时会删掉它。
+const RESTART_HINT = 'D:\\Stronghold-Protocol\\logs\\.nginx-restarting';
+ps(`New-Item -ItemType File -Force -Path "${RESTART_HINT}" | Out-Null`);
+// 无论怎么退出都清掉标记
+process.on('exit', () => {
+  try { ps(`Remove-Item -LiteralPath "${RESTART_HINT}" -Force -ErrorAction SilentlyContinue`); } catch { /* ignore */ }
+});
+// ⚠ nginx 以 SYSTEM 运行时，普通管理员账户发 quit 会被拒绝：
 //   `OpenEvent("Global\ngx_quit_<pid>") failed (5: Access is denied)`
 //   这不是故障 —— 下面的强制结束会兜住。这里说清楚，免得看到 error 以为脚本坏了。
 console.log('\n=== 1) 优雅停止（给正在传输的请求收尾的机会）===');
