@@ -1059,16 +1059,29 @@ if (document.getElementById('ops-bar')) {
   $('ops-nginx').onclick = () => {
     const total = NODES;
     const fresh = opsData ? opsData.fresh.length : 0;
-    const stale = total - fresh;
     const matches = opsData ? (opsData.summary?.matches || 0) : 0;
+    // ⚠ 不能再用「total - fresh」笼统地说「跑旧代码」：那样会把「只缺 shared（复活）」
+    // 的节点误报成「缺座位守卫」，让人以为重连会掉座位。
+    // 两者的后果完全不同，必须分开数：
+    //   · 缺 server  → server/lobby.js 的座位守卫没加载，断线重连**可能丢座位**
+    //   · 缺 shared  → shared/protocol.js 的协议白名单没加载，影响的是新功能（如复活），
+    //                  与座位无关
+    const noSeat = (opsData ? opsData.nodes : []).filter((x) => x.alive && (x.behind || []).includes('server'));
+    const noShared = (opsData ? opsData.nodes : []).filter((x) => x.alive
+      && !(x.behind || []).includes('server') && (x.behind || []).includes('shared'));
     let msg = `重启 nginx？\n\n`;
     msg += `影响：站点中断约 5–20 秒，所有在线玩家的连接会断开并自动重连。\n`;
     msg += `对局数据不丢 —— 30 个 node 进程不会被动到。\n\n`;
     if (matches) msg += `当前有 ${matches} 局对局在进行。\n\n`;
-    if (stale > 0) {
-      msg += `⚠ 注意：还有 ${stale} 个节点跑的是旧代码（未修复「对局中清理座位」）。\n`;
+    if (noSeat.length) {
+      msg += `⚠ 注意：有 ${noSeat.length} 个节点还没加载「对局中保留座位」的修复（${fmtList(noSeat.map((x) => x.n))}）。\n`;
       msg += `   这些节点上的玩家断线重连时，仍可能丢失座位、回不到对局。\n\n`;
-    } else {
+    }
+    if (noShared.length) {
+      msg += `ℹ 另有 ${noShared.length} 个节点只差「共享代码」没更新（${fmtList(noShared.map((x) => x.n))}）——\n`;
+      msg += `   缺的是协议白名单那类新功能（例如队友复活），**不影响座位**，重连不会掉对局。\n\n`;
+    }
+    if (!noSeat.length && !noShared.length) {
       msg += `✅ ${total} 个节点都已加载最新代码，重连不会掉座位。\n\n`;
     }
     msg += `执行流程：quit → 确认进程归零（没退的强杀）→ 确认 443 释放 → 计划任务启动 → 校验。\n\n确认重启？`;
