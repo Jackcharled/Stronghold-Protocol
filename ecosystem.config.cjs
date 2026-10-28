@@ -121,26 +121,23 @@ const matchmaker = {
   watch: false,
 };
 
-// Nginx gateway: PM2 keeps the public HTTPS/WS entry alive. The Node wrapper runs
-// nginx in the foreground so PM2 can restart it instead of losing the whole site.
-const nginxGateway = {
-  name: 'nginx-gateway',
-  cwd: `${BASE}\\nginx`,
-  script: `${BASE}\\nginx\\run-nginx.mjs`,
-  interpreter: 'node',
-  exec_mode: 'fork',
-  instances: 1,
-  env: { NODE_ENV: 'production' },
-  autorestart: true,
-  max_restarts: 20,
-  min_uptime: '10s',
-  restart_delay: 2000,
-  out_file: `${BASE}\\logs\\nginx-gateway.out.log`,
-  error_file: `${BASE}\\logs\\nginx-gateway.error.log`,
-  merge_logs: false,
-  time: true,
-  log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-  watch: false,
-};
+// Nginx: 由 Windows 计划任务 SP-Nginx-Start 以 SYSTEM 身份（Session 0）启动，
+// **不再**由 pm2 托管。
+//
+// 原设计是让 PM2 用 nginx\run-nginx.mjs 把 nginx 拉在前台，这样 PM2 能重启它。
+// 但 PM2 托管时 nginx 会挂在调用者的会话下；维护者要求「不能挂在任何用户会话上」，
+// 于是 2026-10-27 起改走计划任务。
+//
+// ⚠ 2026-10-28 事故：当时只改了启动方式，**没有停掉 pm2 里的 nginx-gateway**。
+//   443 已被 SYSTEM nginx 占用 → nginx-gateway 每次启动都 bind 失败 →
+//   `autorestart: true` 让它无限重试，实测崩溃循环 **4321 次**，
+//   玩家体感就是「一直在重启」。删掉这个应用即可根治。
+//
+// 现在 nginx 的崩溃自愈由两处覆盖：
+//   * 计划任务 SP-Nginx-Start        —— 开机启动
+//   * deploy\_stack-watchdog.ps1      —— 每 2 分钟检查，进程没了就 schtasks /Run 拉起
+// 两者都是 SYSTEM / Session 0，不依赖任何登录会话。
+//
+// 不要在 ecosystem 里重新加回 nginx：会和 SP-Nginx-Start 抢 443 端口。
 
-module.exports = { apps: [...apps, dashboard, matchmaker, nginxGateway] };
+module.exports = { apps: [...apps, dashboard, matchmaker] };
