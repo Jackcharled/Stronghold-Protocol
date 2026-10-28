@@ -359,11 +359,13 @@ async function closeRoom(code, node, { humans = 0, running = false, btn = null }
     if (j.ok) {
       toast(`已关闭 ${code}（移出 ${j.humans || 0} 名玩家）`);
     } else {
-      const zh = {
+      // hint 由服务端翻译好（例如「node-1 还没重启，不支持关闭房间」），有就直接用它
+      const zh = j.hint || {
         forbidden: '没有权限', no_room: '房间已不存在', room_not_found: '找不到该房间',
         timeout: '节点无响应', no_secret: '缺少密钥文件', bad_code: '房间号无效', close_failed: '关闭失败',
+        node_not_ready: '节点需要重启才能用这个功能',
       }[j.error] || j.error || `HTTP ${r.status}`;
-      toast(`关闭失败：${zh}`);
+      toast(`关闭失败：${zh}`, 6000);
     }
   } catch (e) {
     toast(`关闭失败：${e && e.message ? e.message : e}`);

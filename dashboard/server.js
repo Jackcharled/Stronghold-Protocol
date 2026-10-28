@@ -463,6 +463,53 @@ async function opsRestartIdle(want) {
 // 节点侧的 POST /admin/room/close 用 .secrets/watch-secret 的 HMAC 认人
 // （server/http/routes.js），所以这里签一个 60 秒有效的凭证即可。
 // ===================================================================
+/**
+ * 某台节点是否已经加载了 `/admin/room/close`（server/http/routes.js 里的路由）。
+ *
+ * 判据：进程启动时间 ≥ 该节点 routes.js 的 mtime。运维区判断「新/旧代码」用的是同一套口径。
+ * 读不到任何一项时返回 ok:true（宁可发出去让它自然报 405，也不要凭空拦住维护者），
+ * 但能判断出来的时候要说清楚 —— 否则维护者只会看到一个 405 和一句「关闭失败」。
+ * @param {number} n
+ * @returns {{ ok: boolean, why?: string }}
+ */
+function roomCloseCapable(n) {
+  let mtime = 0;
+  try { mtime = fs.statSync(path.join(BASE, `node-${n}`, 'server', 'http', 'routes.js')).mtimeMs; } catch { return { ok: true }; }
+  const proc = processStarts().get(n);
+  if (!proc) return { ok: true };                 // 查不到启动时间就不拦
+  if (proc >= mtime) return { ok: true };
+  return { ok: false, why: `node-${n} 的进程启动于 ${new Date(proc).toLocaleString('zh-CN', { hour12: false })}，`
+    + `早于关闭房间接口的上线时间（${new Date(mtime).toLocaleString('zh-CN', { hour12: false })}）。`
+    + '这台节点需要重启一次才能用这个功能。' };
+}
+
+/** node-N → 进程启动时间（毫秒）。来自 pm2 jlist，一次刷新内复用。 */
+let procCache = { at: 0, map: new Map() };
+function processStarts() {
+  if (Date.now() - procCache.at < 5000) return procCache.map;
+  const map = new Map();
+  try {
+    const out = require('node:child_process').execFileSync(process.execPath, [PM2_JS, 'jlist'],
+      { timeout: 8000, windowsHide: true, maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' });
+    for (const p of JSON.parse(out)) {
+      const m = /^node-(\d+)$/.exec(p.name || '');
+      if (m && p.pm2_env && p.pm2_env.pm_uptime) map.set(Number(m[1]), Number(p.pm2_env.pm_uptime));
+    }
+  } catch { /* 读不到就返回空表，调用方按 ok:true 处理 */ }
+  procCache = { at: Date.now(), map };
+  return map;
+}
+
+/** 把 405 之类的节点响应翻译成人能看懂的原因。 */
+function explainCloseError(status, body, nodeN) {
+  if (status === 405) return `node-${nodeN} 还没重启到最新代码，不支持关闭房间（该节点需要重启一次）`;
+  if (status === 404) return '房间不存在（可能已经结束或解散）';
+  if (status === 403) return '被节点拒绝（签名校验失败，请检查 .secrets/watch-secret）';
+  if (status === 400) return '请求参数不对';
+  if (status === 0) return `node-${nodeN} 无响应`;
+  return (body && body.error) || `关闭失败（HTTP ${status}）`;
+}
+
 function closeRoom(codeIn, nodeIn) {
   return new Promise((resolve) => {
     const code = String(codeIn || '').trim().toUpperCase();
@@ -482,6 +529,11 @@ function closeRoom(codeIn, nodeIn) {
     const exp = Date.now() + 60_000;
     const sig = crypto.createHmac('sha256', secret).update(`${code}.${exp}`).digest('base64url');
     const payload = JSON.stringify({ code, exp });
+    // 这一台节点跑的是不是带 /admin/room/close 的代码？
+    // 没重启的节点上这个路由不存在，请求会掉到静态文件兜底，返回 405 + 一张 HTML 错误页，
+    // 页面上只显示「关闭失败」，完全猜不到原因。所以先确认能力，再决定要不要发。
+    const cap = roomCloseCapable(nodeN);
+    if (!cap.ok) return resolve({ ok: false, status: 409, error: 'node_not_ready', node: nodeN, hint: cap.why });
     const req = http.request({
       host: '127.0.0.1', port: 3000 + nodeN, path: '/admin/room/close', method: 'POST', timeout: 8000,
       headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'x-sp-admin-sig': sig },
@@ -492,7 +544,14 @@ function closeRoom(codeIn, nodeIn) {
         let j = null;
         try { j = JSON.parse(b); } catch { /* 非 JSON */ }
         if (j && j.ok) return resolve({ ok: true, code, node: nodeN, humans: j.humans, running: j.running });
-        resolve({ ok: false, status: r.statusCode || 502, error: (j && j.error) || 'close_failed', node: nodeN });
+        // 405 = 这台节点没有该路由（旧代码）；翻译成人能看懂的话
+        resolve({
+          ok: false,
+          status: r.statusCode || 502,
+          error: (j && j.error) || (r.statusCode === 405 ? 'node_not_ready' : 'close_failed'),
+          hint: explainCloseError(r.statusCode, j, nodeN),
+          node: nodeN,
+        });
       });
     });
     req.on('error', (e) => resolve({ ok: false, status: 0, error: String((e && e.code) || e), node: nodeN }));
