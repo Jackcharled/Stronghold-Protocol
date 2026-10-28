@@ -1115,11 +1115,16 @@ $c = Get-NetTCPConnection -LocalPort (3000+N) -State Listen
 
 | 文件 | 作用 |
 |---|---|
-| `deploy\_start-pm2.ps1` | 以 SYSTEM 身份启动/恢复 pm2，幂等（已在跑就不重复启动） |
-| `deploy\_stack-watchdog.ps1` | 每 2 分钟的看门狗，**现在会自动修复**而不只是报警 |
-| `deploy\server-watchdog.ps1` | 计划任务 `Stronghold-Server-Watchdog` 用 |
+| `deploy\_start-pm2.ps1` | 以 SYSTEM 身份启动/恢复 pm2，幂等（已在跑就不重复启动）。**读不到 jlist 时整轮跳过**，不再把「读不到」当成「全都没了」 |
+| `deploy\_stack-watchdog.ps1` | 每 2 分钟的看门狗，会自动修复；**永不 `resurrect` 去补缺失应用**（详见 §9.12） |
+| `deploy\restart-watch.ps1` | 每 10 分钟的重启巡检，比对运行时长，只要变小就记 `RESTART DETECTED`（§9.12） |
+| `deploy\server-watchdog.ps1` | 旧看门狗脚本；对应任务 `Stronghold-Server-Watchdog` 已 **Disabled** |
 | `logs\stack-watchdog.log` | 看门狗的处置记录（`PM2 daemon is down -> resurrect` 等） |
 | `logs\pm2-resurrect.log` | `_start-pm2.ps1` 的日志 |
+| `logs\restart-watch.log` | 重启巡检记录；排查「玩家说一直在重启」先看这个 |
+
+> ⚠ 计划任务 `Stronghold-Server-Watchdog` 已禁用（它曾以 `Interactive` 身份每分钟在你的
+> 桌面会话启动 PowerShell，窗口会闪）。它的 nginx 抢救职责已并入 `_stack-watchdog.ps1`。
 
 **绝不能**因为节点不在开放列表就把 `sp_route` cookie 改派走——那会让正在对局的玩家断线重连后
 回不到原节点，表现为「回不到对局」。`sp_route` 必须无条件尊重，开放列表只管没有 cookie 的新访客。
@@ -1261,6 +1266,99 @@ execFile(process.execPath, [PM2_JS, 'startOrReload', eco, '--only', names, '--up
 > 当天实测：点出这个错误的是一次针对 node-8 的误点，但 node-8 **实际没有重启**
 > （`uptime` 仍是 8000+ 秒、`matches` 也没断），所以没有玩家受影响 —— 因为
 > `startOrReload` 在报错前就退出了。这也说明「报错时绝不能显示成功」有多重要。
+
+### 9.12 玩家反馈「一直在重启」——2026-10-28 连环事故
+
+> 维护者原话：「玩家反馈一直在重启，你看看你改了什么」
+
+当天下午连续修了三轮，每一轮都以为找到根因了，下一轮又冒出来。
+**根因是一条链：两个服务抢同一个端口 → 一个无限崩溃循环 → 看门狗读不到状态就全量重启。**
+
+#### 症状与定位方法（下次照着走）
+
+| 要确认的事 | 怎么看 | 判据 |
+|---|---|---|
+| 服务端到底有没有重启 | `healthz` 的 `uptimeSec`；或 `logs\restart-watch.log` | 运行时长**变小** = 重启过 |
+| pm2 有没有重启过某个应用 | `pm2 jlist` 的 `restart_time` | 计数字段只增不减，看它有没有涨 |
+| PM2 里有没有崩溃循环的应用 | `pm2 jlist` 里 `status` 不是 `online` 的 | `errbackoff`/`waiting restart` = 崩溃循环 |
+| 谁在动进程 | `logs\pm2-resurrect.log`、`logs\stack-watchdog.log` | 出现 `start node-XX` / `resurrect` 就是它 |
+
+**最有用的一条**：`restart_time` 几百上千次 = 有个应用在崩溃循环，别去别处找。
+
+#### 第 1 环：`nginx-gateway` 崩溃循环 4321 次
+
+为了满足「nginx 不能挂在用户会话下」，2026-10-27 把 nginx 改成由计划任务
+`SP-Nginx-Start` 以 SYSTEM 身份启动，**但没有停掉 pm2 里的 `nginx-gateway`**
+（它本是原作者设计用来托管 nginx 的 wrapper，跑 `nginx\run-nginx.mjs`）。
+
+结果两个都想占 443：
+
+```
+SP-Nginx-Start (SYSTEM) → 占用 443 ✅
+nginx-gateway (pm2)     → bind 失败 → autorestart 重试 → 失败 → …
+                          实测崩溃 4321 次
+```
+
+**修法**：`pm2 delete nginx-gateway`，并从 `ecosystem.config.cjs` 删掉定义
+（只停进程不够 —— `resurrect` 会把它拉回来）。代码里留了注释说明**不要加回去**。
+
+#### 第 2 环：看门狗读不到 pm2 状态 → `resurrect` 全量重启
+
+`deploy\_stack-watchdog.ps1` 原来的逻辑：
+
+```powershell
+cmd /c "pm2 jlist > tmp 2>nul"     # 失败静默返回空
+$online = @($r.out -split ',')     # 空
+$missing = $expected 里不在 $online 的  # → 全部 32 个都"缺失"
+pm2 resurrect                       # ← 重启整张进程表
+```
+
+`pm2 jlist` 在 pm2 忙时会**间歇性失败**。一次读取抖动 → 判定「所有应用都丢了」→
+`resurrect` → 全服重启。日志里 `ALERT cannot read PM2 status` 从 11:52 刷到 13:40
+就是这个过程。**实测一次这样的误判中断了 10 局对局。**
+
+`_start-pm2.ps1` 有同样的形状（`$online` 空 → 全部缺失 → 逐个 `start --only`），
+只是没那么狠。
+
+**修法（两条脚本都改了）**：
+
+1. 读不到 / 明显过短 → **这一轮什么都不做**，只记日志
+2. `_stack-watchdog` **连读两次且必须一致**才采信（正在变动时不猜）
+3. 缺失过半 → 认定是读数问题，不动进程
+4. **永不 `resurrect`** 去补缺失的应用，只对确实缺的逐个 `--only` 启动
+   （`resurrect` 只保留给「pm2 守护进程整个挂了」，那时所有应用本来就都没了）
+
+#### 第 3 环：我自己那次 `pm2 delete` 也触发了全量重启
+
+13:12 执行 `pm2 delete nginx-gateway` 时，30 个节点在 2 分钟内挨个重启，中断 10 局。
+
+**教训**：`pm2 delete` 会重排进程表。要摘掉一个应用，**低峰期做**，
+并且事前先用 `restart-watch` 或手动采样确认在线的对局数。
+
+#### 这次的深层教训
+
+| 教训 | 说明 |
+|---|---|
+| **改启动方式 ≠ 只改启动方式** | 把 nginx 从 pm2 挪到计划任务，只做了一半（改了新的，没停旧的）。凡涉及「谁托管这个进程」，必须**先停旧的再起新的**，或两者互斥 |
+| **看门狗的「读不到」绝不能被当成「都没有了」** | 这是本事故最危险的一条。任何「检测 → 修复」型脚本，第一件事都是**区分「真的坏了」和「我读不到」** |
+| **`resurrect` 是高危操作** | 它按保存的进程表重启**全部**应用。只应在「整栈都没了」时用，绝不能当作「补几个缺失应用」的手段 |
+| **修复要能自证** | 每轮改完都要用运行时长/`restart_time` 验证，而不是看日志里没有报错就收工 |
+
+#### 现在的状态（2026-10-28 14:00）
+
+- nginx：计划任务 `SP-Nginx-Start` 启动，3 进程全部 Session 0
+- pm2：32 个应用，`nginx-gateway` 已移除
+- 崩溃恢复：`_stack-watchdog.ps1` 每 2 分钟，只补确实缺的；nginx 没了会经计划任务拉起
+- **巡检**：计划任务 `SP-Restart-Watch` 每 10 分钟跑 `deploy\restart-watch.ps1`，
+  比对运行时长，发现变小就写 `logs\restart-watch.log` 的 `RESTART DETECTED`
+  （后续再排查直接看这个日志，不必靠人盯着）
+
+```powershell
+# 手动看一眼巡检结果
+Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
+# 正常是连续的 ok，形如：
+# 2026-10-28 13:57:58 ok alive=30/30 avg_uptime=784s
+```
 
 ### 9.8 提交前最终检查
 

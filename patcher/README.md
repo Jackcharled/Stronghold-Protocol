@@ -248,6 +248,34 @@ patcher\
 
     `deploy/nginx.conf` 是这份配置的备份（`nginx/conf/nginx.conf` 不进仓库）。
 
+17. **看门狗绝不能把「读不到」当成「全都没了」**（2026-10-28 连环事故）——
+    `_stack-watchdog.ps1` 原来这样写：
+
+    ```powershell
+    cmd /c "pm2 jlist > tmp 2>nul"      # 失败静默返回空
+    $online = @($r.out -split ',')      # → 空数组
+    $missing = <全部 32 个应用>          # 全被判成"缺失"
+    pm2 resurrect                        # ← 重启整张进程表
+    ```
+
+    `pm2 jlist` 在 pm2 忙时会**间歇性失败**，一次抖动就让看门狗以为「所有应用都丢了」，
+    然后 `resurrect` 把全服重启一遍。**实测一次误判中断了 10 局对局**，玩家体感
+    「一直在重启」。
+
+    同一天这条链的上游还有一环：`nginx-gateway`（pm2 里托管 nginx 的 wrapper）与
+    计划任务 `SP-Nginx-Start` 抢 443，前者崩溃循环 **4321 次**。
+
+    **三条通用规则**（写任何「检测→修复」脚本都适用）：
+    - **先区分「真的坏了」和「我读不到」**。读取失败 / 结果为空 / 明显不完整 → 这一轮
+      **什么都不做**，只记日志；
+    - **`pm2 resurrect` 是高危操作**，只用于「pm2 守护进程整个挂了」（那时所有应用本来就
+      都没了）。补缺失应用一律 `pm2 start <eco> --only <name>`；
+    - 换托管方（例如 nginx 从 pm2 挪到计划任务）必须**先停旧的再起新的**，只做一半会让
+      两者抢同一个端口。
+
+    排查入口：`pm2 jlist` 看 `restart_time`（几百上千次 = 崩溃循环），
+    巡检日志 `logs\restart-watch.log`。完整经过见 [MAINTENANCE.md](../MAINTENANCE.md) **§9.12**。
+
 ### 回归测试清单（改相关代码后要跑）
 
 | 测试 | 守住什么 |
