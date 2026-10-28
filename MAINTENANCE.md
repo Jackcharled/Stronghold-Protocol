@@ -1422,6 +1422,42 @@ Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
 # 2026-10-28 13:57:58 ok alive=30/30 avg_uptime=784s
 ```
 
+### 9.17 nginx 进程越积越多（1 master + 十几个 worker）（2026-10-29 修复）
+
+**症状**：`Get-Process nginx` 越跑越多，实测累积到 **11 个**。正常应当是
+`worker_processes 2` → **1 master + 2 worker = 3 个**。
+
+**原因**：`reload` 之后旧 worker 会「优雅退出」—— 不再接新连接，但**要等已建立的连接
+自己结束**才真正退出。本服大量是 WebSocket 长连接（对局、大厅、管理台），一个能挂几十分钟。
+实测每个旧 worker 上还挂着 2 / 6 / 12 / 32 / 60 个连接，所以它们一直不退出。
+
+**永久修复**（`nginx/conf/nginx.conf`，`events` 同级、`http` 之前）：
+
+```nginx
+worker_shutdown_timeout 30s;
+```
+
+超过 30 秒还在的旧 worker 被强制关闭。代价是那些仍挂在上面的连接会被切断 ——
+但浏览器本来就会自动重连，且**对局数据在服务端，不丢**；30 秒后还连着的人极少。
+
+**⚠ 这个值只作用于「正在退场的旧 worker」**，不影响当前 worker 上的连接。
+
+#### 怎么确认生效
+
+```powershell
+# 正常应当是 3 个（1 master + 2 worker）
+(Get-Process nginx).Count
+
+# 看每个 worker 挂着多少连接（旧 worker 应该很快归零并消失）
+Get-CimInstance Win32_Process -Filter "Name='nginx.exe'" | ForEach-Object {
+  $c = @(Get-NetTCPConnection -OwningProcess $_.ProcessId -ErrorAction SilentlyContinue |
+         Where-Object State -eq 'Established').Count
+  "PID $($_.ProcessId)  已建立=$c"
+}
+```
+
+重启 nginx 之后进程会立刻清到 3 个；之后每次 reload 也会在 30 秒内自然收敛。
+
 ### 9.16 隐身观战未开放节点上的房间 →「版本数据未能通过校验」（2026-10-29 修复 nginx）
 
 维护者反馈：隐身观战 **CDYX（node-1）** 看了很久，切到 **AHHP（node-29，`act1autochess` 第 15 轮）**
@@ -1477,8 +1513,18 @@ map $uri $sp_is_version_data {
   ~^/data/versions/      1;   # 各官方版本的数据文件
   ~^/vs/                 1;   # 视觉插件集的 overlay
   ~^/p/                  1;   # 插件文件（内容寻址）
+  =/healthz              1;   # ★ 见下面的「buildGuard 误刷新」
 }
 ```
+
+**`/healthz` 也必须钉住**（2026-10-29 补充）：它的 `build` 同样是每台各算各的
+（`buildTag` 覆盖 `index.html` / `js` / `css` / `sim` / `shared` / `data`）。
+`public/js/ui/buildGuard.js` 每 60 秒读一次它，判断「服务器是不是换了」：
+
+> 连续两次读到**同一个新** build → 对局外页面自己 reload 一次。
+
+若 `/healthz` 被随机分流到另一台节点，读到不同的 build，页面就会**莫名自动刷新**。
+钉住它之后读到的永远是页面自己那台的 build，不会误判。
 
 在 if 链的最后再加一次：
 
