@@ -1422,6 +1422,80 @@ Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
 # 2026-10-28 13:57:58 ok alive=30/30 avg_uptime=784s
 ```
 
+### 9.14 复活（联防救援）点了没用，提示「无效的请求」（2026-10-28 修复）
+
+玩家反馈（房间 KYEV / 245861980@qq.com）：**没漏怪、生命值也大于 10，点复活却提示「无效的请求」**。
+
+#### 根因：`shared/protocol.js` 的 `C2S` 白名单缺了 `g.revive`
+
+复活的整条链路其实都在，唯独协议白名单漏了一行：
+
+| 环节 | 状态 |
+|---|---|
+| 客户端按钮 `public/js/ui/revival.js` | 有，发 `g.revive {playerId, round, matchId}` |
+| `Match.revive()` 资格复核（`server/match/Match.js`） | 有，逻辑完整 |
+| `intents.js` 里的 `case 'g.revive'` | 有 |
+| **`shared/protocol.js` 的 `C2S` 白名单** | **缺 —— 这就是 bug** |
+
+`server/net.js` 在把请求交给对局之前，先查白名单：
+
+```js
+if (!Object.hasOwn(C2S, msg.t)) { ... errorMsg(ERR.BAD_MSG, rid, `unknown type ${t}`); return; }
+const reason = validateC2S(msg);
+if (reason) { this.reply(conn, errorMsg(ERR.BAD_MSG, rid, reason)); return; }
+```
+
+请求在**门口**就被打回去了，**根本走不到 `Match.revive`**，所以：
+`ERR_TEXT.BAD_MSG = 无效的请求`。
+
+**这解释了反馈里那个「奇怪」的地方**：不管玩家有没有漏怪、生命值是不是 11 以上，
+结果永远是「无效的请求」—— 因为那两个条件属于 `Match.revive` 内部的判断，
+请求压根没到那里。玩家说的「没漏怪」「大于 10 血」都是真话，只是这些资格判断从来没被读到。
+（顺带：`REVIVAL_MIN_DONOR_LP = 11`，付 10 点所以至少 11，玩家说的「大于 10」对得上。）
+
+#### 这行是怎么丢的
+
+git 历史：`d4711139`「同步 node-1 游戏本体」**加过**这一行，之后上游同步时被抹平了。
+补丁体系里 `patcher/features/server-player-capacity/` 下有两份 `protocol.js`：
+
+- `base/shared/protocol.js` —— **有** `g.revive`，但那是旧快照，不是实际应用的
+- `files/shared/protocol.js` —— **没有**，这份才是真正被应用的
+
+上游 0.3.3 本身没有联防救援，同步时就把这一行当成「差异」清掉了。
+
+#### 修复
+
+`files/shared/protocol.js` 与 `shared/protocol.js` 都补上（位置与 `base/` 一致，在 `g.ready` 之后）：
+
+```js
+'g.revive': { playerId: isId, round: (v) => isInt(v, 1, 1000), matchId: isId },
+```
+
+**⚠ 改完必须重启节点才生效**（`shared/` 属于「重启生效」那一类，玩家刷新页面不够）。
+
+#### 怎么验证修好了
+
+`tools/verify-revive.mjs`（传入节点号与 accountToken）：
+
+```powershell
+node tools\verify-revive.mjs 9 <userToken>
+```
+
+判定看**回复的错误码**，不用真打完一局：
+
+| 回复 | 含义 |
+|---|---|
+| `BAD_MSG` / `unknown type g.revive` | **没修好**，还堵在协议层 |
+| `WRONG_PHASE` + `detail: "no running match"` | **修好了**，已穿过协议层进到对局逻辑（空房间没开局，返回这个是正常的） |
+
+2026-10-28 实测：node-9 上修复后返回 `WRONG_PHASE / no running match`，判定通过。
+
+#### 教训：新增协议消息必须过两道关
+
+本服每加一个 `g.*` / `room.*` 消息类型，**除了写客户端和对局逻辑，还必须加进 `C2S` 白名单**。
+只加两头不加中间，表现就是「按钮点了没反应 / 提示无效的请求」，而且日志里看不出是白名单的问题
+（detail 里的 `unknown type` 只发回客户端，不写服务端日志）。
+
 ### 9.13 控制台「关闭房间」——讲清楚为什么关不掉（2026-10-28 新增）
 
 控制台（`dashboard :3080`）的房间表里加了「关闭」按钮，走的是节点侧的

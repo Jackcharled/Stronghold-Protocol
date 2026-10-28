@@ -81,6 +81,7 @@ patcher\
 | **鸭爵策略可叠加**（实验开关） | `server/sim/content/bands/meta.js:duckGlobal`、`server/match/Match.js`、`server/match/gamedata.js`、`server/match/snapshot.js`、`shared/experimental.js`、`public/js/screens/room.js` | `game-core-server` / `server-snapshot-checkpoint` / `server-player-capacity` | **重启节点** |
 | **叠加时「补抽」**（撞到已选敌人时改抽别的目标，而不是跳过；20 人大波次覆盖率 13.6→19.5 个） | `server/sim/content/bands/meta.js:duckPicks`（`exclude` 参数）+ `duckGlobal`（`taken` 传入） | `game-core-server` | **重启节点** |
 | 禁用鸭爵策略（5–20 人） | `server/match/gamedata.js`、`shared/experimental.js`、`public/js/screens/bandDraft.js` | `server-player-capacity` | 刷新页面 + 重启节点 |
+| **联防救援（队友复活）**：被淘汰的博士在 15 秒窗口内由合格队友支付 10 点生命救回；每局每人最多被救一次 | `shared/protocol.js`（**`C2S` 的 `g.revive` 白名单**）、`server/match/Match.js:revive/revivalWindowOpen/revivalDonorEligible`、`server/match/match/intents.js`、`server/match/match/common.js`、`public/js/ui/revival.js`、`shared/experimental.js` | `server-player-capacity`（客户端 UI 在 `game-core-client-ui`） | **重启节点** |
 | 挂机踢人 / 同 IP 限制 | `server/match/match/intents.js` | `server-idle-guard` | 重启节点 |
 | 房间/对局快照与 Redis 检查点 | `server/match/snapshot.js`、`server/persist/*` | `server-snapshot-checkpoint` | 重启节点 |
 
@@ -275,6 +276,14 @@ patcher\
 
     排查入口：`pm2 jlist` 看 `restart_time`（几百上千次 = 崩溃循环），
     巡检日志 `logs\restart-watch.log`。完整经过见 [MAINTENANCE.md](../MAINTENANCE.md) **§9.12**。
+18. **新增 `g.*` / `room.*` 消息类型，必须同时加进 `shared/protocol.js` 的 `C2S` 白名单**（2026-10-28 踩过）——
+    `server/net.js` 在把请求交给对局之前先查白名单，缺了就直接回 `ERR.BAD_MSG`（「无效的请求」），
+    **请求根本到不了业务逻辑**。复活（`g.revive`）就是这样丢的：客户端按钮、`Match.revive()`、
+    `intents.js` 的路由全都在，唯独白名单那一行在上游同步时被抹平了，玩家点了只看到「无效的请求」。
+    症状的迷惑之处：玩家说「我没漏怪、血也够」，但这些条件属于业务层的判断，**从来没被读到过**。
+    日志里也看不出来 —— `unknown type` 只回给客户端，不写服务端日志。
+    验证：`node tools/verify-revive.mjs <节点号> <userToken>`，看回复是 `BAD_MSG`（没修好）
+    还是 `WRONG_PHASE / no running match`（已放行到业务层）。详见 [MAINTENANCE.md](../MAINTENANCE.md) **§9.14**。
 
 ### 回归测试清单（改相关代码后要跑）
 

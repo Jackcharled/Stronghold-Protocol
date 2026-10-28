@@ -615,6 +615,11 @@ export const C2S = {
   'g.offer': { offerId: isId, pluginId: isId, seq: (v) => isInt(v, 0, 1000000), cardId: optional(isId), idx: (v) => isInt(v, 0, PLUGIN_OFFER_SLOTS - 1) },
   'g.offerRefresh': { offerId: isId, pluginId: isId, seq: (v) => isInt(v, 0, 1000000), cardId: optional(isId), idx: (v) => isInt(v, 0, PLUGIN_OFFER_SLOTS - 1) },
   'g.ready': { ready: isBool },
+  // 本服：联防救援（复活）。被淘汰的博士在 15 秒救援窗口内由合格队友支付 10 点生命救回。
+  // 客户端 public/js/ui/revival.js 发 {playerId, round, matchId}，由 Match.revive（server/match/Match.js）
+  // 逐项复核资格、窗口与次数。ⓘ 上游 0.3.3 没有这个功能：缺了这一行，net.js 会在 validateC2S 处
+  // 直接回 BAD_MSG（「无效的请求」），请求根本到不了 Match.revive —— 玩家看到的就是「复活点了没用」。
+  'g.revive': { playerId: isId, round: (v) => isInt(v, 1, 1000), matchId: isId },
   'g.emote': { id: (v) => EMOTES.includes(v) },
   // playerId: the player tapped in the team panel (a 联防 / boss pair field shows two) — what an eliminated viewer or a
   // spectator seat follows from then on (Match.watchPref; community report of 2026-10-06, item 56)
