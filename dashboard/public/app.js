@@ -67,7 +67,7 @@ function buildCards() {
     const el = document.createElement('article');
     el.className = 'card down';
     el.innerHTML = `
-      <div class="row"><span class="dot"></span><h3>${NAMES[n - 1]}</h3><span class="port">端口 ${port}</span></div>
+      <div class="row"><span class="dot"></span><h3 title="node-${n} · 端口 ${port}">${NAMES[n - 1]}</h3><span class="port">端口 ${port}</span></div>
       <div class="stats">
         <div><b class="cpu">—</b><span>CPU</span></div>
         <div><b class="mem">—</b><span>内存</span></div>
