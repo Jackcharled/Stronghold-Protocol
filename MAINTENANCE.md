@@ -1422,6 +1422,40 @@ Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
 # 2026-10-28 13:57:58 ok alive=30/30 avg_uptime=784s
 ```
 
+### 9.13 控制台「关闭房间」——讲清楚为什么关不掉（2026-10-28 新增）
+
+控制台（`dashboard :3080`）的房间表里加了「关闭」按钮，走的是节点侧的
+`POST /admin/room/close`（`server/http/routes.js`）。这条路**踩过一次坑**：
+
+> 节点还没重启到带这条路由的代码时，`POST /admin/room/close` 会掉进静态文件兜底，
+> 返回 `405` + 一张 HTML 错误页。控制台只显示一句「关闭失败」，完全猜不到原因，
+> 会让人误以为是权限或房间号的问题。
+
+现在的处理分两层：
+
+| 层 | 做法 |
+|---|---|
+| 先判断能不能关 | `dashboard/server.js` 的 `roomCloseCapable(n)`：比对 pm2 的 `pm_uptime` 与 `node-N/server/http/routes.js` 的 mtime，旧代码直接返回 `409 node_not_ready` + 中文说明，**不发无效请求** |
+| 万一还是 405 | `explainCloseError(status, body, nodeN)` 统一翻译成「node-N 还没重启到最新代码…需要重启一次」 |
+
+**口径与运维区一致**：`/api/ops/state` 的 `fresh` 字段也是「进程启动时间 ≥ 最新代码 mtime」，
+不存在两套判断。**读不到启动时间时一律放行**（`ok:true`）—— 宁可让它自然报 405，
+也不能因为查不到就凭空拦住维护者。
+
+前端 `dashboard/public/app.js` 优先显示服务端给的 `hint`，并把 toast 延长到 6 秒。
+
+**这说明的是一个总规律：`server/` 下的改动没在节点上重启，就等于没改。**
+刚部署完新功能那一段时间，控制台会如实告诉你哪些节点还没跟上：
+
+```powershell
+# 哪些节点的 server/ 代码比进程新（需要等它空闲后重启一次）
+(Invoke-RestMethod http://127.0.0.1:3080/api/ops/state).nodes |
+  Where-Object { -not $_.fresh } | ForEach-Object { "node-$($_.n) matches=$($_.matches)" }
+```
+
+`matches > 0` 的节点**绝对不能重启**，交给计划任务 `SP-Rolling-Restart`（每 10 分钟）
+在对局结束、节点空闲时自己补上。
+
 ### 9.8 提交前最终检查
 
 ```powershell
