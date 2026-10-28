@@ -1004,6 +1004,28 @@ if (document.getElementById('ops-bar')) {
     if (!confirm(`把 nginx 开放列表改成「所有已跑新代码的节点」共 ${f.length} 个：\n${fmtList(f)}\n\n自动备份配置，nginx -t 校验，失败会自动回滚。\n正在对局的玩家不受影响（sp_route 永远回原节点）。\n\n确认更新？`)) return;
     opsPost('/api/ops/open-list', '更新开放列表', $('ops-open'));
   };
+
+  // 重启 nginx：走 tools/restart-nginx.mjs（先清进程 → 再经计划任务启动到 Session 0）
+  $('ops-nginx').onclick = () => {
+    const total = NODES;
+    const fresh = opsData ? opsData.fresh.length : 0;
+    const stale = total - fresh;
+    const matches = opsData ? (opsData.summary?.matches || 0) : 0;
+    let msg = `重启 nginx？\n\n`;
+    msg += `影响：站点中断约 5–20 秒，所有在线玩家的连接会断开并自动重连。\n`;
+    msg += `对局数据不丢 —— 30 个 node 进程不会被动到。\n\n`;
+    if (matches) msg += `当前有 ${matches} 局对局在进行。\n\n`;
+    if (stale > 0) {
+      msg += `⚠ 注意：还有 ${stale} 个节点跑的是旧代码（未修复「对局中清理座位」）。\n`;
+      msg += `   这些节点上的玩家断线重连时，仍可能丢失座位、回不到对局。\n\n`;
+    } else {
+      msg += `✅ ${total} 个节点都已加载最新代码，重连不会掉座位。\n\n`;
+    }
+    msg += `执行流程：quit → 确认进程归零（没退的强杀）→ 确认 443 释放 → 计划任务启动 → 校验。\n\n确认重启？`;
+    if (!confirm(msg)) return;
+    opsPost('/api/nginx/restart', '重启 nginx', $('ops-nginx'));
+  };
+
   loadOps();
   setInterval(loadOps, 15000);
 }

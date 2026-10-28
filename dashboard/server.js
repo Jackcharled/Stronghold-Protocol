@@ -119,11 +119,14 @@ const TOKEN = process.env.DASH_TOKEN || '';
 const LOG_DIR = path.join(BASE, 'logs');
 const PUB = path.join(__dirname, 'public');
 
-// nginx 走 ASCII 联接路径，避免中文路径在部分命令行环境下乱码
+// nginx 的路径：跟着部署根走，不要写死旧目录。
+// ⚠ 2026-10-28：这里原来写的是 D:\sp-nginx（迁移前的旧路径），
+//   于是控制台上的「启动 / 重载配置 / 停止」按钮全都指向一个不存在的 exe，
+//   点了没有任何效果 —— 维护者以为能重载，其实什么都没发生。
 const NGINX = {
-  exe: 'D:\\sp-nginx\\nginx.exe',
-  prefix: 'D:\\sp-nginx\\',
-  pid: 'D:\\sp-nginx\\logs\\nginx.pid',
+  exe: path.join(BASE, 'nginx', 'nginx.exe'),
+  prefix: BASE + path.sep + 'nginx' + path.sep,
+  pid: path.join(BASE, 'nginx', 'logs', 'nginx.pid'),
   portal: 'https://stronghold.luobomiao.love/',
 };
 const nodeName = (n) => `node-${n}`;
@@ -847,6 +850,44 @@ const server = http.createServer(async (req, res) => {
       const result = await opsSetOpenList();
       refresh();
       return sendJson(res, 200, result);
+    });
+    return;
+  }
+
+  // 重启 nginx：POST /api/nginx/restart { confirm:true }
+  //
+  // 走 tools\restart-nginx.mjs --apply（2026-10-28 修好的那版）：
+  //   quit → 确认进程归零（没退的强杀）→ 确认 443 释放 → 计划任务启动 → 校验
+  // 这样新进程必然落在 Session 0，也不会像 `-s reload` 那样留下不退出旧 worker。
+  //
+  // ⚠ 影响：站点中断约 5–20 秒，所有在线玩家的 socket 会断开并自动重连。
+  //   对局数据不丢（node 进程没动），但未修复「对局中清座位」的节点上，
+  //   玩家重连时仍可能掉座位 —— 所以这个按钮会先把风险等级报出来。
+  if (pathname === '/api/nginx/restart' && req.method === 'POST') {
+    if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', async () => {
+      let payload = {};
+      try { payload = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
+      if (payload.confirm !== true) return sendJson(res, 400, { error: '需要 confirm:true' });
+      const script = path.join(BASE, 'tools', 'restart-nginx.mjs');
+      if (!fs.existsSync(script)) return sendJson(res, 500, { ok: false, error: 'missing_script' });
+      const r = await run(process.execPath, [script, '--apply'], 180000);
+      refresh();
+      const text = (r.out || '') + (r.err || '');
+      // 从脚本输出里抓关键结论，回给前端
+      const allZero = /全部在 Session 0: ✓/.test(text);
+      const procOk = /进程数: 3\s+✓/.test(text);
+      const httpsOk = /HTTPS 首页: 200/.test(text);
+      return sendJson(res, r.ok && allZero && procOk && httpsOk ? 200 : 500, {
+        ok: r.ok && allZero && procOk && httpsOk,
+        allZero, procOk, httpsOk,
+        out: text.slice(-3000),
+        message: allZero && procOk && httpsOk
+          ? 'nginx 已重启：3 个进程，全部 Session 0，站点 200'
+          : '重启未完全成功，请查看输出',
+      });
     });
     return;
   }
