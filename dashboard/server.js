@@ -453,8 +453,53 @@ async function opsRestartIdle(want) {
   };
 }
 
-/** 把 nginx 开放列表改成「所有已跑新代码的节点」。 */
-function opsSetOpenList() {
+// ===================================================================
+// 关闭单个房间
+//
+// 房间归某个节点所有，别的节点不认识这个房间号，必须打「房间所在的那台」。
+// 节点侧的 POST /admin/room/close 用 .secrets/watch-secret 的 HMAC 认人
+// （server/http/routes.js），所以这里签一个 60 秒有效的凭证即可。
+// ===================================================================
+function closeRoom(codeIn, nodeIn) {
+  return new Promise((resolve) => {
+    const code = String(codeIn || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{4,6}$/.test(code)) return resolve({ ok: false, status: 400, error: 'bad_code' });
+    let nodeN = Number(nodeIn);
+    if (!(nodeN >= 1 && nodeN <= 30)) {
+      // 没给节点号就从房间目录里找
+      const snap = roomsSnapshot();
+      for (const n of snap.nodes || []) {
+        if ((n.rooms || []).some((r) => String(r && r.code).toUpperCase() === code)) { nodeN = Number(n.n); break; }
+      }
+    }
+    if (!(nodeN >= 1 && nodeN <= 30)) return resolve({ ok: false, status: 404, error: 'room_not_found' });
+    let secret = '';
+    try { secret = fs.readFileSync(path.join(BASE, '.secrets', 'watch-secret'), 'utf8').trim(); } catch { /* 下面返回 */ }
+    if (!secret) return resolve({ ok: false, status: 503, error: 'no_secret' });
+    const exp = Date.now() + 60_000;
+    const sig = crypto.createHmac('sha256', secret).update(`${code}.${exp}`).digest('base64url');
+    const payload = JSON.stringify({ code, exp });
+    const req = http.request({
+      host: '127.0.0.1', port: 3000 + nodeN, path: '/admin/room/close', method: 'POST', timeout: 8000,
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'x-sp-admin-sig': sig },
+    }, (r) => {
+      let b = '';
+      r.on('data', (c) => { b += c; });
+      r.on('end', () => {
+        let j = null;
+        try { j = JSON.parse(b); } catch { /* 非 JSON */ }
+        if (j && j.ok) return resolve({ ok: true, code, node: nodeN, humans: j.humans, running: j.running });
+        resolve({ ok: false, status: r.statusCode || 502, error: (j && j.error) || 'close_failed', node: nodeN });
+      });
+    });
+    req.on('error', (e) => resolve({ ok: false, status: 0, error: String((e && e.code) || e), node: nodeN }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, status: 0, error: 'timeout', node: nodeN }); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+/** 把 nginx 开放列表改成「所有已跑新代码的节点」。 */function opsSetOpenList() {
   return new Promise((resolve) => {
     const script = path.join(BASE, 'tools', '_set-open-nodes.mjs');
     if (!fs.existsSync(script)) return resolve({ ok: false, error: '找不到 tools/_set-open-nodes.mjs' });
@@ -802,6 +847,24 @@ const server = http.createServer(async (req, res) => {
       const result = await opsSetOpenList();
       refresh();
       return sendJson(res, 200, result);
+    });
+    return;
+  }
+
+  // 关闭单个房间：POST /api/rooms/close { code, node, confirm:true }
+  // 节点侧用 .secrets/watch-secret 的 HMAC 认人（server/http/routes.js /admin/room/close），
+  // 与控制台 / 管理后台同一条通道，不必在节点上再放管理员密码。
+  if (pathname === '/api/rooms/close' && req.method === 'POST') {
+    if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', async () => {
+      let payload = {};
+      try { payload = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
+      if (payload.confirm !== true) return sendJson(res, 400, { error: '需要 confirm:true' });
+      const result = await closeRoom(payload.code, payload.node);
+      refresh();
+      return sendJson(res, result.ok ? 200 : (result.status || 500), result);
     });
     return;
   }

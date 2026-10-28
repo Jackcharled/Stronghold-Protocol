@@ -314,8 +314,20 @@ function renderRoomsTable() {
     const verId = typeof x.version === 'string' && x.version ? x.version : 'act2autochess';
     const verName = VERSION_LABELS[verId] || verId;
     const verCell = '<span class="room-ver' + (verId !== 'act2autochess' ? ' is-other' : '') + '" title="' + esc(verId) + '">' + esc(verName) + '</span>';
-    return '<tr><td><span class="room-code">' + esc(x.code) + '</span>' + capBadge + adminBadge + '</td><td title="node-' + x.node + '"><span class="room-node">' + esc(NAMES[x.node - 1] || ('节点 ' + x.node)) + '</span></td><td><span class="room-mode">' + (x.mode === 'solo' ? '单人模拟' : x.mode === 'coop' ? '同盟模拟' : '—') + '</span></td><td><span class="room-diff' + (x.difficulty ? ' diff-' + esc(x.difficulty) : '') + '">' + esc(diffName) + '</span></td><td>' + verCell + '</td><td><span class="room-state' + stateClass + '">' + state + '</span></td><td><span class="room-round' + (x.round > 0 ? '' : ' is-empty') + '" title="' + (x.round > 0 ? '第 ' + x.round + ' 回合' : (x.started ? '对局准备中' : '暂无对局')) + '">' + roundText + '</span></td><td><div class="room-players' + (cap > 4 ? ' room-players--large' : '') + '">' + playerHtml + '</div></td><td>' + count(x.humans) + '</td><td>' + count(x.bots) + '</td><td>' + spectate + '</td><td><div class="room-spectators">' + spectatorHtml + '</div></td></tr>';
-  }).join('') : '<tr><td colspan="12" class="muted">暂无房间</td></tr>';
+    // 关闭这间房：房间归某台节点所有，必须带上 node 才能打到对的那台。
+    const closeBtn = '<button class="room-close" data-close="' + esc(x.code) + '" data-node="' + Number(x.node)
+      + '" data-humans="' + (Number(x.humans) || 0) + '" data-running="' + (x.started ? 1 : 0) + '"'
+      + ' title="关闭这个房间">关闭</button>';
+    return '<tr><td><span class="room-code">' + esc(x.code) + '</span>' + capBadge + adminBadge + '</td><td title="node-' + x.node + '"><span class="room-node">' + esc(NAMES[x.node - 1] || ('节点 ' + x.node)) + '</span></td><td><span class="room-mode">' + (x.mode === 'solo' ? '单人模拟' : x.mode === 'coop' ? '同盟模拟' : '—') + '</span></td><td><span class="room-diff' + (x.difficulty ? ' diff-' + esc(x.difficulty) : '') + '">' + esc(diffName) + '</span></td><td>' + verCell + '</td><td><span class="room-state' + stateClass + '">' + state + '</span></td><td><span class="room-round' + (x.round > 0 ? '' : ' is-empty') + '" title="' + (x.round > 0 ? '第 ' + x.round + ' 回合' : (x.started ? '对局准备中' : '暂无对局')) + '">' + roundText + '</span></td><td><div class="room-players' + (cap > 4 ? ' room-players--large' : '') + '">' + playerHtml + '</div></td><td>' + count(x.humans) + '</td><td>' + count(x.bots) + '</td><td>' + spectate + '</td><td><div class="room-spectators">' + spectatorHtml + '</div></td><td>' + closeBtn + '</td></tr>';
+  }).join('') : '<tr><td colspan="13" class="muted">暂无房间</td></tr>';
+  // 关闭按钮（每次重绘表格都会重建，所以在这里绑定）
+  body.querySelectorAll('[data-close]').forEach((b) => {
+    b.onclick = () => closeRoom(b.dataset.close, Number(b.dataset.node), {
+      humans: Number(b.dataset.humans) || 0,
+      running: b.dataset.running === '1',
+      btn: b,
+    });
+  });
   if (!pager) return;
   if (rooms.length <= ROOMS_PAGE_SIZE) { pager.innerHTML = rooms.length ? `<span class="muted">共 ${rooms.length} 间</span>` : ''; return; }
   pager.innerHTML = `<button data-p="-1"${roomsPage <= 1 ? ' disabled' : ''}>上一页</button>`
@@ -329,9 +341,40 @@ function renderRoomsTable() {
   });
 }
 
-async function protectionAction(action, ip, btn) {
+/** 关闭一个房间。房间归某台节点所有，必须把 node 一起发过去。 */
+async function closeRoom(code, node, { humans = 0, running = false, btn = null } = {}) {
+  let msg = `关闭房间 ${code}（node-${node}）？`;
+  if (humans) msg += `\n\n里面有 ${humans} 名玩家，会被移出同盟。`;
+  if (running) msg += '\n\n⚠ 这个房间正在对局中，关闭会立即终止该对局。';
+  if (!confirm(msg)) return;
   const label = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '执行中…'; }
+  if (btn) { btn.disabled = true; btn.textContent = '关闭中…'; }
+  try {
+    const r = await fetch('/api/rooms/close', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, node, confirm: true }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      toast(`已关闭 ${code}（移出 ${j.humans || 0} 名玩家）`);
+    } else {
+      const zh = {
+        forbidden: '没有权限', no_room: '房间已不存在', room_not_found: '找不到该房间',
+        timeout: '节点无响应', no_secret: '缺少密钥文件', bad_code: '房间号无效', close_failed: '关闭失败',
+      }[j.error] || j.error || `HTTP ${r.status}`;
+      toast(`关闭失败：${zh}`);
+    }
+  } catch (e) {
+    toast(`关闭失败：${e && e.message ? e.message : e}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+    refresh();
+  }
+}
+
+async function protectionAction(action, ip, btn) {
+  const label = btn ? btn.textContent : '';  if (btn) { btn.disabled = true; btn.textContent = '执行中…'; }
   try {
     const res = await fetch('/api/protection/action', {
       method: 'POST', headers: { 'content-type': 'application/json' },

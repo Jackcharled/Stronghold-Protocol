@@ -73,6 +73,10 @@
 #rooms-bar .room-count{display:inline-flex;min-width:24px;justify-content:center;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.045);color:#d9e9e6;font-size:12px}
 #rooms-bar .room-count.is-zero{color:#72878a;background:rgba(255,255,255,.02)}
 #rooms-bar .rooms-pager{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:12px}
+/* 关闭房间按钮：红色描边，和「重启 / 停止」的危险操作同一族 */
+#rooms-bar .room-close{padding:4px 10px;border:1px solid rgba(255,0,36,.35);border-radius:7px;background:rgba(255,0,36,.07);color:#ff9caa;font-size:12px;cursor:pointer;white-space:nowrap}
+#rooms-bar .room-close:hover{background:rgba(255,0,36,.16);border-color:rgba(255,0,36,.55)}
+#rooms-bar .room-close:disabled{opacity:.45;cursor:default}
 #rooms-bar .rooms-table thead th:nth-child(6),#rooms-bar .rooms-table thead th:nth-child(8),#rooms-bar .rooms-table thead th:nth-child(9),#rooms-bar .rooms-table thead th:nth-child(10){text-align:center}
 #rooms-bar .rooms-table tbody td:nth-child(6),#rooms-bar .rooms-table tbody td:nth-child(8),#rooms-bar .rooms-table tbody td:nth-child(9),#rooms-bar .rooms-table tbody td:nth-child(10){text-align:center}
 @media(max-width:760px){#rooms-bar .rooms-table{min-width:980px}}
@@ -150,7 +154,7 @@
   <div class="rooms-table-wrap">
     <table class="rooms-table">
       <thead><tr>
-        <th>房间号</th><th>节点</th><th>类型</th><th>难度</th><th>版本</th><th>状态</th><th>回合</th><th>玩家</th><th>真人</th><th>AI</th><th>观战</th><th>旁观者</th>
+        <th>房间号</th><th>节点</th><th>类型</th><th>难度</th><th>版本</th><th>状态</th><th>回合</th><th>玩家</th><th>真人</th><th>AI</th><th>观战</th><th>旁观者</th><th>操作</th>
       </tr></thead>
       <tbody id="rooms-body"></tbody>
     </table>
