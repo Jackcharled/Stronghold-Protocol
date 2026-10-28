@@ -504,7 +504,7 @@ function ExperimentalControl({ room, isHost, busy, onApply }) {
         <span class="t-dim">${t('每队人数上限')}</span>
       </div>
       <div class="exp-modal__switches">
-      <${Tooltip} text=${t('被淘汰的博士可以由没漏怪的队友消耗 10 点生命救回')}>
+      <${Tooltip} text=${t('没漏怪的队友可用 10 点生命救回队友')}>
         <button type="button" role="switch" aria-checked=${revival ? 'true' : 'false'} data-testid="exp-revival"
             class=${`dpick__opt ailast__opt${revival ? ' is-active' : ''}`} disabled=${!!busy || !canEdit}
             onClick=${() => { setCapOpen(false); canEdit && setRevival(!revival); }}>
