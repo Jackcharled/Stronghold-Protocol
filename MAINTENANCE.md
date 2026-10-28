@@ -1434,13 +1434,25 @@ Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
 **永久修复**（`nginx/conf/nginx.conf`，`events` 同级、`http` 之前）：
 
 ```nginx
-worker_shutdown_timeout 30s;
+worker_shutdown_timeout 5m;
 ```
 
-超过 30 秒还在的旧 worker 被强制关闭。代价是那些仍挂在上面的连接会被切断 ——
-但浏览器本来就会自动重连，且**对局数据在服务端，不丢**；30 秒后还连着的人极少。
+**作用范围 —— 只碰旧 worker，不碰当前进程**（维护者 2026-10-29 特意确认过）：
 
-**⚠ 这个值只作用于「正在退场的旧 worker」**，不影响当前 worker 上的连接。
+nginx 源码 `ngx_process_cycle.c` 里，reload 时只对**旧 worker** 做两件事：
+`ngx_close_listening_sockets()`（关监听，不再接新连接）+ `ngx_set_shutdown_timer()`
+（起计时器，到点强制关掉剩余连接并退出）。**新 worker 根本不走这段代码。**
+
+| 进程 | 受影响？ |
+|---|---|
+| 当前正在工作的 worker | ❌ 完全不受影响，一个字节都不会断 |
+| 已退场、挂着长连接的旧 worker | ✅ 到点强制关闭它的连接 |
+
+所以玩家刷新页面、打对局，只要连接在当前 worker 上就无感。
+
+为什么取 **5m**（维护者决定）：先把时间给足让连接自己结束 —— 一局通常几分钟内
+会有结果或进结算，关页面时浏览器会主动断开，5 分钟能覆盖绝大多数自然退出，
+把「被强制切断」的概率压得很低。代价只是旧 worker 多驻留一会儿（内存）。
 
 #### 怎么确认生效
 
