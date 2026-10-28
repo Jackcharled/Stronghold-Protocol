@@ -756,12 +756,23 @@ export class AudioManager {
   _onVis() {
     try {
       if (!this.ctx) return;
-      if (this.win?.document?.hidden) this.ctx.suspend().catch(() => {});
-      else if (this.ctx.state !== 'running') {
-        // back on the page: resume, and keep a gesture ready in case the browser wants one first (iOS after a call)
-        this._armUnlock();
-        this.ctx.resume().then(() => { if (this.ctx?.state === 'running') this._dropUnlock(); }, () => {});
+      if (this.win?.document?.hidden) { this.ctx.suspend().catch(() => {}); return; }
+      if (this.ctx.state === 'running') { this._dropUnlock(); return; }
+      // 回到页面但音频没有在跑：先尝试无手势 resume。
+      // ⚠ 2026-10-28（玩家反馈「切到别的应用再切回来就没声音」，安卓 + 苹果都有）：
+      //   实测 `suspend()` 之后调 `resume()`，若中间没有用户手势，**Promise 既不 resolve
+      //   也不 reject，就那么挂着**（见 tmp/_audio-test.cjs）。所以不能只依赖这一句：
+      //   * 一定要 `_armUnlock()` 重新布防手势 —— 玩家回来后第一次点屏幕就能恢复；
+      //   * resume 用超时兜底，失败也不影响手势那条路。
+      this._armUnlock();
+      const ctx = this.ctx;
+      let settled = false;
+      const p = ctx.resume?.();
+      if (p && typeof p.then === 'function') {
+        p.then(() => { settled = true; if (ctx.state === 'running') this._dropUnlock(); }, () => { settled = true; });
       }
+      // 600ms 内没恢复：说明浏览器在等手势。保持 _armUnlock 已布防即可。
+      setTimeout(() => { if (!settled && ctx.state !== 'running') this._armUnlock(); }, 600);
     } catch { /* ignore */ }
   }
 
