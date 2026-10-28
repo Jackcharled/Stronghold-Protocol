@@ -90,9 +90,19 @@ if (!APPLY) {
 }
 
 // ---- 1) 优雅停止 ----
+// ⚠ 2026-10-28：nginx 以 SYSTEM 运行时，普通管理员账户发 quit 会被拒绝：
+//   `OpenEvent("Global\ngx_quit_<pid>") failed (5: Access is denied)`
+//   这不是故障 —— 下面的强制结束会兜住。这里说清楚，免得看到 error 以为脚本坏了。
 console.log('\n=== 1) 优雅停止（给正在传输的请求收尾的机会）===');
 const quit = run(NGX, ['-p', NGX_DIR + '\\', '-c', 'conf/nginx.conf', '-s', 'quit']);
-console.log('  quit:', quit.ok ? 'OK' : (quit.out.split('\n')[0] || '失败'));
+if (quit.ok) {
+  console.log('  quit: OK');
+} else {
+  const denied = /Access is denied|拒绝访问|OpenEvent/i.test(quit.out);
+  console.log('  quit:', denied
+    ? '被拒绝（nginx 以 SYSTEM 运行，当前账户没有它的信号权限）→ 交给第 2 步强制结束，属正常'
+    : (quit.out.split('\n')[0] || '失败'));
+}
 
 // ---- 2) 确认归零；不归零就强杀 —— 关键一步，原版没有 ----
 console.log('\n=== 2) 确认进程归零（不归零就强制结束）===');
@@ -136,13 +146,21 @@ const startTask = run('schtasks.exe', ['/Run', '/TN', TASK]);
 console.log('  schtasks:', startTask.ok ? 'OK' : (startTask.out.split('\n')[0] || '失败'));
 if (!startTask.ok) process.exit(1);
 
-// 等它起来并稳定
+// 等它起来并稳定。
+// ⚠ 2026-10-28：原来循环里一旦 after.length 就 break，此时 HTTPS 往往还没开始监听
+// （nginx 起进程和 bind 443 之间有一小段），于是校验报 FAIL，但站点其实几秒后就正常。
+// 现在必须「端口在监听 + 返回 200」才 break，否则一直等到超时。
 let after = [];
-for (let i = 0; i < 20; i++) {
+let code = 'FAIL';
+for (let i = 0; i < 25; i++) {
   await sleep(1000);
   after = nginxProcs();
-  if (after.length && httpsStatus() === '200') break;
+  if (!after.length) continue;
+  fmtWait(i + 1);
+  code = httpsStatus();
+  if (code === '200') break;
 }
+function fmtWait(s) { if (s % 5 === 0) console.log(`  启动中… ${s} 秒`); }
 
 // ---- 5) 校验 ----
 console.log('\n=== 5) 校验 ===');
@@ -151,7 +169,7 @@ after.forEach((p) => {
 });
 const allZero = after.length > 0 && after.every((p) => p.sid === '0');
 const sizeOk = after.length > 0 && after.length <= EXPECTED_MAX;
-const code = httpsStatus();
+code = httpsStatus();
 console.log(`\n  进程数: ${after.length}${sizeOk ? '  ✓' : `  ✗ 期望 ≤ ${EXPECTED_MAX}（还有残留）`}`);
 console.log(`  全部在 Session 0: ${allZero ? '✓' : '✗'}`);
 console.log(`  HTTPS 首页: ${code}`);
