@@ -1422,6 +1422,102 @@ Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
 # 2026-10-28 13:57:58 ok alive=30/30 avg_uptime=784s
 ```
 
+### 9.16 隐身观战未开放节点上的房间 →「版本数据未能通过校验」（2026-10-29 修复 nginx）
+
+维护者反馈：隐身观战 **CDYX（node-1）** 看了很久，切到 **AHHP（node-29，`act1autochess` 第 15 轮）**
+时提示 **「版本数据未能通过校验，请刷新页面重试」**，页面卡在 `LOADING DATA`。
+
+#### 不是版本的问题，先排除
+
+我一开始怀疑「第一期下半」有问题，实测四个版本在故障节点上：
+
+| 版本 | node-1 | node-20 |
+|---|---|---|
+| `act2autochess`（第二期下半，默认） | 200 | 404 |
+| `act2autochess@V2_1` | 200 | 404 |
+| `act1autochess`（第一期下半） | 200 | 404 |
+| `act1autochess@V1_1` | 200 | 404 |
+
+**连默认版本都 404**，和版本无关。
+
+#### 真正的原因：资源请求被改派到了另一组节点
+
+「内容指纹 `cs`」是**每台节点各自算出来的**（由 `server/sim` + `shared` + `data` 哈希而成）。
+跑不同代码的节点会算出**不同的 `cs`**。2026-10-29 当时的分组：
+
+| 组 | 节点 | `act2autochess` 的 cs |
+|---|---|---|
+| A 组 | **node-1、node-29** | `1cb523147acf2bef…` |
+| B 组 | 其余 28 台 | `8bc7a0a3bc49d88c…` |
+
+**每组都自洽**（用自己的 cs 请求自己 → 四个版本全部 200）。故障只发生在**跨组**。
+
+故障链：
+
+1. 页面通过 `?adminWatch=1&adminNode=N` 打开，**页面本身**落在 N（即使是未开放节点）
+2. 页面随后自己发请求：`/cs/<cs16>/index.json`、`/data/versions/<slug>/*.json` —— 这些**不带参数**
+3. 它们走 `location /` 的第 0 条规则：
+   ```nginx
+   if ($sp_cookie_open = 0) { set $sp_node $sp_rand_node; }
+   ```
+   node-1 / node-29 **不在开放列表** → `$sp_cookie_open = 0` → **被改派到随机开放节点（B 组）**
+4. 页面拿着 A 组的 `cs` 去问 B 组要清单 → **404** → 「版本数据未能通过校验」
+
+**为什么 CDYX 能看很久**：它是默认版本 `act2autochess`，数据由页面直接加载，不走 `/cs/` 清单；
+**AHHP 是非默认版本**，切换必须走清单 + 16 个数据文件，正好踩中。
+
+#### 修复：版本数据无条件跟随页面所在节点
+
+`location /` 里新增（`nginx/conf/nginx.conf`，`$sp_is_version_data` 由新 map 定义）：
+
+```nginx
+map $uri $sp_is_version_data {
+  default 0;
+  ~^/cs/                 1;   # 内容集清单与 bounds
+  ~^/data/versions/      1;   # 各官方版本的数据文件
+  ~^/vs/                 1;   # 视觉插件集的 overlay
+  ~^/p/                  1;   # 插件文件（内容寻址）
+}
+```
+
+在 if 链的最后再加一次：
+
+```nginx
+if ($sp_is_version_data = 1) { set $sp_node $cookie_sp_route; }
+```
+
+**放在最后是关键**：这样它是无条件的，不受第 0 条「未开放 → 随机改派」影响。
+
+只钉这四个前缀，是因为**其余静态资源 30 台完全相同**（`/assets/`、`/js/`、`/css/`、`/mm/` 都是
+junction 或共享副本，跨节点取到的是同一份），只有 `/cs/`、`/data/versions/` 这类
+**由代码算出来的内容**才会逐节点不同。
+
+维护者的规则没变：**新访客仍然只分到开放节点**；只有「已经在某台节点上的人」，
+他的版本数据请求会留在那台。
+
+#### 验证
+
+```powershell
+# 修复前：不带参数 → 404
+#   https://<站点>/cs/837130125426e9ad/index.json           → 404
+# 修复后应为 200（跟随页面那台）
+```
+
+语法检查（**不会影响运行中的 nginx**）：
+
+```powershell
+D:\Stronghold-Protocol\nginx\nginx.exe -p D:\Stronghold-Protocol\nginx\ -c conf/nginx.conf -t
+```
+
+**⚠ 生效必须重启 nginx**（`node tools/restart-nginx.mjs --apply`），`-s reload` 会被拒绝
+（nginx 以 SYSTEM 运行，`OpenEvent` Access denied）且会留下 worker。
+
+#### 顺带说明：`cs` 分组本身会随重启消失
+
+两组 `cs` 不同，根因是**节点跑的代码版本不同**（A 组是当时最近重启过的两台）。
+等 30 台都重启到同一版代码，`cs` 自然统一。**这条 nginx 修复不依赖它** ——
+即使 `cs` 再次分裂，只要请求不跨组，就不会 404。
+
 ### 9.15 「已跑最新代码」到底怎么判断（2026-10-28 修正）
 
 控制台那句 **「N / 30 个节点已跑最新代码」** 的判断口径，改过两次，记录在这里免得再走回头路。
