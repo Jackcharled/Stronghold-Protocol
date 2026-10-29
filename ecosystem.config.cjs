@@ -53,6 +53,41 @@ const apps = Array.from({ length: NODES }, (_, i) => {
       SP_EXPERIMENTAL: '1',
         // 对局跑在独立 worker 线程里：单局崩溃/卡死不影响节点主进程
       SP_MATCH_HOST: 'worker',
+      // 优雅关闭宽限（2026-10-30）：官方默认 5 秒，对「几十个玩家 + 进行中的对局」太短 ——
+      // 超时后进程被直接退出，玩家看到的是突然断线，而不是 room.closed{reason:'shutdown'}。
+      // 20 秒给足房间序列化、socket 1001 关闭、存档 flush 的时间。
+      SP_SHUTDOWN_TIMEOUT_MS: '20000',
+      // AI 队友策略（2026-10-30，维护者决定：固定一种，不做随机）。
+      //
+      // 官方 0.3.3 的四种内置策略（docs/BOT_STRATEGIES.md）：
+      //   legacy          原始 bot（139KB 的 bot.js），不设这个变量时的默认值
+      //   adaptive        只换站位：legacy 试 3 种模板，它试最多 8 种，挑「一个怪都不漏」的
+      //   ioleta          只换采购（且仅在罗素阵营生效）：按回合分阶段攒核心，第 7/9/11 回合逐步退出，
+      //                   第 10/12 回合升级；开局会强制优先选 band_ioleta
+      //   ioleta-adaptive 上面两个的合体：罗素采购 + 8 种站位搜索
+      //
+      // 为什么选 adaptive 而不是更强的 ioleta-adaptive（2026-10-30，改过一次）：
+      //
+      //   ioleta 的 pickBand 是「罗素可选就无条件选罗素」，而去重靠 phases.js 的 bandTaken()：
+      //
+      //     bandTaken(bandId, playerId) {
+      //       if (this.allowRepeat) return false;   // ← 「允许重复选择策略」开着时恒为 false
+      //       ...
+      //     }
+      //
+      //   于是 5-20 人房勾了「允许重复选择策略」时，bandTaken 永远 false：
+      //   同一队里**每一个 AI 都会选罗素**，全部走同一套采购目标
+      //   （CORE = deputShip / steadShip / preciShip），互相稀释同一个卡池，
+      //   谁都凑不齐三连，集体发展不起来 —— 比 legacy 的按 LP 分散更差。
+      //   legacy 的 botPickBand 是按起始 LP 加权分散的，天然不会撞车。
+      //
+      //   adaptive 完全不碰阵营选择（沿用 legacy 的 pickBand 与采购），只优化站位：
+      //   8 种候选搜索找「零漏怪」的摆法，是任何房间配置下的纯收益，没有副作用。
+      //
+      // 想再往前一步时可以改回 'ioleta-adaptive'，但要先解决上面那个去重问题
+      //   （或在房间里不允许 AI 全选同一阵营）。
+      // 直接删掉这一行则回到官方默认的 legacy。
+      SP_BOT_STRATEGY: 'adaptive',
     },
     // 进程守护
     autorestart: true,
