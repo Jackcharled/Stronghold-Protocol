@@ -87,8 +87,15 @@ const ADMIN_PERMISSIONS = [
   { key: 'nodes.view', label: '查看节点状态', desc: '30 节点在线 / 人数 / 对局 / 趋势', def: false },
   { key: 'nodes.restart', label: '重启游戏节点', desc: '从后台重启单个节点（高风险）', def: false },
   { key: 'storage.view', label: '查看数据占用', desc: '账号云端数据大小排行', def: false },
-  { key: 'rooms.view', label: '查看所有房间号', desc: '各节点当前房间码', def: false },
-  { key: 'rooms.close', label: '关闭房间', desc: '手动关闭任意房间（进行中的对局会一并终止）', def: false },
+  { key: 'rooms.view', label: '查看所有房间号', desc: '各节点当前房间码、房间名单', def: false },
+  // 2026-10-29 拆细：原来「看房间」和「动房间」是同一个 rooms.view，
+  // 于是想看房间列表的人必然也能关房间。现在分成三个：
+  //   rooms.view   只看
+  //   rooms.abort  结束这一局（房间保留，玩家留在房里）
+  //   rooms.close  关闭整个房间（玩家被移出同盟）
+  { key: 'rooms.abort', label: '结束对局', desc: '结束房间当前这一局，房间与座位保留', def: false },
+  { key: 'rooms.close', label: '关闭房间', desc: '手动关闭任意房间（玩家会被移出同盟）', def: false },
+  { key: 'rooms.watch', label: '隐身观战', desc: '不占观战席地进入任意房间观战', def: false },
   { key: 'rooms.maintenance', label: '维护开关', desc: '创建房间 / 开始游戏 / 匹配队友的维护开关', def: false },
   { key: 'dash.settings', label: '服务器设置', desc: '公告板、房间时长、服务器状态等', def: false },
 ];
@@ -1020,7 +1027,9 @@ async function handle(req, res, pathname) {
     me2.perms = isOwner ? ['*'] : await getAdminPerms();
     if (method === 'GET' && pathname === '/api/admin2/me') return sendJson(res, 200, { ok: true, admin: { id: me2.admin_id, email: me2.email, nickname: me2.nickname, tag: me2.tag, role: me2.role }, perms: me2.perms });
     if (method === 'POST' && pathname === '/api/admin2/watch-token') {
-      if (!adminCan(me2, 'rooms.view')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      // 独立权限 rooms.watch：隐身观战能看到房间里的一切（包括玩家名字与会话），
+      // 但不占观战席、不算房间成员，属于「只读但范围最大」的能力，单独授权。
+      if (!adminCan(me2, 'rooms.watch')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
       let code = '';
       try { const b = earlyBody ? await earlyBody : null; code = String(b && b.code || '').toUpperCase(); } catch { /* bad body */ }
       if (!code) {
@@ -1304,7 +1313,9 @@ async function handle(req, res, pathname) {
     // 玩家不会被移出同盟，只是这一局没了，可以直接重新开局。
     // 鉴权、找节点、签名与 close 完全一致，只是打 /admin/room/abort、审计动作不同。
     if (method === 'POST' && pathname === '/api/admin2/rooms/abort') {
-      if (!adminCan(me3, 'rooms.close')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      // 独立权限 rooms.abort：结束对局会作废玩家进度，但不销毁房间，
+      // 比「关闭房间」轻一档，允许单独授予。
+      if (!adminCan(me3, 'rooms.abort')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
       const body = await readBody(req, 4096).catch(() => ({}));
       const code = String(body && body.code || '').trim().toUpperCase();
       if (!/^[A-Z0-9]{4,6}$/.test(code)) return sendJson(res, 400, { ok: false, error: 'bad_code' });
