@@ -1803,6 +1803,64 @@ location ^~ /__admin-ui/ {
 2. 直连 Node 端口试同一个路径（200 说明服务端没问题，问题在 nginx）
 3. 搜 `nginx.conf` 有没有对应的 `location`
 
+### 9.27 `SP_REDIS_URL` 断点持久化 —— 来源与配置（2026-10-30 核实）
+
+**结论：这是 sganggs 上游原生功能，不是本服加的，也不是跟 5–20 人房扩展一起加的。**
+
+#### 来源核实
+
+| 位置 | `server/persist/` |
+|---|---|
+| sganggs 上游 **0.3.2** | ✅ 6 个文件齐全 |
+| sganggs 上游 **0.3.3** | ✅ 6 个文件齐全（与本服逐字节一致） |
+| 本服 | ✅ 6 个文件（只有 `lobbyState.js` 多 1.1KB，见下） |
+
+最早出现：`733982fe 2026-10-20 chore: 同步 node-1 游戏本体`——
+跟着**整批游戏本体同步**进来的，不是某次单独的功能开发。
+
+0.3.2 与 0.3.3 的 persist 文件**大小内容完全相同**，所以该功能比 0.3.2 更早就存在。
+
+#### 本服唯一的改动：`lobbyState.js` +1.1KB
+
+来自这两个提交：
+- `998fc0d2` 房间持久化补存 `version` 以恢复版本隔离
+- 5–20 人房扩展（房间存档字段）
+
+**其余 5 个文件（`index.js` / `node.js` / `persister.js` / `store.js` / `valkey.js`）
+与上游逐字节一致。**
+
+#### 配置项
+
+| 变量 | 含义 | 本服当前值 |
+|---|---|---|
+| `SP_REDIS_URL` | `redis://[user:pass@]host[:port][/db]`，不设 = 关闭 | `redis://127.0.0.1:6379/0` |
+| `SP_REDIS_PREFIX` | 键前缀，多套服务器共用一个 Redis 时各用各的 | 每节点独立，如 `sp:n1:`、`sp:n5:` |
+| `SP_PERSIST_SAVE_MS` | 定时存档间隔，默认 10000 | 未设（默认 10 秒） |
+| `SP_REDIS_PASSWORD_FILE` | 从文件读密码，不必写进环境变量 | 未用 |
+
+#### 实际能保住什么
+
+| 场景 | 能否保住 | 说明 |
+|---|---|---|
+| 房间（房号、房主、成员） | ✅ | `sp:nN:lobby:rooms` |
+| 会话 | ✅ | `sp:nN:lobby:sessions` |
+| **玩家断线重连** | ✅ | 座位、阵容、对局进度都在 |
+| **节点进程重启** | ❌ | 对局中断，提示「返回同盟」，房间座位保留 |
+
+原因见 §9.26：单机分支 `abortRestoredMatch()` 强制中断，`restoreLocal()` 是未完成代码。
+
+#### 快速检查命令
+
+```powershell
+# Redis 是否在跑
+Get-NetTCPConnection -State Listen -LocalPort 6379
+
+# 有没有在写检查点（DBSIZE 应随时间增长/刷新）
+# 通过 node 直连：SCAN 0 COUNT 500，看 sp:n*:cp:* 的 savedAt
+```
+
+**注意**：`/healthz` 的 `persistence` 字段可看写入/失败计数（存在时才返回）。
+
 ### 9.26 「节点重启保住对局」做不到 —— 实验记录与结论（2026-10-30）
 
 **背景**：`SP_REDIS_URL` 检查点已启用，能保住**房间**、**会话**、**断线重连**。
@@ -1831,16 +1889,48 @@ if (!this.cluster) {
 
 `this.cluster = typeof lobby.remoteMatchRef === 'function'`（persister.js:59）
 
-| 检查项 | 本服 | 上游 0.3.3 | 0.3.0 fork |
-|---|---|---|---|
-| `server/cluster/` 目录 | ❌ | ❌ **也没有** | ✅ 有 |
-| `lobby.remoteMatchRef` | ❌ | ❌ | ❌ |
+**2026-10-30 二次核实（修正了第一版结论）**：
 
-**`remoteMatchRef` 在任何版本里都不存在**，所以 `this.cluster` 永远为 `false`，
-集群分支（`restoreRemoteMatch`）是**死代码，从不会执行**。
+| 来源 | `server/cluster/` | `lobby.remoteMatchRef` |
+|---|---|---|
+| 本服 | ❌ | ❌ |
+| **sganggs 上游 0.3.2** | ❌ | ❌ |
+| **sganggs 上游 0.3.3** | ❌ | ❌ |
+| sganggs 上游 0.3.3-clean | ❌ | ❌ |
+| **`_ref/Stronghold-Protocol-master`（0.3.0 fork）** | ✅ **有 18 个文件** | ❌ |
 
-上游 0.3.3 **已经移除了 cluster 架构**（0.3.0 fork 里还有）。文档里描述的
-「协调器 + game 节点」在 0.3.3 代码里没有对应实现。
+**准确的说法**：sganggs 上游（0.3.2、0.3.3）**从来没有 cluster 架构**，
+`server/cluster/` 只存在于 `_ref/Stronghold-Protocol-master` 这个 **0.3.0 时期的 fork**里。
+（第一版写的「上游 0.3.3 已移除 cluster」不准确 —— 不是移除，是上游本来就没有。）
+
+佐证：sganggs 0.3.3 的 `DEPLOY.md` 全文搜索「集群 / cluster / 协调器 / coordinator」
+**零命中**；而 0.3.0 fork 的 `DEPLOY.md` 有完整的集群章节。
+
+而 `remoteMatchRef` 这个决定 `cluster` 的函数，**在所有来源里都不存在** ——
+包括有 cluster 目录的 0.3.0 fork。所以 `this.cluster` 永远为 `false`，
+集群分支（`restoreRemoteMatch`）在任何一个版本里都是**死代码**。
+
+#### ⚠ 文档缺口：`DEPLOY.md「断点续玩」章节在上游 0.3.3 里不存在
+
+`sganggs 0.3.3` 的 `server/persist/index.js` 开头写着：
+
+```
+// server/persist/index.js — the server's side of the checkpoints (docs/DEPLOY.md「断点续玩」):
+// off unless SP_REDIS_URL names a Valkey / Redis compatible store
+```
+
+**但上游 0.3.3 的 `DEPLOY.md` 里没有「断点续玩」这一章。** 搜遍上游全部文档
+（DEPLOY / PLAYING / PLUGIN-API / PLUGIN-DSL / PLUGIN-GUIDE / PLUGINS / SKINS），
+`SP_REDIS_URL`、`SP_REDIS_PREFIX`、`Valkey`、`断点续玩` **全部零命中**。
+
+同样的注释也提到 `server/cluster/game-runtime.js` —— 那个文件在上游也不存在。
+
+**结论**：`persist` 的代码是上游 0.3.3 原生的（6 个文件齐全，`SP_REDIS_URL` / `SP_REDIS_PREFIX`
+在 `store.js:54-57` 真实读取），但**配套文档没有跟随**。代码注释指向了两个上游没有的东西
+（文档章节、cluster 目录），说明这块代码在上下游之间文档脱节。
+
+**对本服的影响**：`SP_REDIS_URL` 功能本身完全可用（房间/会话/断线重连，实测正常），
+只是上游没有文档说明。配置项见 §9.27。
 
 #### 试过什么（失败记录）
 
