@@ -1422,6 +1422,88 @@ Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
 # 2026-10-28 13:57:58 ok alive=30/30 avg_uptime=784s
 ```
 
+### 9.20 观战「席位已满（2/2）」——前端写死了 2（2026-10-29 修复）
+
+玩家反馈：**房间 PCPJ 观战进不来，提示「观战席位已满（2/2）」**。
+
+#### 服务端没问题，是前端把上限写死了
+
+服务端的观战上限是 `server/lobby.js` 的 `spectatorLimit()`：
+
+```js
+spectatorLimit() {
+  if (this.mode !== 'coop') return 0;
+  return Math.max(MAX_SPECTATORS, Math.ceil(this.activeHumans().length / 2));
+}
+```
+
+**取 `max(2, 玩家数 / 2)`**，“2”只是下限：
+
+| 玩家数 | 观战上限 |
+|---|---|
+| 1–4 | 2 |
+| 5–6 | 3 |
+| 8 | 4 |
+| **14（PCPJ）** | **7** |
+| 20 | 10 |
+
+但 `matchmaker/public/client.js` 的大厅跳转预检把上限**写死成 2**：
+
+```js
+if (spec && Number(d.spectators) >= 2) { showStyledToast('观战席位已满（2/2），请稍后再试'); return; }
+```
+
+于是**任何房间第 3 个想观战的人都会被前端拦下**，根本不会走到服务端。
+
+#### 实测对照（PCPJ，2026-10-29）
+
+```
+find-room 返回: node=8 humans=11 spectators=2 maxSpectators=6 started=False
+旧逻辑 (>=2 就拦):            拦下 ✗   ← 玩家看到的就是这个
+新逻辑 (>=maxSpectators 才拦): 放行 ✓
+```
+
+另外直接用测试账号 `room.spectate PCPJ` 实测，**第 3 个观战者成功进入**：
+
+```
+room.state: spec=["逸天","记念","观战测试"]  maxSpectators=7
+```
+
+#### 修复
+
+`find-room` 早就已经把权威的 `maxSpectators` 带回来了（`matchmaker/server.js` 的
+`roomInfo()`，算法与服务端一致），前端直接用它：
+
+```js
+if (spec) {
+  const cap = Number.isInteger(d.maxSpectators) ? d.maxSpectators
+    : (d.mode === 'coop' ? Math.max(2, Math.ceil((Number(d.humans) || 0) / 2)) : 0);
+  const used = Number(d.spectators) || 0;
+  if (used >= cap) { showStyledToast(`观战席位已满（${used}/${cap}），请稍后再试`); return; }
+}
+```
+
+提示里的数字也改成实际值（`已用/上限`），不再永远显示 `2/2`。
+
+#### ⚠ 改 `client.js` 必须同时改 nginx 的版本号
+
+`client.js` 是通过 nginx 的 `sub_filter` 注入的，带版本号：
+
+```nginx
+sub_filter '</body>' '<script src="/mm/client.js?v=20261026-107" defer></script>…';
+```
+
+**不改这个 `?v=`，浏览器会继续用缓存的旧文件** —— 改了等于没改（§9.x 踩过同样的坑，
+当时 `account-title.js` 就是版本号没动导致修复不生效）。
+
+本次已改为 `client.js?v=20261029-1`，**需要重启 nginx 才生效**
+（`node tools/restart-nginx.mjs --apply`，`-s reload` 会被拒）。
+
+#### 教训
+
+**同一个规则在服务端和前端各写一遍，迟早会不一致。** 遇到「明明没满却提示已满」，
+先看前端有没有自己算一遍 —— 这个例子里服务端完全正确，是前端把它盖掉了。
+
 ### 9.19 「结束对局」按钮 —— 只结束这一局，房间留着（2026-10-29 新增）
 
 维护者要求：房间表能**单独结束某一局**，但**不销毁房间**。

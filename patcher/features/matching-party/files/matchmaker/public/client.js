@@ -919,7 +919,14 @@ const JOIN_COOKIE = (() => {
         .then((d) => {
           if (d && d.node) {
             if (d.mode === 'solo') { showStyledToast(spec ? '独立模拟房间不支持观战（观战只对同盟房间开放）' : '独立模拟房间无法加入'); return; }
-            if (spec && Number(d.spectators) >= 2) { showStyledToast('观战席位已满（2/2），请稍后再试'); return; }
+            if (spec) {
+              // 观战上限由服务端算：max(2, 玩家数/2)。find-room 已带回权威的 maxSpectators。
+              // ⚠ 2026-10-29 修：原来写死 `>= 2`，第 3 个人想观战就被拦下（玩家反馈「只能进 2 个」）。
+              const cap = Number.isInteger(d.maxSpectators) ? d.maxSpectators
+                : (d.mode === 'coop' ? Math.max(2, Math.ceil((Number(d.humans) || 0) / 2)) : 0);
+              const used = Number(d.spectators) || 0;
+              if (used >= cap) { showStyledToast(`观战席位已满（${used}/${cap}），请稍后再试`); return; }
+            }
             if (!spec && d.started) { showStyledToast('该同盟已开始对局，无法加入；可以点「观战」进入'); return; }
             if (!spec && d.full) { showStyledToast('该同盟人数已满，无法加入；可以点「观战」进入'); return; }
             const localGo = () => { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); };
