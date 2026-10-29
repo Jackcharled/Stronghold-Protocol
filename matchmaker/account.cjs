@@ -97,8 +97,46 @@ const ADMIN_PERMISSIONS = [
   { key: 'rooms.close', label: '关闭房间', desc: '手动关闭任意房间（玩家会被移出同盟）', def: false },
   { key: 'rooms.watch', label: '隐身观战', desc: '不占观战席地进入任意房间观战', def: false },
   { key: 'rooms.maintenance', label: '维护开关', desc: '创建房间 / 开始游戏 / 匹配队友的维护开关', def: false },
-  { key: 'dash.settings', label: '服务器设置', desc: '公告板、房间时长、服务器状态等', def: false },
+  // ⚠ 权限按【管理后台的页签】分组，一个页签一项（维护者 2026-10-29 定的规则）：
+  //     玩家账号 → accounts.*    审计日志 → audit.*     已删除账号 → accounts.delete
+  //     节点状态 → nodes.*       当前房间 → rooms.*     维护开关 → rooms.maintenance
+  //     数据占用 → storage.view  服务器设置 → dash.settings（本项）
+  //     权限设置 → 仅最高管理员（isOwner，不在本表里）
+  // 所以「服务器设置」页签里的公告板、房间时长、nginx、日志等，仍然共用这一项，
+  // 不再往下拆 —— 拆了就和页签对不上了。
+  { key: 'dash.settings', label: '服务器设置', desc: '公告板、房间时长、维护开关、服务器状态、日志等', def: false },
 ];
+
+/**
+ * 权限预设模板（2026-10-29 新增）。
+ *
+ * 19 项权限逐个勾太麻烦，新加一个管理员经常漏掉关键项（尤其新增条目默认是关的）。
+ * 这里给几个常见角色的一键组合；点一下套用，之后仍可手改任意项。
+ * 与下方 DANGEROUS_PERMS 配合：任何预设都不含「删除账号 / 修改权限」。
+ */
+const PERM_PRESETS = [
+  { id: 'readonly', label: '只读', desc: '只能看，什么都改不了',
+    keys: ['accounts.view', 'audit.view', 'nodes.view', 'storage.view', 'rooms.view', 'dash.settings'] },
+  { id: 'support', label: '客服', desc: '处理玩家问题：看账号、封禁、改名、重置密码',
+    keys: ['accounts.view', 'accounts.ban', 'accounts.rename', 'accounts.resetpw',
+      'audit.view', 'rooms.view', 'rooms.watch', 'dash.settings'] },
+  { id: 'ops', label: '运维', desc: '管房间与节点：结束对局、关房、维护开关、看日志',
+    keys: ['accounts.view', 'audit.view', 'nodes.view', 'nodes.restart', 'storage.view',
+      'rooms.view', 'rooms.abort', 'rooms.close', 'rooms.watch', 'rooms.maintenance', 'dash.settings'] },
+  { id: 'all', label: '全部', desc: '除「删除账号 / 修改权限」外的全部权限', keys: null },
+];
+/** 危险权限：任何预设都不包含，必须手动勾。 */
+const DANGEROUS_PERMS = Object.freeze(['accounts.delete', 'accounts.role']);
+
+/** 把一个预设展开成实际的权限 key 列表（只保留本案里真实存在的项，去掉危险项）。 */
+function expandPreset(preset) {
+  const known = new Set(ADMIN_PERMISSIONS.map((p) => p.key));
+  const base = preset && preset.keys
+    ? preset.keys
+    : ADMIN_PERMISSIONS.map((p) => p.key);   // 「全部」：所有非危险项
+  return base.filter((k) => known.has(k) && !DANGEROUS_PERMS.includes(k));
+}
+
 const DEFAULT_ADMIN_PERMS = ADMIN_PERMISSIONS.filter((p) => p.def).map((p) => p.key);
 let adminPermsCache = { at: 0, list: null };
 async function getAdminPerms() {
@@ -1102,7 +1140,15 @@ async function handle(req, res, pathname) {
     if (method === 'POST' && pathname === '/api/admin2/logout') { await db().query('DELETE FROM admin_sessions WHERE token = ?', [bm[1]]); return sendJson(res, 200, { ok: true }); }
     if (method === 'GET' && pathname === '/api/admin2/permissions') {
       if (!isOwner) return sendJson(res, 403, { ok: false, error: 'forbidden' });
-      return sendJson(res, 200, { ok: true, catalog: ADMIN_PERMISSIONS, current: await getAdminPerms() });
+      // presets / dangerous 一并给前端：权限页据此渲染「只读 / 客服 / 运维 / 全部」
+      // 一键模板，并把危险项标出来（任何预设都不含它们，必须手勾）。
+      return sendJson(res, 200, {
+        ok: true,
+        catalog: ADMIN_PERMISSIONS,
+        current: await getAdminPerms(),
+        presets: PERM_PRESETS.map((p) => ({ id: p.id, label: p.label, desc: p.desc, keys: expandPreset(p) })),
+        dangerous: DANGEROUS_PERMS,
+      });
     }
     if (method === 'POST' && pathname === '/api/admin2/permissions') {
       if (!isOwner) return sendJson(res, 403, { ok: false, error: 'forbidden' });
@@ -1372,7 +1418,10 @@ async function handle(req, res, pathname) {
       } catch (e) { return sendJson(res, 500, { ok: false, error: 'restart_failed' }); }
     }
   }
-  // ---------------- 服务器设置代理（仅最高管理员，转发本机 3080）----------------
+  // ---------------- 服务器设置代理（转发本机 3080）----------------
+  //
+  // 权限按【管理后台的页签】划分，一个页签一项 —— 本路由整体属于「服务器设置」页签，
+  // 所以仍然只用 dash.settings 一项把关（不再按子路径拆，拆了就和页签对不上）。
   if (pathname.startsWith('/api/admin2/dash/') && (method === 'GET' || method === 'POST')) {
     const auth = String(req.headers.authorization || '');
     const bm = /^Bearer\s+([A-Za-z0-9_-]{20,64})$/.exec(auth);
