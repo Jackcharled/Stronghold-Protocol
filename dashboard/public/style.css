@@ -44,6 +44,13 @@ button.primary:hover { background: #2c5ed4; }
 button.danger { border-color: #7b2540; color: #ffb3c4; }
 button.danger:hover { background: #4a1226; }
 button:disabled { opacity: .5; cursor: wait; }
+
+/* 房间表「操作」列：结束对局 + 关闭，两个按钮并排、不换行挤成一列 */
+.room-actions { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.room-actions button { padding: 4px 10px; font-size: 12px; }
+/* 「结束对局」比「关闭」轻一档：它保留房间，是日常操作；用琥珀色区别于危险的红 */
+.room-abort { border-color: #7a5a24; color: #ffd899; }
+.room-abort:hover { background: #3a2c12; border-color: #a8802f; }
 .toggle { margin-left: auto; color: var(--muted); display: flex; gap: 6px; align-items: center; user-select: none; }
 
 .ngx {

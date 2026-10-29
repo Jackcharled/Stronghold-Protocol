@@ -1300,6 +1300,54 @@ async function handle(req, res, pathname) {
       const status = err === 'no_room' ? 404 : out.status >= 400 ? out.status : 502;
       return sendJson(res, status, { ok: false, error: err, node: nodeN });
     }
+    // 结束房间里当前这一局，但**保留房间**（维护者 2026-10-29 要求）：
+    // 玩家不会被移出同盟，只是这一局没了，可以直接重新开局。
+    // 鉴权、找节点、签名与 close 完全一致，只是打 /admin/room/abort、审计动作不同。
+    if (method === 'POST' && pathname === '/api/admin2/rooms/abort') {
+      if (!adminCan(me3, 'rooms.close')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+      const body = await readBody(req, 4096).catch(() => ({}));
+      const code = String(body && body.code || '').trim().toUpperCase();
+      if (!/^[A-Z0-9]{4,6}$/.test(code)) return sendJson(res, 400, { ok: false, error: 'bad_code' });
+      let nodeN = Number(body && body.node);
+      if (!(nodeN >= 1 && nodeN <= 30)) {
+        try {
+          const p = require('node:path').join(__dirname, '..', 'content', 'rooms.json');
+          const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+          for (const n of data.nodes || []) {
+            if ((n.rooms || []).some((r) => String(r && r.code).toUpperCase() === code)) { nodeN = Number(n.n); break; }
+          }
+        } catch { /* 目录缺了就只能靠前端传的 node */ }
+      }
+      if (!(nodeN >= 1 && nodeN <= 30)) return sendJson(res, 404, { ok: false, error: 'room_not_found' });
+      let secret = '';
+      try { secret = fs.readFileSync(require('node:path').join(__dirname, '..', '.secrets', 'watch-secret'), 'utf8').trim(); } catch { /* 下面会返回 503 */ }
+      if (!secret) return sendJson(res, 503, { ok: false, error: 'no_secret' });
+      const exp = Date.now() + 60_000;
+      const sig = require('node:crypto').createHmac('sha256', secret).update(`${code}.${exp}`).digest('base64url');
+      const payload = JSON.stringify({ code, exp });
+      const out = await new Promise((resolve) => {
+        const req2 = require('node:http').request({
+          host: '127.0.0.1', port: 3000 + nodeN, path: '/admin/room/abort', method: 'POST',
+          headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'x-sp-admin-sig': sig },
+          timeout: 8000,
+        }, (r2) => {
+          let b = '';
+          r2.on('data', (c) => { b += c; });
+          r2.on('end', () => { try { resolve({ status: r2.statusCode, body: JSON.parse(b) }); } catch { resolve({ status: r2.statusCode, body: { ok: false, error: 'bad_response' } }); } });
+        });
+        req2.on('error', (e) => resolve({ status: 0, body: { ok: false, error: String(e && e.code || e) } }));
+        req2.on('timeout', () => { req2.destroy(); resolve({ status: 0, body: { ok: false, error: 'timeout' } }); });
+        req2.write(payload);
+        req2.end();
+      });
+      if (out.body && out.body.ok) {
+        await audit({ id: me3.admin_id, email: me3.email }, 'abort-match', code, 'node-' + nodeN, ipOf(req));
+        return sendJson(res, 200, { ok: true, code, node: nodeN, humans: out.body.humans, roomKept: true });
+      }
+      const err = (out.body && out.body.error) || 'abort_failed';
+      const status = err === 'no_room' ? 404 : err === 'no_match' ? 409 : out.status >= 400 ? out.status : 502;
+      return sendJson(res, status, { ok: false, error: err, node: nodeN });
+    }
     const mn = /^\/api\/admin2\/node\/([0-9]{1,2})\/restart$/.exec(pathname);
     if (mn && method === 'POST') {
       if (!adminCan(me3, 'nodes.restart')) return sendJson(res, 403, { ok: false, error: 'forbidden' });

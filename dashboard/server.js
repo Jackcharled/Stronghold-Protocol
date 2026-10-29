@@ -606,7 +606,31 @@ function explainCloseError(status, body, nodeN) {
   return (body && body.error) || `关闭失败（HTTP ${status}）`;
 }
 
-function closeRoom(codeIn, nodeIn) {
+/** 同上，但针对「结束对局」这个动作 —— 措辞要区分开，否则维护者会以为房间也没了。 */
+function explainAbortError(status, body, nodeN) {
+  if (status === 405) return `node-${nodeN} 还没重启到最新代码，不支持结束对局（该节点需要重启一次）`;
+  if (status === 404) return '房间不存在（可能已经结束或解散）';
+  if (status === 409) return '这个房间当前没有进行中的对局（可能刚打完）';
+  if (status === 403) return '被节点拒绝（签名校验失败，请检查 .secrets/watch-secret）';
+  if (status === 400) return '请求参数不对';
+  if (status === 0) return `node-${nodeN} 无响应`;
+  return (body && body.error) || `结束对局失败（HTTP ${status}）`;
+}
+
+/**
+ * 向房间所在节点发一条管理指令。
+ *
+ * close 与 abort 只差三样：路径、失败时的话术、成功时回报的字段。
+ * 其余（找节点、签名、能力预检、超时处理）完全一样，所以合成一个函数，
+ * 免得以后改一处忘了另一处。
+ *
+ * @param {'close'|'abort'} action
+ * @param {string} codeIn @param {number} nodeIn
+ */
+function adminRoomAction(action, codeIn, nodeIn) {
+  const isAbort = action === 'abort';
+  const explain = isAbort ? explainAbortError : explainCloseError;
+  const failWord = isAbort ? '结束对局失败' : '关闭失败';
   return new Promise((resolve) => {
     const code = String(codeIn || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{4,6}$/.test(code)) return resolve({ ok: false, status: 400, error: 'bad_code' });
@@ -625,13 +649,13 @@ function closeRoom(codeIn, nodeIn) {
     const exp = Date.now() + 60_000;
     const sig = crypto.createHmac('sha256', secret).update(`${code}.${exp}`).digest('base64url');
     const payload = JSON.stringify({ code, exp });
-    // 这一台节点跑的是不是带 /admin/room/close 的代码？
+    // 这一台节点跑的是不是带 /admin/room/<action> 的代码？
     // 没重启的节点上这个路由不存在，请求会掉到静态文件兜底，返回 405 + 一张 HTML 错误页，
-    // 页面上只显示「关闭失败」，完全猜不到原因。所以先确认能力，再决定要不要发。
+    // 页面上只显示一句失败话，完全猜不到原因。所以先确认能力，再决定要不要发。
     const cap = roomCloseCapable(nodeN);
     if (!cap.ok) return resolve({ ok: false, status: 409, error: 'node_not_ready', node: nodeN, hint: cap.why });
     const req = http.request({
-      host: '127.0.0.1', port: 3000 + nodeN, path: '/admin/room/close', method: 'POST', timeout: 8000,
+      host: '127.0.0.1', port: 3000 + nodeN, path: `/admin/room/${action}`, method: 'POST', timeout: 8000,
       headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'x-sp-admin-sig': sig },
     }, (r) => {
       let b = '';
@@ -639,13 +663,17 @@ function closeRoom(codeIn, nodeIn) {
       r.on('end', () => {
         let j = null;
         try { j = JSON.parse(b); } catch { /* 非 JSON */ }
-        if (j && j.ok) return resolve({ ok: true, code, node: nodeN, humans: j.humans, running: j.running });
+        if (j && j.ok) {
+          return resolve(isAbort
+            ? { ok: true, code, node: nodeN, humans: j.humans, roomKept: true }
+            : { ok: true, code, node: nodeN, humans: j.humans, running: j.running });
+        }
         // 405 = 这台节点没有该路由（旧代码）；翻译成人能看懂的话
         resolve({
           ok: false,
           status: r.statusCode || 502,
-          error: (j && j.error) || (r.statusCode === 405 ? 'node_not_ready' : 'close_failed'),
-          hint: explainCloseError(r.statusCode, j, nodeN),
+          error: (j && j.error) || (r.statusCode === 405 ? 'node_not_ready' : (isAbort ? 'abort_failed' : 'close_failed')),
+          hint: explain(r.statusCode, j, nodeN) || failWord,
           node: nodeN,
         });
       });
@@ -656,6 +684,12 @@ function closeRoom(codeIn, nodeIn) {
     req.end();
   });
 }
+
+/** 关掉整个房间：玩家被送回大厅。 */
+function closeRoom(codeIn, nodeIn) { return adminRoomAction('close', codeIn, nodeIn); }
+
+/** 只结束当前这一局，房间和座位都留下，玩家可以缓一下再重新开局。 */
+function abortMatch(codeIn, nodeIn) { return adminRoomAction('abort', codeIn, nodeIn); }
 
 /** 把 nginx 开放列表改成「所有已跑新代码的节点」。
  *
@@ -1076,6 +1110,22 @@ const server = http.createServer(async (req, res) => {
       try { payload = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
       if (payload.confirm !== true) return sendJson(res, 400, { error: '需要 confirm:true' });
       const result = await closeRoom(payload.code, payload.node);
+      refresh();
+      return sendJson(res, result.ok ? 200 : (result.status || 500), result);
+    });
+    return;
+  }
+  // 结束单个房间里的对局（房间保留）：POST /api/rooms/abort { code, node, confirm:true }
+  // 玩家不会被踢出房间，只是这一局没了，可以重新开局。
+  if (pathname === '/api/rooms/abort' && req.method === 'POST') {
+    if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', async () => {
+      let payload = {};
+      try { payload = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
+      if (payload.confirm !== true) return sendJson(res, 400, { error: '需要 confirm:true' });
+      const result = await abortMatch(payload.code, payload.node);
       refresh();
       return sendJson(res, result.ok ? 200 : (result.status || 500), result);
     });

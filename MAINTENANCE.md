@@ -1422,6 +1422,76 @@ Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
 # 2026-10-28 13:57:58 ok alive=30/30 avg_uptime=784s
 ```
 
+### 9.19 「结束对局」按钮 —— 只结束这一局，房间留着（2026-10-29 新增）
+
+维护者要求：房间表能**单独结束某一局**，但**不销毁房间**。
+
+#### 和「关闭房间」的区别（两个按钮并存，别搞混）
+
+| 按钮 | 走的方法 | 结果 |
+|---|---|---|
+| **关闭**（原有） | `disposeRoom(room, 'admin-closed')` | 房间整个没了，所有座位/观战者收到 `room.closed`，玩家被移出同盟、回到大厅 |
+| **结束对局**（新增） | `abortMatch(room)` | 只这一局结束，**房间、座位、玩家都留着**，可以立刻重新开局 |
+
+两个按钮都只在**房间表里那间房正在对局时**才显示「结束对局」（没有对局时这个按钮没有意义）。
+
+#### 实现要点
+
+`abortMatch` 走的是和对局**自然结束完全一样**的收尾路径 `onMatchEnd`：
+
+```js
+abortMatch(room, { reason = 'admin-aborted' } = {}) {
+  const ctx = room.matchCtx;
+  if (!ctx || !room.match) return { ok: false, reason: 'no_match' };  // 没对局：如实说，不算失败
+  this.onMatchEnd(room, ctx, { reason, detail: 'admin', adminAborted: true });
+  if (!room.disposed) this.broadcastState(room);
+  return { ok: true, code: room.code, wasRunning: true };
+}
+```
+
+**为什么必须走 `onMatchEnd` 而不是自己清字段**：它会一并处理这些收尾 ——
+房间退回大厅（`match/matchCtx/matchKey` 置空）、座位 `ready` 重置、房主迁移、
+以及**把「15 分钟未开始对局就解散」的计时推到现在**（`lastMatchEndAt`）。
+少做任何一步，都可能出现「结束对局后房间立刻被解散」这类问题（§9.x 踩过一次）。
+
+没有对局时返回 `409 no_match`，前端的文案是「这个房间当前没有进行中的对局」
+—— 是**如实说明**，不是报错。
+
+#### 三处改动
+
+| 位置 | 内容 |
+|---|---|
+| `server/lobby.js` | 新增 `abortMatch(room)` |
+| `server/http/routes.js` | 新增 `POST /admin/room/abort`（鉴权与 `/admin/room/close` 完全一致：loopback/内网 + HMAC + 60 秒时限） |
+| `dashboard/server.js` | 新增 `POST /api/rooms/abort`；`closeRoom` 与 `abortMatch` 合并到 `adminRoomAction(action, ...)`，只差路径、失败话术、成功字段 |
+| `dashboard/public/app.js` | 房间表加「结束对局」按钮 + `abortMatch()` + 确认框 |
+| `matchmaker/account.cjs` | 新增 `POST /api/admin2/rooms/abort`（权限复用 `rooms.close`，审计动作 `abort-match`） |
+| `matchmaker/public/admin.html` | 房间表加「结束对局」按钮 + 事件委托处理 |
+
+> ⚠ `admin.html` 被 `.gitignore` 排除（仓库不公开管理后台），这是**既定设计**。
+> 所以它只改本机，不进仓库；`repo-sync/matchmaker/public/admin.html` 那份只是本地副本。
+
+#### 生效方式
+
+- **`server/` 改动必须重启节点** —— 该节点上没重启就用，「结束对局」会返回 405
+  （控制台会翻译成「node-N 还没重启到最新代码」）
+- `dashboard` / `matchmaker` 重启即生效
+- `admin.html` 刷新页面即生效
+
+#### 端到端验证（2026-10-29 实测，node-9）
+
+用测试账号在**空闲节点**上自建房跑一局，然后调接口（不碰玩家房间）：
+
+```
+abort 接口: 200 {"ok":true,"code":"EABB","humans":1,"roomKept":true}
+房间还在: 是 ✓
+已退回大厅: 是 ✓        （room.state.inMatch 由 true 变 false）
+座位保留: 是 ✓
+```
+
+**注意**：`/admin/room/abort` 第一次测返回 **405**，原因是那台节点还没重启到新代码 ——
+这正是 §9.13 那个坑的同类表现，不是接口本身的问题。
+
 ### 9.18 HTTPS 证书续期一直失败（2026-10-29 修复）
 
 **症状**：计划任务 `SP-LetsEncrypt-Renew`（每天 03:30）**天天失败**，结果码

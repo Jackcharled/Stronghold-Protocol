@@ -2972,6 +2972,17 @@ export class Lobby {
         // ② 会话仍然存活：也不清理
         const old = this.registry.byId(seat.playerId);
         if (old && old.connected === true) continue;
+        // ③ ★ 2026-10-28：对局进行中的座位绝不清理 —— 与 startGrace 的保护一致。
+        //
+        //   当天 nginx 重启（改分流规则）把所有人的 socket 都断了。玩家重连时拿到的是
+        //   **新的 playerId**，于是这里把旧座位判成「同账号遗留」，删掉。
+        //   实测事故：VAHS（node-1）里 4 人房的 seat 3 被删，那位玩家对自己座位
+        //   做任何操作都报「你不在房间中」，而 UI 上他还看着 4 个队友。
+        //
+        //   宽限期（startGrace）本来就有 if (room.match) return —— 对局中不踢人。
+        //   这个函数绕过了那一层，现在补回来：只要对局在跑，座位就留着，
+        //   让人自己重连回来（他会拿到原座位，因为 playerId 在接管时会被换回）。
+        if (room.match || room.matchCtx) continue;
         room.seats[i] = null;
         cleaned.push(room.code);
         this.log.info(`[lobby] ${room.code} 清理账号 ${accountId} 的遗留座位（旧会话 ${seat.playerId}，未连接）`);
@@ -3156,6 +3167,39 @@ export class Lobby {
   clearGrace(playerId) {
     const t = this.graceTimers.get(playerId);
     if (t) { clearTimeout(t); this.graceTimers.delete(playerId); }
+  }
+
+  /**
+   * 本服：强制结束房间当前这一局，但**保留房间**，让玩家留在大厅里可以重新开局。
+   *
+   * 和 disposeRoom 的区别（这是维护者 2026-10-29 明确要的第二个按钮）：
+   *   * disposeRoom      → 房间整个没了，玩家被踢回大厅/首页（room.closed）
+   *   * abortMatch       → 只是这一局结束，房间还在、座位还在、玩家还在房间里
+   *
+   * 走的是和对局自然结束完全一样的收尾路径 onMatchEnd：它会把房间退回大厅状态
+   * （match/matchCtx/matchKey 置空）、重置座位 ready、必要时迁移房主、
+   * 并把「15 分钟未开始对局就解散」的计时重新推到现在 —— 所以不会因为
+   * 「房间创建时间太早」而在结束对局后立刻被解散。
+   *
+   * 用 summary.reason = 'admin-aborted'：结算界面会据此显示「对局已被管理员终止」，
+   * 而不是伪装成一次正常打完的结算。
+   *
+   * @param {Room} room @param {{ reason?: string }} [opts]
+   * @returns {{ ok: true, code: string, wasRunning: boolean } | { ok: false, reason: string }}
+   */
+  abortMatch(room, { reason = 'admin-aborted' } = {}) {
+    if (!room || room.disposed) return { ok: false, reason: 'no_room' };
+    const ctx = room.matchCtx;
+    // 没有对局在跑：不报错，如实说明（房间可能只是开着没开局）
+    if (!ctx || !room.match) return { ok: false, reason: 'no_match' };
+    if (ctx.ended || !ctx.live) return { ok: false, reason: 'no_match' };
+    const round = Number(room.match.round) || 0;
+    this.log.info(`[lobby] ${room.code} match aborted by admin at round ${round}`);
+    // 和自然结束同一条路径：房间留下，只是这一局没了
+    this.onMatchEnd(room, ctx, { reason: String(reason), detail: 'admin', adminAborted: true });
+    // 对局中房间里的玩家就算断着线，也要让他们回来就能看到房间还在
+    if (!room.disposed) this.broadcastState(room);
+    return { ok: true, code: room.code, wasRunning: true };
   }
 
   /**

@@ -3170,6 +3170,39 @@ export class Lobby {
   }
 
   /**
+   * 本服：强制结束房间当前这一局，但**保留房间**，让玩家留在大厅里可以重新开局。
+   *
+   * 和 disposeRoom 的区别（这是维护者 2026-10-29 明确要的第二个按钮）：
+   *   * disposeRoom      → 房间整个没了，玩家被踢回大厅/首页（room.closed）
+   *   * abortMatch       → 只是这一局结束，房间还在、座位还在、玩家还在房间里
+   *
+   * 走的是和对局自然结束完全一样的收尾路径 onMatchEnd：它会把房间退回大厅状态
+   * （match/matchCtx/matchKey 置空）、重置座位 ready、必要时迁移房主、
+   * 并把「15 分钟未开始对局就解散」的计时重新推到现在 —— 所以不会因为
+   * 「房间创建时间太早」而在结束对局后立刻被解散。
+   *
+   * 用 summary.reason = 'admin-aborted'：结算界面会据此显示「对局已被管理员终止」，
+   * 而不是伪装成一次正常打完的结算。
+   *
+   * @param {Room} room @param {{ reason?: string }} [opts]
+   * @returns {{ ok: true, code: string, wasRunning: boolean } | { ok: false, reason: string }}
+   */
+  abortMatch(room, { reason = 'admin-aborted' } = {}) {
+    if (!room || room.disposed) return { ok: false, reason: 'no_room' };
+    const ctx = room.matchCtx;
+    // 没有对局在跑：不报错，如实说明（房间可能只是开着没开局）
+    if (!ctx || !room.match) return { ok: false, reason: 'no_match' };
+    if (ctx.ended || !ctx.live) return { ok: false, reason: 'no_match' };
+    const round = Number(room.match.round) || 0;
+    this.log.info(`[lobby] ${room.code} match aborted by admin at round ${round}`);
+    // 和自然结束同一条路径：房间留下，只是这一局没了
+    this.onMatchEnd(room, ctx, { reason: String(reason), detail: 'admin', adminAborted: true });
+    // 对局中房间里的玩家就算断着线，也要让他们回来就能看到房间还在
+    if (!room.disposed) this.broadcastState(room);
+    return { ok: true, code: room.code, wasRunning: true };
+  }
+
+  /**
    * Delete a room, detach its members (room.closed unless the room simply emptied) and dispose its match.
    * @param {Room} room @param {string} reason
    */

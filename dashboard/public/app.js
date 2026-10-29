@@ -318,9 +318,23 @@ function renderRoomsTable() {
     const closeBtn = '<button class="room-close" data-close="' + esc(x.code) + '" data-node="' + Number(x.node)
       + '" data-humans="' + (Number(x.humans) || 0) + '" data-running="' + (x.started ? 1 : 0) + '"'
       + ' title="关闭这个房间">关闭</button>';
-    return '<tr><td><span class="room-code">' + esc(x.code) + '</span>' + capBadge + adminBadge + '</td><td title="node-' + x.node + '"><span class="room-node">' + esc(NAMES[x.node - 1] || ('节点 ' + x.node)) + '</span></td><td><span class="room-mode">' + (x.mode === 'solo' ? '单人模拟' : x.mode === 'coop' ? '同盟模拟' : '—') + '</span></td><td><span class="room-diff' + (x.difficulty ? ' diff-' + esc(x.difficulty) : '') + '">' + esc(diffName) + '</span></td><td>' + verCell + '</td><td><span class="room-state' + stateClass + '">' + state + '</span></td><td><span class="room-round' + (x.round > 0 ? '' : ' is-empty') + '" title="' + (x.round > 0 ? '第 ' + x.round + ' 回合' : (x.started ? '对局准备中' : '暂无对局')) + '">' + roundText + '</span></td><td><div class="room-players' + (cap > 4 ? ' room-players--large' : '') + '">' + playerHtml + '</div></td><td>' + count(x.humans) + '</td><td>' + count(x.bots) + '</td><td>' + spectate + '</td><td><div class="room-spectators">' + spectatorHtml + '</div></td><td>' + closeBtn + '</td></tr>';
+    // 结束这局（房间保留）：只在对局进行中才显示 —— 没有对局时这个按钮没有意义，
+    // 灰着摆在那里只会让人以为能点。结束之后玩家留在房间里，可以重新开局。
+    const abortBtn = x.started
+      ? '<button class="room-abort" data-abort="' + esc(x.code) + '" data-node="' + Number(x.node)
+        + '" data-humans="' + (Number(x.humans) || 0) + '" data-round="' + (Number(x.round) || 0) + '"'
+        + ' title="结束当前这一局，房间和座位都保留，玩家可以重新开局">结束对局</button>'
+      : '';
+    return '<tr><td><span class="room-code">' + esc(x.code) + '</span>' + capBadge + adminBadge + '</td><td title="node-' + x.node + '"><span class="room-node">' + esc(NAMES[x.node - 1] || ('节点 ' + x.node)) + '</span></td><td><span class="room-mode">' + (x.mode === 'solo' ? '单人模拟' : x.mode === 'coop' ? '同盟模拟' : '—') + '</span></td><td><span class="room-diff' + (x.difficulty ? ' diff-' + esc(x.difficulty) : '') + '">' + esc(diffName) + '</span></td><td>' + verCell + '</td><td><span class="room-state' + stateClass + '">' + state + '</span></td><td><span class="room-round' + (x.round > 0 ? '' : ' is-empty') + '" title="' + (x.round > 0 ? '第 ' + x.round + ' 回合' : (x.started ? '对局准备中' : '暂无对局')) + '">' + roundText + '</span></td><td><div class="room-players' + (cap > 4 ? ' room-players--large' : '') + '">' + playerHtml + '</div></td><td>' + count(x.humans) + '</td><td>' + count(x.bots) + '</td><td>' + spectate + '</td><td><div class="room-spectators">' + spectatorHtml + '</div></td><td><span class="room-actions">' + abortBtn + closeBtn + '</span></td></tr>';
   }).join('') : '<tr><td colspan="13" class="muted">暂无房间</td></tr>';
-  // 关闭按钮（每次重绘表格都会重建，所以在这里绑定）
+  // 按钮（每次重绘表格都会重建，所以在这里绑定）
+  body.querySelectorAll('[data-abort]').forEach((b) => {
+    b.onclick = () => abortMatch(b.dataset.abort, Number(b.dataset.node), {
+      humans: Number(b.dataset.humans) || 0,
+      round: Number(b.dataset.round) || 0,
+      btn: b,
+    });
+  });
   body.querySelectorAll('[data-close]').forEach((b) => {
     b.onclick = () => closeRoom(b.dataset.close, Number(b.dataset.node), {
       humans: Number(b.dataset.humans) || 0,
@@ -339,6 +353,47 @@ function renderRoomsTable() {
       renderRoomsTable();
     };
   });
+}
+
+/**
+ * 结束一个房间当前这一局，但**保留房间**。
+ *
+ * 和 closeRoom 的区别（维护者 2026-10-29 要求两个按钮分开）：
+ *   closeRoom → 房间没了，玩家被移出同盟、回到大厅
+ *   abortMatch → 只是这一局结束，房间、座位、玩家都还在，可以立刻重新开局
+ */
+async function abortMatch(code, node, { humans = 0, round = 0, btn = null } = {}) {
+  let msg = `结束房间 ${code}（node-${node}）当前的这一局？`;
+  if (round > 0) msg += `\n\n当前进行到第 ${round} 回合。`;
+  if (humans) msg += `\n\n⚠ 这一局会立即终止，里面 ${humans} 名玩家的进度会作废。`;
+  msg += '\n\n房间会保留，玩家不用重新进房，可以直接重新开局。';
+  if (!confirm(msg)) return;
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '结束中…'; }
+  try {
+    const r = await fetch('/api/rooms/abort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, node, confirm: true }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      toast(`已结束 ${code} 的对局（房间保留，${j.humans || 0} 名玩家还在房里）`);
+    } else {
+      const zh = j.hint || {
+        forbidden: '没有权限', no_room: '房间已不存在', room_not_found: '找不到该房间',
+        no_match: '这个房间当前没有进行中的对局',
+        timeout: '节点无响应', no_secret: '缺少密钥文件', bad_code: '房间号无效', abort_failed: '结束对局失败',
+        node_not_ready: '节点需要重启才能用这个功能',
+      }[j.error] || j.error || `HTTP ${r.status}`;
+      toast(`结束对局失败：${zh}`, 6000);
+    }
+  } catch (e) {
+    toast(`结束对局失败：${e && e.message ? e.message : e}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+    refresh();
+  }
 }
 
 /** 关闭一个房间。房间归某台节点所有，必须把 node 一起发过去。 */

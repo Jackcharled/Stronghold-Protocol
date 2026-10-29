@@ -605,6 +605,11 @@ export class Room {
       matchmakingAt: this.matchmaking ? (Number(this.matchmakingStartedAt) || this.matchmakingAt || 0) : 0,
       seats: this.seats.map((s) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left,
+          // 账号 tag（4 位数字）：前端的 DOCTOR #1234 用它显示真实账号编号。
+          // 上游是按 playerId 做 FNV 哈希，而 playerId 每次新建会话都随机生成（net.js: 'p_' + randomBytes(5)），
+          // 于是同一账号的编号每次重连都变，玩家会以为"我的编号不对/立绘被改了"。
+          // 这里下发真实 tag；拿不到（游客、老节点没这个字段）时前端回退到哈希，行为与上游一致。
+          ...(typeof s.tag === 'string' && /^[0-9]{4}$/.test(s.tag) ? { tag: s.tag } : {}),
           // 管理员/服主标记：控制台据此把「玩家」显示成「管理员」（仅展示用）
           ...(s.admin === true ? { admin: true } : {}),
           // a room with gameplay plugins (header "Gameplay plugins"): has this player's page loaded and checked its content?
@@ -883,6 +888,16 @@ export class Lobby {
     // live socket) answers the requester alone, so hello spam cannot amplify into room-wide traffic.
     let changed = !seat.connected;
     seat.connected = true;
+    // 回填账号身份：落座时 hello 里可能还没带账号令牌（令牌是异步补发的，比首帧 hello 晚），
+    // 而 humanSeat() 只写一次、之后没有任何地方补。座位 accountId 为空会直接破坏
+    // 「一个账号只能占一处席位」的判定（accountRoomConflict 靠它比对），
+    // 后果是同一账号能一边坐着一边去旁观（实测：新标签页没回到对局，旧标签页变成观战）。
+    // 这里在每次重连 / 重复 hello 时补上，属于幂等操作。
+    if (session.accountId && String(seat.accountId || '') !== String(session.accountId)) {
+      seat.accountId = String(session.accountId);
+      changed = true;
+    }
+    if (session.tag && seat.tag !== session.tag) { seat.tag = session.tag; changed = true; }
     // 有人回来了：卡死对局的回收计时作废（房间重新有活人，sweepOldRooms 不会再碰它）
     if (room.lastHumanLeftAt) room.lastHumanLeftAt = 0;
     // 管理员房主回来了：恢复「永久保留」，管理员房重新不计时
@@ -1324,10 +1339,50 @@ export class Lobby {
     if (cur === room && !room.spectatorOf(session.playerId)) { this.sendState(room, session); return OK; }
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
     let conflict = this.accountRoomConflict(session);
-    // 同账号的遗留座位（刷新/换设备后的旧会话）先清掉，不再挡加入房间。
-    if (conflict && conflict.stale) {
+    // ★ 顺序很关键：先判断「能不能在本房间接管」，再考虑清理遗留座位。
+    //
+    // 以前这里先无条件 dropStaleAccountSeats()：同一账号在**目标房间自己的座位**被当成
+    // "遗留"删掉，而那个座位往往是房间里唯一的人类座位 —— 删完房间就空了、被解散。
+    // 实测事故（13:53）：玩家开新标签页想回到自己正在对局的 ZUHW，
+    // 服务端把旧会话的座位清了 → 「ZUHW disposed (empty)」→
+    // 新旧标签页都失去房间，加入时报「未找到该同盟密钥对应的房间」。
+    //
+    // 正确做法：同房间的座位应当**接管**（下面的 takeover 分支会把 playerId 换成当前会话、
+    // 关掉旧 socket），清理只用于「账号在**别的**房间留下的座位」。
+    if (conflict && conflict.room === room && conflict.kind === 'player') {
+      // 同房间：无论对局是否在跑，都走接管（旧设备让位），绝不删除座位。
+    } else if (conflict && conflict.stale) {
+      // 账号在别的房间留下了旧座位：清掉，不再挡住这次加入
       this.dropStaleAccountSeats(session);
       conflict = this.accountRoomConflict(session);
+    }
+    if (conflict && conflict.room === room && conflict.kind === 'player') {
+      // 对局进行中也允许：同账号接管自己的座位（旧设备让位）。
+      const oldSeatPid = conflict.seat.playerId;
+      const oldSess = this.registry.byId(oldSeatPid);
+      if (oldSess && oldSess.playerId !== session.playerId) {
+        if (oldSess.ws && oldSess.connected) {
+          try { sendSession(oldSess, { t: 'account.detached', roomCode: room.code, playerId: oldSeatPid }); } catch { /* ignore */ }
+          const oldWs = oldSess.ws;
+          setTimeout(() => { try { oldWs.close(4001, 'account moved'); } catch { /* ignore */ } }, 120);
+        }
+        oldSess.ws = null;
+        oldSess.connected = false;
+        oldSess.disconnectedAt = this.now();
+        oldSess.roomCode = null;
+      }
+      // 把座位交给当前会话
+      const seat = conflict.seat;
+      seat.playerId = session.playerId;
+      seat.name = session.name;
+      seat.connected = true;
+      if (room.hostId === oldSeatPid) room.hostId = session.playerId;
+      session.roomCode = room.code;
+      session.notice = null;
+      session.pendingResult = null;
+      this.broadcastState(room);
+      if (room.match) { try { this.callMatch(room, 'onReconnect', session.playerId); } catch { /* ignore */ } }
+      return OK;
     }
     if (conflict) return fail(ERR.SESSION_IN_USE, '该账号已在其他房间中，请先离开原房间');
     if (room.match) return fail(ERR.ROOM_STARTED);
@@ -1400,7 +1455,14 @@ export class Lobby {
       if (room.match) this.callMatch(room, 'addSpectator', session.playerId, true);
       return OK;
     }
-    room.spectators.push({ playerId: session.playerId, name: session.name, connected: session.connected });
+    // 旁观席也要记 accountId：accountRoomConflict 用它判断「同一账号是否已占席位」，
+    // 不写的话同一个账号可以在别的房间坐着、同时还来这边旁观。
+    room.spectators.push({
+      playerId: session.playerId,
+      name: session.name,
+      connected: session.connected,
+      ...(session.accountId ? { accountId: String(session.accountId) } : {}),
+    });
     session.roomCode = room.code;
     session.notice = null;
     session.pendingResult = null;
@@ -2847,18 +2909,30 @@ export class Lobby {
   accountRoomConflict(session) {
     const accountId = session.accountId;
     if (!accountId) return null;
+    // 座位上的 accountId 可能是 null：建房/落座时 hello 里还没带账号令牌（令牌是异步补发的），
+    // 而 humanSeat() 只写一次，之后没人回填。这时同一个账号可以"坐在座位上 + 再开一个旁观席"，
+    // 因为下面这条 != 判断直接把这排除了。实测踩到：玩家新开标签页没回到对局，
+    // 反而看到旧标签页变成旁观状态。
+    // 兜底：座位没有 accountId 时，用 playerId 反查会话的 accountId 再比对。
+    const seatAccountId = (seat) => {
+      if (seat.accountId) return String(seat.accountId);
+      const s = this.registry.byId(seat.playerId);
+      return s && s.accountId ? String(s.accountId) : null;
+    };
     for (const room of this.rooms.values()) {
       if (!room || room.disposed) continue;
       for (const seat of room.seats) {
         if (!seat || seat.isBot || seat.left) continue;
-        if (seat.accountId !== accountId || seat.playerId === session.playerId) continue;
+        if (seat.playerId === session.playerId) continue;
+        if (seatAccountId(seat) !== accountId) continue;
         // 同一账号的另一处座位：判断是不是「已经没人的旧会话」
         const old = this.registry.byId(seat.playerId);
         const stale = !old || old.connected !== true;
         return { room, kind: 'player', seat, stale };
       }
       for (const spec of room.spectators) {
-        if (!spec || spec.accountId !== accountId || spec.playerId === session.playerId) continue;
+        if (!spec || spec.playerId === session.playerId) continue;
+        if (seatAccountId(spec) !== accountId) continue;
         const old = this.registry.byId(spec.playerId);
         const stale = !old || old.connected !== true;
         return { room, kind: 'spectator', seat: spec, stale };
@@ -2898,6 +2972,17 @@ export class Lobby {
         // ② 会话仍然存活：也不清理
         const old = this.registry.byId(seat.playerId);
         if (old && old.connected === true) continue;
+        // ③ ★ 2026-10-28：对局进行中的座位绝不清理 —— 与 startGrace 的保护一致。
+        //
+        //   当天 nginx 重启（改分流规则）把所有人的 socket 都断了。玩家重连时拿到的是
+        //   **新的 playerId**，于是这里把旧座位判成「同账号遗留」，删掉。
+        //   实测事故：VAHS（node-1）里 4 人房的 seat 3 被删，那位玩家对自己座位
+        //   做任何操作都报「你不在房间中」，而 UI 上他还看着 4 个队友。
+        //
+        //   宽限期（startGrace）本来就有 if (room.match) return —— 对局中不踢人。
+        //   这个函数绕过了那一层，现在补回来：只要对局在跑，座位就留着，
+        //   让人自己重连回来（他会拿到原座位，因为 playerId 在接管时会被换回）。
+        if (room.match || room.matchCtx) continue;
         room.seats[i] = null;
         cleaned.push(room.code);
         this.log.info(`[lobby] ${room.code} 清理账号 ${accountId} 的遗留座位（旧会话 ${seat.playerId}，未连接）`);
@@ -3082,6 +3167,39 @@ export class Lobby {
   clearGrace(playerId) {
     const t = this.graceTimers.get(playerId);
     if (t) { clearTimeout(t); this.graceTimers.delete(playerId); }
+  }
+
+  /**
+   * 本服：强制结束房间当前这一局，但**保留房间**，让玩家留在大厅里可以重新开局。
+   *
+   * 和 disposeRoom 的区别（这是维护者 2026-10-29 明确要的第二个按钮）：
+   *   * disposeRoom      → 房间整个没了，玩家被踢回大厅/首页（room.closed）
+   *   * abortMatch       → 只是这一局结束，房间还在、座位还在、玩家还在房间里
+   *
+   * 走的是和对局自然结束完全一样的收尾路径 onMatchEnd：它会把房间退回大厅状态
+   * （match/matchCtx/matchKey 置空）、重置座位 ready、必要时迁移房主、
+   * 并把「15 分钟未开始对局就解散」的计时重新推到现在 —— 所以不会因为
+   * 「房间创建时间太早」而在结束对局后立刻被解散。
+   *
+   * 用 summary.reason = 'admin-aborted'：结算界面会据此显示「对局已被管理员终止」，
+   * 而不是伪装成一次正常打完的结算。
+   *
+   * @param {Room} room @param {{ reason?: string }} [opts]
+   * @returns {{ ok: true, code: string, wasRunning: boolean } | { ok: false, reason: string }}
+   */
+  abortMatch(room, { reason = 'admin-aborted' } = {}) {
+    if (!room || room.disposed) return { ok: false, reason: 'no_room' };
+    const ctx = room.matchCtx;
+    // 没有对局在跑：不报错，如实说明（房间可能只是开着没开局）
+    if (!ctx || !room.match) return { ok: false, reason: 'no_match' };
+    if (ctx.ended || !ctx.live) return { ok: false, reason: 'no_match' };
+    const round = Number(room.match.round) || 0;
+    this.log.info(`[lobby] ${room.code} match aborted by admin at round ${round}`);
+    // 和自然结束同一条路径：房间留下，只是这一局没了
+    this.onMatchEnd(room, ctx, { reason: String(reason), detail: 'admin', adminAborted: true });
+    // 对局中房间里的玩家就算断着线，也要让他们回来就能看到房间还在
+    if (!room.disposed) this.broadcastState(room);
+    return { ok: true, code: room.code, wasRunning: true };
   }
 
   /**

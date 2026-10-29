@@ -84,6 +84,7 @@ patcher\
 | **联防救援（队友复活）**：被淘汰的博士在 15 秒窗口内由合格队友支付 10 点生命救回；每局每人最多被救一次 | `shared/protocol.js`（**`C2S` 的 `g.revive` 白名单**）、`server/match/Match.js:revive/revivalWindowOpen/revivalDonorEligible`、`server/match/match/intents.js`、`server/match/match/common.js`、`public/js/ui/revival.js`、`shared/experimental.js` | `server-player-capacity`（客户端 UI 在 `game-core-client-ui`） | **重启节点** |
 | 挂机踢人 / 同 IP 限制 | `server/match/match/intents.js` | `server-idle-guard` | 重启节点 |
 | 房间/对局快照与 Redis 检查点 | `server/match/snapshot.js`、`server/persist/*` | `server-snapshot-checkpoint` | 重启节点 |
+| **结束对局（保留房间）**：控制台/管理后台单独结束一间房当前这一局，房间、座位、玩家都留着，可立刻重新开局（与「关闭房间」并存） | `server/lobby.js:abortMatch`、`server/http/routes.js:handleAdminRoomAbort`（`POST /admin/room/abort`）、`dashboard/server.js:abortMatch/adminRoomAction`、`dashboard/public/app.js`、`matchmaker/account.cjs`（`POST /api/admin2/rooms/abort`）、`matchmaker/public/admin.html`（**不进仓库**） | `game-core-server` | **重启节点**（`dashboard`/`matchmaker` 重启即生效） |
 
 ### 连接、恢复与账号
 
