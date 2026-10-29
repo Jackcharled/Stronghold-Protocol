@@ -1460,6 +1460,82 @@ Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
 # 2026-10-28 13:57:58 ok alive=30/30 avg_uptime=784s
 ```
 
+### 9.21 「恢复对局」按钮只在大厅、且挨着「公告」（2026-10-29 修正）
+
+玩家反馈：恢复对局按钮的位置不对，希望它在大厅「公告」按钮旁边；
+维护者进一步明确：**其他界面均不要出现恢复对局按钮**。
+
+#### 原来的位置没写错，但按钮会跑到别处去
+
+代码里的插入是 `insertBefore(btn, anchor)`，锚点就是「公告」按钮 ——
+所以**只要锚点找得到，位置本来就在公告左边**（维护者 2026-10-29 确认要左边）。
+
+问题出在**锚点找不到时的降级链**：
+
+```js
+const anchor = notice
+  || document.querySelector('.verchip-wrap, button.verchip[data-testid="version-switch"]')
+  || [...document.querySelectorAll('button')].find((b) => /S\.W\.E\.E\.P/i.test(...));
+if (!anchor || !anchor.parentElement) {
+  // 造一个 position:fixed 的按钮挂在 body 上
+}
+```
+
+三种情况会把按钮放到不是「公告旁边」的地方：
+
+| 情况 | 结果 |
+|---|---|
+| 大厅里公告按钮还没渲染出来 | 退到**版本按钮**旁边（位置变了） |
+| 版本按钮也没有 | 退到 **S.W.E.E.P. 文字按钮**旁边 |
+| 三个都没有 | **右下角浮动按钮**，任何界面都挂着 |
+
+第三条最糟：玩家在对局中、结算页、设置页都能看到右下角冒出来一个「恢复对局」，
+而那根本不是大厅。
+
+#### 修复：只认公告按钮，拿不到就不显示
+
+```js
+/** 大厅的「公告」按钮此刻是否真的可见 */
+const lobbyNotice = () => {
+  const n = document.getElementById('mm-notice-btn');
+  if (!n || !n.isConnected) return null;
+  if (n.style.display === 'none') return null;                       // 非大厅被 ensureTopButton 隐藏
+  if (n.getClientRects().length === 0) return null;                  // 不可见（display/尺寸为 0）
+  return n;
+};
+
+if (!lobbyNotice()) { removeBtn(); return; }        // 不在大厅 → 直接没有任何按钮
+const anchor = lobbyNotice();                        // 锚点只认公告
+```
+
+**为什么用「公告按钮是否可见」当作「是否在大厅」的判据**：
+`ensureTopButton`（公告按钮的维护函数）在非大厅界面会把它 `display:none` 并返回 null，
+所以不管界面怎么改版、路由怎么变，**只要玩家不在大厅，公告按钮就不在**，
+恢复对局自然也不会冒出来。这比判断屏幕类名/路由更抗改版。
+
+同时**删掉了整段浮动按钮降级**（`mm-resume-fallback`）—— 它正是「其他界面也出现
+恢复对局」的源头。
+
+#### 生效方式
+
+`client.js` 由 nginx 的 `sub_filter` 注入，**改完必须改版本号**：
+
+```
+client.js?v=20261029-1  →  client.js?v=20261029-2
+```
+
+**需重启 nginx**（`node tools/restart-nginx.mjs --apply`）。
+
+#### 补丁副本怎么改的（吸取上次教训）
+
+两个补丁（`client-announcement` / `matching-party`）的 `client.js` 内容各不相同，
+**不能整份覆盖** —— 上次整份覆盖就把 `server/lobby.js` 误写进了前端文件（§9.19 末尾）。
+这次用脚本按**精确字符串**分三段替换，替换后逐段校验命中数（3/3）：
+
+1. 抽出 `lobbyNotice()` / `recentlyLeft()` 两个辅助函数
+2. 删掉浮动按钮降级段
+3. 锚点链改成只认公告按钮
+
 ### 9.20 观战「席位已满（2/2）」——前端写死了 2（2026-10-29 修复）
 
 玩家反馈：**房间 PCPJ 观战进不来，提示「观战席位已满（2/2）」**。

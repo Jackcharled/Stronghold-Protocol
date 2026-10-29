@@ -2966,17 +2966,42 @@ const JOIN_COOKIE = (() => {
     let lastCode = null;
     let lastCheck = 0;
 
-    const probe = async () => {
-      const role = window.__SP_ACCOUNT_ROLE || '';
-      if (!window.__SP_ACCOUNT_TOKEN || !role || role === 'guest') { removeBtn(); return; }
-      if (inRoom() || autoBusy()) { removeBtn(); return; }
-      // 主动退出对局后的一段时间内不显示（与自动恢复同一套闸）
+    /** 大厅的「公告」按钮此刻是否真的可见（见 probe 里的说明）。 */
+    const lobbyNotice = () => {
+      const n = document.getElementById('mm-notice-btn');
+      if (!n || !n.isConnected) return null;
+      // ensureTopButton 在非大厅界面会把它 display:none
+      if (n.style.display === 'none') return null;
+      if (typeof n.getClientRects === 'function' && n.getClientRects().length === 0) return null;
+      return n;
+    };
+    /** 玩家刚主动退出对局（2 分钟内）：这段时间不提醒恢复（与自动恢复同一套闸）。 */
+    const recentlyLeft = () => {
       try {
         const now = Date.now();
         const a = Number(sessionStorage.getItem('sp.matchExitAt') || 0);
         const b2 = Number(localStorage.getItem('sp.matchExitAtShared') || 0);
-        if ((a && now - a < 120000) || (b2 && now - b2 < 120000)) { removeBtn(); return; }
-      } catch { /* ignore */ }
+        return !!((a && now - a < 120000) || (b2 && now - b2 < 120000));
+      } catch { return false; }
+    };
+
+    const probe = async () => {
+      const role = window.__SP_ACCOUNT_ROLE || '';
+      if (!window.__SP_ACCOUNT_TOKEN || !role || role === 'guest') { removeBtn(); return; }
+      if (inRoom() || autoBusy()) { removeBtn(); return; }
+      // ★ 只在大厅显示（维护者 2026-10-29：「其他界面均不要出现恢复对局按钮」）。
+      //
+      // 判据用「大厅的公告按钮此刻是否真的可见」：
+      //   · 标题页 → 公告按钮是另一套外观，且下面还有专门的 title-screen 判断
+      //   · 对局中 / 结算 / 设置等界面 → ensureTopButton 会把公告按钮 display:none
+      //     并返回 null，拿不到它，这里就不会插按钮
+      //   · 房间等待室（还没开局）→ 同样没有公告按钮
+      //
+      // 这比「判断当前路由/屏幕类名」可靠：不管界面怎么改版，只要玩家不在大厅，
+      // 公告按钮就不在，恢复对局自然也不会冒出来。
+      if (!lobbyNotice()) { removeBtn(); return; }
+      // 主动退出对局后的一段时间内不显示（与自动恢复同一套闸）
+      if (recentlyLeft()) { removeBtn(); return; }
       if (Date.now() - lastCheck < 15000 && (lastCode || !existing())) return;   // 15 秒最多查一次
       lastCheck = Date.now();
       let code = null;
@@ -2990,38 +3015,23 @@ const JOIN_COOKIE = (() => {
       lastCode = code;
       if (!code) { removeBtn(); return; }
       if (existing()) return;
-      // 锚点：**只在联厅显示**（维护者明确要求：标题界面不要「恢复对局」）。
-      //   1) 大厅：公告按钮（恢复对局排在它左边）
-      //   2) 大厅：版本按钮 / SWEEP 文字按钮
-      const notice = document.getElementById('mm-notice-btn');
-      const anchor = notice
-        || document.querySelector('.verchip-wrap, button.verchip[data-testid="version-switch"]')
-        || [...document.querySelectorAll('button')].find((b) => !b.id.startsWith('mm-') && /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
       // ★ 标题界面一律不显示「恢复对局」（维护者 2026-10-26 明确要求）。
       // 判定用「当前是否停在标题屏」，而不是「有没有公告按钮」—— 标题页上也可能存在
       // 公告按钮，用锚点判断会漏。标题页只需展示账号/开始游戏，恢复入口属于联厅。
       if (document.querySelector('.title-screen')) { removeBtn(); return; }
-      // 所有锚点都找不到时（界面改版、按钮还没建出来、或玩家停在一个很简的页面），
-      // 不能再直接 return —— 那样「恢复对局」就彻底没有入口了。
-      // 退回一个固定定位的独立按钮，保证这条路任何时候都走得通。
-      if (!anchor || !anchor.parentElement) {
-        const fb = document.createElement('button');
-        fb.id = ID;
-        fb.type = 'button';
-        fb.className = 'verchip mm-resume-fallback';
-        fb.textContent = '恢复对局';
-        fb.title = `返回进行中的对局（${code}）`;
-        fb.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;'
-          + 'padding:8px 16px;border-radius:999px;cursor:pointer;font:600 13px/1.4 system-ui,sans-serif;'
-          + 'background:#1c8f74;color:#fff;border:1px solid #2fbf99;box-shadow:0 4px 16px rgba(0,0,0,.4)';
-        fb.onclick = () => {
-          try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
-          window.location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');
-        };
-        (document.body || document.documentElement).appendChild(fb);
-        return;
-      }
-      const btn = (notice || anchor).cloneNode(true);
+      // ★ 锚点：**只在联厅显示**，而且只认「公告」按钮 —— 恢复对局排在它的**左边**
+      //   （维护者 2026-10-29 确认要这个位置）。
+      //
+      // 以前这里还有两个降级锚点（版本按钮 / S.W.E.E.P. 文字按钮），拿不到公告按钮时
+      // 还会造一个 position:fixed 的浮动按钮挂在 body 上 —— 于是玩家**在任何界面**
+      // （对局中、设置页、结算页…）都能看到右下角冒出来一个「恢复对局」，
+      // 位置完全不讲道理。维护者要求「其他界面均不要出现恢复对局按钮」，全部去掉。
+      //
+      // 现在的规则：**只在大厅、且能挨着「公告」按钮时显示**；拿不到就不显示。
+      // 按钮由 6 秒一轮的 probe 维护，大厅一渲染出来它就会补上，不会永久缺失。
+      const anchor = lobbyNotice();
+      if (!anchor || !anchor.parentElement || !anchor.isConnected) { removeBtn(); return; }
+      const btn = anchor.cloneNode(true);
       btn.id = ID;
       btn.type = 'button';
       btn.disabled = false;
@@ -3029,7 +3039,7 @@ const JOIN_COOKIE = (() => {
       const dot = btn.querySelector('.mm-dot');
       if (dot) dot.remove();
       // 图标：返回箭头，和「公告」同一套描边
-      const icon = (notice || anchor).querySelector('svg');
+      const icon = anchor.querySelector('svg');
       if (icon) {
         const s = icon.cloneNode(true);
         const path = s.querySelector('path');
