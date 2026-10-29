@@ -120,13 +120,18 @@ const PERM_PRESETS = [
   { id: 'support', label: '管玩家（封禁/改名/改密码）', desc: '处理玩家问题：看账号、封禁、改名、重置密码、隐身观战；不能动节点和房间',
     keys: ['accounts.view', 'accounts.ban', 'accounts.rename', 'accounts.resetpw',
       'audit.view', 'rooms.view', 'rooms.watch', 'dash.settings'] },
-  { id: 'ops', label: '管房间和节点（可关房/重启）', desc: '结束对局、关闭房间、重启节点、维护开关、看日志；不能封禁或改账号',
-    keys: ['accounts.view', 'audit.view', 'nodes.view', 'nodes.restart', 'storage.view',
+  { id: 'ops', label: '管房间（可关房/结束对局）', desc: '结束对局、关闭房间、隐身观战、维护开关、看日志和节点状态；不能重启节点、不能封禁或改账号',
+    keys: ['accounts.view', 'audit.view', 'nodes.view', 'storage.view',
       'rooms.view', 'rooms.abort', 'rooms.close', 'rooms.watch', 'rooms.maintenance', 'dash.settings'] },
-  { id: 'all', label: '全部（除删除账号和改权限）', desc: '上两者之和；「删除账号」「修改权限」永远要手动勾，任何预设都不含', keys: null },
+  { id: 'all', label: '全部（除三项高风险）', desc: '上面全部；「删除账号」「修改权限」「重启节点」属高风险，任何预设都不含，必须手动勾', keys: null },
 ];
-/** 危险权限：任何预设都不包含，必须手动勾。 */
-const DANGEROUS_PERMS = Object.freeze(['accounts.delete', 'accounts.role']);
+/**
+ * 危险权限：面板上标红，且**任何预设都不包含** —— 必须手动勾。
+ *
+ * 2026-10-29 维护者要求把「重启游戏节点」也算进来：重启一台节点会让上面的玩家
+ * 断线重连（对局数据不丢，但会卡一下），和删账号、改权限同属「一按就影响很多人」。
+ */
+const DANGEROUS_PERMS = Object.freeze(['accounts.delete', 'accounts.role', 'nodes.restart']);
 
 /** 把一个预设展开成实际的权限 key 列表（只保留本案里真实存在的项，去掉危险项）。 */
 function expandPreset(preset) {
