@@ -1803,6 +1803,120 @@ location ^~ /__admin-ui/ {
 2. 直连 Node 端口试同一个路径（200 说明服务端没问题，问题在 nginx）
 3. 搜 `nginx.conf` 有没有对应的 `location`
 
+### 9.26 「节点重启保住对局」做不到 —— 实验记录与结论（2026-10-30）
+
+**背景**：`SP_REDIS_URL` 检查点已启用，能保住**房间**、**会话**、**断线重连**。
+维护者问：能不能连**进行中的对局**也保住（重启节点后接着打）？
+
+**结论：在当前架构下做不到。已实验验证并回滚。**
+
+#### 上游的设计
+
+`server/persist/persister.js` 的 `restore()` 里：
+
+```js
+if (!this.cluster) {
+  // A process restart must not silently resume a match: keep the alliance room, but
+  // return it to its waiting state so clients show 返回同盟 instead of continuing.
+  this.abortRestoredMatch(room);      // 单机：强制中断对局
+  this.counts.droppedMatches++;
+  continue;                            // 根本不尝试恢复
+}
+```
+
+**单机模式（本服的架构）重启必中断对局**，这是上游明确的设计，注释理由也写清了：
+重启后玩家 socket 全断，静默恢复一局「正在进行」的对局会让人不知道发生了什么。
+
+#### 为什么集群模式也走不通
+
+`this.cluster = typeof lobby.remoteMatchRef === 'function'`（persister.js:59）
+
+| 检查项 | 本服 | 上游 0.3.3 | 0.3.0 fork |
+|---|---|---|---|
+| `server/cluster/` 目录 | ❌ | ❌ **也没有** | ✅ 有 |
+| `lobby.remoteMatchRef` | ❌ | ❌ | ❌ |
+
+**`remoteMatchRef` 在任何版本里都不存在**，所以 `this.cluster` 永远为 `false`，
+集群分支（`restoreRemoteMatch`）是**死代码，从不会执行**。
+
+上游 0.3.3 **已经移除了 cluster 架构**（0.3.0 fork 里还有）。文档里描述的
+「协调器 + game 节点」在 0.3.3 代码里没有对应实现。
+
+#### 试过什么（失败记录）
+
+把单机分支改成先尝试 `restoreLocal()`：
+
+```js
+let restored = false;
+if (ref && ref.kind === 'local' && typeof ref.id === 'string') {
+  try { restored = await this.restoreLocal(room, ref, departed); } catch { restored = false; }
+}
+if (!restored) { this.abortRestoredMatch(room); this.counts.droppedMatches++; }
+else matches++;
+```
+
+**结果：日志报 `restored 1 match(es)`，但实际是新开了一局。**
+
+**根因**：`restoreLocal()` 调用的是
+
+```js
+this.lobby.startMatch(room, room.matchKey, room.matchKeys, { restore: {...} });
+```
+
+而 `lobby.js` 里是
+
+```js
+startMatch(room, key = null) {    // ← 只接受 2 个参数
+```
+
+**第 3、4 个参数被 JavaScript 静默丢弃**，`restoreMatch()` 从未被调用。
+`restoreLocal()` 返回 `true` 只是因为 `startMatch()` 没报错（它开了一局新的）。
+
+实测数据（房间 ULRY，node-5）：
+
+| | 种子 | 地图 | 回合 | matchNo |
+|---|---|---|---|---|
+| 重启前 | `1727835050` | `act2autochess_m04` | **3** | 2 |
+| 重启后 | `1581560527` | `act1autochess_m04` | **1** | **3** |
+
+种子、地图、回合、matchNo **全部变了** —— 铁证是新开局，不是恢复。
+
+**这个改动比上游原版更危险**：上游是「中断对局 + 提示返回同盟」（诚实），
+改后变成「静默开新局」（玩家以为进度还在，实际全丢）。**已回滚。**
+
+#### 复盘教训
+
+1. **`restored 1 match(es)` 这个日志不可信** —— 它只代表 `restoreLocal()` 返回了 true。
+   验证恢复是否成功，必须核对 **`matchNo` 是否不变、`round` 是否接上、`seed` 是否一致**。
+   这些数据当时就在手上，我没有横向对比就宣布成功。
+2. **`restoreLocal()` 是上游的未完成代码** —— 留下了函数但 `startMatch` 不支持它的
+   `{ restore }` 选项。上游自己都没接通，不是「我们没配好」。
+3. **改配置 vs 改架构** —— 维护者问「换成集群模式行不行」时，
+   看起来像配置调整，实际需要重新引入整个 `server/cluster/` 并重构部署。
+
+#### 要做到的话需要什么
+
+改 `lobby.js`（181KB 核心文件）的 `startMatch()` 支持 `{ restore }` 选项，
+涉及对局初始化完整流程：创建 Match 实例、注入存档、绑定座位、处理已离开玩家、
+重建 RNG 状态、恢复计时器。**工程量和风险都是另一个量级，且偏离上游。**
+
+#### 如果上游后续更新了这块
+
+关注这几个文件的变化：
+- `server/persist/persister.js` 的 `restore()`
+- `server/persist/node.js`
+- `lobby.js` 的 `startMatch()` 是否新增 `restore` 参数
+- 是否重新出现 `server/cluster/` 目录或 `lobby.remoteMatchRef`
+
+一旦上游让单机也支持恢复，本服可以直接跟进（`SP_REDIS_URL` 已经配好，无需额外改造）。
+
+#### 当前状态（已回滚）
+
+- `persister.js` 在 30 个节点上**全部与上游 0.3.3 逐字节一致**
+- 备份保留在 `backups/persist-local-restore-20261030-011619/`
+- node-5 的 3 个测试检查点已从 Redis 清理
+- 房间 / 会话 / 断线重连的持久化**不受影响，正常运行**
+
 ### 9.25 救援提示「本轮合格联防队友的生命值都不足 11」与实际不符（2026-10-29）
 
 **现象**：维护者截图显示提示「本轮合格联防队友的生命值都不足 11，无法支付救援」，
