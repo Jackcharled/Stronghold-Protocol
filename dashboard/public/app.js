@@ -560,9 +560,18 @@ $('ann-save').onclick = () => {
   if (!lines.length) { toast('公告内容不能为空', 2000); return; }
   $('ann-on').checked = true;
   saveAnnouncement(true, $('ann-text').value.trim());
+  // 保存成功时闪一下绿色作为反馈。
+  //
+  // ⚠ 2026-10-29 修：原来写的是 `el.style.background = ''` 来复原 —— 这会把背景**清空**，
+  // 而不是恢复成 HTML 里那个行内值。行内 style 的 background:#0d1417 在赋值那一刻就被
+  // JS 覆盖掉了，再置空只会回落到浏览器默认的**白色**，而文字色是浅色 #cfe ——
+  // 于是保存一次之后输入框变成白底浅字，内容完全看不清（维护者反馈）。
+  //
+  // 正确做法：先把原值存下来，闪完再写回去。
   const el = $('ann-text');
+  const prevBg = el.style.background;
   el.style.background = 'rgba(78,216,175,.18)';
-  setTimeout(() => { el.style.background = ''; }, 220);
+  setTimeout(() => { el.style.background = prevBg; }, 220);
 };
 $('ann-clear').onclick = () => {
   $('ann-text').value = '';
