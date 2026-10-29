@@ -51,6 +51,10 @@ button:disabled { opacity: .5; cursor: wait; }
 /* 「结束对局」比「关闭」轻一档：它保留房间，是日常操作；用琥珀色区别于危险的红 */
 .room-abort { border-color: #7a5a24; color: #ffd899; }
 .room-abort:hover { background: #3a2c12; border-color: #a8802f; }
+/* 没有进行中的对局时「结束对局」常驻但灰掉（2026-10-30：不再按状态隐藏）。
+   cursor 用 not-allowed 而不是全局的 wait —— 这里不是「在加载」，是「点了没用」。 */
+.room-abort:disabled { opacity: .45; cursor: not-allowed; }
+.room-abort:disabled:hover { background: transparent; border-color: #7a5a24; }
 .toggle { margin-left: auto; color: var(--muted); display: flex; gap: 6px; align-items: center; user-select: none; }
 
 .ngx {

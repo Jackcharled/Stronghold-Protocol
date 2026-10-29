@@ -318,13 +318,15 @@ function renderRoomsTable() {
     const closeBtn = '<button class="room-close" data-close="' + esc(x.code) + '" data-node="' + Number(x.node)
       + '" data-humans="' + (Number(x.humans) || 0) + '" data-running="' + (x.started ? 1 : 0) + '"'
       + ' title="关闭这个房间">关闭</button>';
-    // 结束这局（房间保留）：只在对局进行中才显示 —— 没有对局时这个按钮没有意义，
-    // 灰着摆在那里只会让人以为能点。结束之后玩家留在房间里，可以重新开局。
+    // 结束这局（房间保留）：**始终显示**，不按对局状态隐藏。
+    // 维护者 2026-10-30：管理后台那边也是常驻，两边保持一致 ——
+    // 没有对局可结束时按钮变灰不可点（点了只会被服务端拒掉，灰着更诚实），
+    // 而不是整条消失让人以为这功能不存在。结束之后玩家留在房间里，可以重新开局。
     const abortBtn = x.started
       ? '<button class="room-abort" data-abort="' + esc(x.code) + '" data-node="' + Number(x.node)
         + '" data-humans="' + (Number(x.humans) || 0) + '" data-round="' + (Number(x.round) || 0) + '"'
         + ' title="结束当前这一局，房间和座位都保留，玩家可以重新开局">结束对局</button>'
-      : '';
+      : '<button class="room-abort" disabled title="当前没有进行中的对局，无法结束">结束对局</button>';
     return '<tr><td><span class="room-code">' + esc(x.code) + '</span>' + capBadge + adminBadge + '</td><td title="node-' + x.node + '"><span class="room-node">' + esc(NAMES[x.node - 1] || ('节点 ' + x.node)) + '</span></td><td><span class="room-mode">' + (x.mode === 'solo' ? '单人模拟' : x.mode === 'coop' ? '同盟模拟' : '—') + '</span></td><td><span class="room-diff' + (x.difficulty ? ' diff-' + esc(x.difficulty) : '') + '">' + esc(diffName) + '</span></td><td>' + verCell + '</td><td><span class="room-state' + stateClass + '">' + state + '</span></td><td><span class="room-round' + (x.round > 0 ? '' : ' is-empty') + '" title="' + (x.round > 0 ? '第 ' + x.round + ' 回合' : (x.started ? '对局准备中' : '暂无对局')) + '">' + roundText + '</span></td><td><div class="room-players' + (cap > 4 ? ' room-players--large' : '') + '">' + playerHtml + '</div></td><td>' + count(x.humans) + '</td><td>' + count(x.bots) + '</td><td>' + spectate + '</td><td><div class="room-spectators">' + spectatorHtml + '</div></td><td><span class="room-actions">' + abortBtn + closeBtn + '</span></td></tr>';
   }).join('') : '<tr><td colspan="13" class="muted">暂无房间</td></tr>';
   // 按钮（每次重绘表格都会重建，所以在这里绑定）
