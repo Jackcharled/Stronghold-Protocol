@@ -1356,6 +1356,11 @@ export class Lobby {
       this.dropStaleAccountSeats(session);
       conflict = this.accountRoomConflict(session);
     }
+    // ★ 2026-10-29：同房间接管时顺手收敛同账号的重复座位（房间 DVWE「山雎」出现两次）。
+    //   accountRoomConflict 只返回第一个匹配座位，房间里的第二个座位它永远看不到；
+    //   dropStaleAccountSeats 又要求座位自带 accountId，落座时令牌还没到的那种座位清不掉。
+    //   接管把座位换成本会话之后，再调 dedupeSeats 清掉同账号的其它旧座位。
+    //   对局进行中 dedupeSeats 内部直接返回 0，不会把人踢出对局。
     if (conflict && conflict.room === room && conflict.kind === 'player') {
       // 对局进行中也允许：同账号接管自己的座位（旧设备让位）。
       const oldSeatPid = conflict.seat.playerId;
@@ -1380,6 +1385,9 @@ export class Lobby {
       session.roomCode = room.code;
       session.notice = null;
       session.pendingResult = null;
+      // 座位已经属于当前会话：清掉同账号**其它**的旧座位（房间 DVWE「山雎」出现两次的收口）。
+      // 对局进行中 dedupeSeats 直接返回 0，接管行为与以前完全一致。
+      this.dedupeSeats(room, session);
       this.broadcastState(room);
       if (room.match) { try { this.callMatch(room, 'onReconnect', session.playerId); } catch { /* ignore */ } }
       return OK;
@@ -1398,6 +1406,12 @@ export class Lobby {
     session.notice = null;
     session.pendingResult = null;
     if (!room.hostId) room.hostId = session.playerId;
+    // ★ 2026-10-29：落座**之后**再收敛同账号的旧座位。
+    //   accountRoomConflict 只返回第一个匹配座位，座位 accountId 为空时它也会漏判；
+    //   于是新 playerId 占了新座位，旧座位还留着 → 一个人两个座位（房间 DVWE「山雎」）。
+    //   这里自己已有座位（刚落的这个），dedupeSeats 会把同账号的其它旧座位清掉。
+    //   必须放在落座之后：落座前调用会把自己的新座位当成「多余」处理。
+    this.dedupeSeats(room, session);
     this.broadcastState(room);
     return OK;
   }
@@ -2957,6 +2971,81 @@ export class Lobby {
    *   ② registry 里确实查不到这个会话，或该会话已断开
    * 任何一条不成立就当作「还在用」，不动它。
    */
+  /**
+   * 同一账号在一个房间里只允许占**一个**玩家座位。
+   *
+   * ★ 2026-10-29 事故：房间 DVWE，玩家「山雎」在座位表里出现两次，房主连踢两次才清干净
+   *   （日志里 `DVWE 山雎 removed by the host` 出现两条，相隔 4 秒）。
+   *
+   *   成因是「清理只清一个，查询也只返回一个」：
+   *   - accountRoomConflict() 找到第一个匹配座位就 return，房间里的第二个座位永远看不见；
+   *   - dropStaleAccountSeats() 要求 `seat.accountId === accountId` 才清，而 humanSeat()
+   *     只在落座那一刻写一次 accountId —— 玩家落座时 hello 还没带账号令牌（令牌是异步补发的），
+   *     座位 accountId 就是 null。这种座位既不被当成「同账号」，也过不了清理的账号比对，
+   *     于是变成永久孤儿；玩家下次进来（新 playerId）又占一个新座位 → 一个人两个座位。
+   *
+   *   这里做一次全量收敛：同一账号（或同一 playerId）在同一房间里，只保留一个座位。
+   *   保留优先级：正在连接 > 座位号小；对局进行中一律不删（重启/断线不能把人踢出对局）。
+   * @param {Room} room @param {{ accountId?: string|null, playerId?: string }} session
+   * @returns {number} 清掉的座位数
+   */
+  dedupeSeats(room, session) {
+    if (!room || room.disposed) return 0;
+    const accountId = session && session.accountId ? String(session.accountId) : null;
+    const playerId = session && session.playerId ? session.playerId : null;
+    // ★ 只有「已登录账号」才做去重。
+    //   游客 / 测试里没带 accountId 的会话一律不动 —— 它们本来就可能多人共用一个
+    //   空 accountId，凭它去重会把队友顶掉（2026-10-29：这条曾让 5 个 lobby 测试全红）。
+    if (!accountId) return 0;
+    // 对局进行中：绝不动座位（与 dropStaleAccountSeats 的保护一致）
+    if (room.match || room.matchCtx) return 0;
+    /**
+     * 这个座位是「同一账号的**另一个**会话」吗？
+     * 当前会话自己的座位（playerId 相同）必须排除，否则会把本人座位删掉。
+     */
+    const otherSessionOfSameAccount = (seat) => {
+      if (!seat || seat.isBot || seat.left) return false;
+      if (playerId && seat.playerId === playerId) return false;   // 自己，保留
+      if (seat.accountId && String(seat.accountId) === accountId) return true;
+      // 座位 accountId 为空时反查会话（humanSeat 只在落座时写过一次，之后没人回填）。
+      // 这里也要求查到的会话 accountId 一致，绝不靠空值兜底。
+      const s = this.registry.byId(seat.playerId);
+      return !!(s && s.accountId && String(s.accountId) === accountId);
+    };
+    const held = [];
+    for (let i = 0; i < room.seats.length; i++) {
+      if (otherSessionOfSameAccount(room.seats[i])) held.push(i);
+    }
+    // 当前会话自己在这个房间里有座位吗？有就保留它；没有再决定留哪个旧的。
+    const mine = playerId ? room.seatOf(playerId) : null;
+    if (mine) {
+      // 自己有座位：把同账号的其它旧座位全部清掉
+    } else if (held.length <= 1) {
+      return 0;   // 自己还没落座，且旧座位至多一个 —— 交给前面的 takeover 分支处理
+    }
+    // 保留一个：优先正在连接的，其次座位号小的
+    held.sort((a, b) => {
+      const ca = room.seats[a].connected === true ? 0 : 1;
+      const cb = room.seats[b].connected === true ? 0 : 1;
+      return ca - cb || a - b;
+    });
+    let keep = mine ? mine.seat : held[0];
+    const targets = mine ? held : held.slice(1);
+    let removed = 0;
+    for (const i of targets) {
+      const seat = room.seats[i];
+      room.seats[i] = null;
+      removed++;
+      this.log.info(`[lobby] ${room.code} 清除同账号重复座位 seat ${i}（${seat.name}），保留 seat ${keep}`);
+    }
+    if (removed) {
+      if (room.hostId && !room.seatOf(room.hostId)) this.migrateHost(room);
+      if (!room.activeHumans().some((s) => s && s.guest !== true)) this.disposeRoom(room, 'empty');
+      else this.broadcastState(room);
+    }
+    return removed;
+  }
+
   dropStaleAccountSeats(session) {
     const accountId = session.accountId;
     if (!accountId) return [];

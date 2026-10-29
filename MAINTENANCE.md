@@ -1765,6 +1765,94 @@ grep -c '#roomBody \.room-kind\.'   matchmaker/public/admin.html  → 0
   后台就不该有 —— 多写一条就是多一处漂移点。
 - 两处都自写的 UI，出现不一致时优先**合并成一份**，而不是反复对齐数值。
 
+### 9.24 同一玩家在房间里出现两次 + 资源加载慢（2026-10-29）
+
+#### A) 玩家占两个座位（房间 DVWE，玩家「山雎」）
+
+**现象**：房主踢人时日志出现两条 `DVWE 山雎 removed by the host`，相隔 4 秒 ——
+说明座位表里有**两份**同一个玩家，踢一次只清掉一个。
+
+**根因**（两个漏洞叠加）：
+
+1. `accountRoomConflict()` 遍历房间时**找到第一个匹配座位就 return**，房间里的第二个
+   同账号座位它永远看不到；`removeMember()` 用 `room.seatOf(playerId)` 也只删第一个。
+2. 更关键：`humanSeat()` 只在**落座那一刻**写一次 `accountId`，而玩家落座时 hello
+   还没带账号令牌（令牌是异步补发的）。这种座位的 `accountId` 是 `null`：
+   - `accountRoomConflict` 的账号比对认不出它（兜底反查会话在断线后也拿不到 accountId）
+   - `dropStaleAccountSeats` 要求 `seat.accountId === accountId` 才清，同样跳过它
+
+   于是旧座位成了**永久孤儿**。玩家再进来拿到新 `playerId`（`net.js:185` 每个 WS
+   连接都生成新的），又占一个座位 → 一个人两个座位。
+
+**修法**：新增 `Room` 外的 `Lobby.dedupeSeats(room, session)`，并在三处调用：
+
+| 调用点 | 时机 |
+|---|---|
+| `join()` 接管分支（座位换成当前会话之后） | 同房间重连/换设备 |
+| `join()` 新占座位之后 | 新标签页/新设备另占一个座位 |
+
+**安全边界（都有单元测试覆盖，`node-1/test/match/dedupe-seats.test.mjs`）**：
+
+- **只有已登录账号（`accountId` 非空）才去重** —— 游客和测试里没带账号的会话一律不动。
+  这条是必须的：第一版没加，把测试里的队友当成「同账号」清掉了
+  （`lobby-integration.test.js` 从 5 红变成……其实它本来就是红的，见下）。
+- **当前会话自己的座位永远保留**（`seat.playerId === session.playerId` 直接跳过）。
+- **对局进行中直接 return 0**，绝不动座位（与 `dropStaleAccountSeats` 的保护一致）。
+- 座位 `accountId` 为空时反查会话，但**要求查到的会话 accountId 一致**，不靠空值兜底。
+- 清完如果房主座位没了会 `migrateHost`；房间空了照常解散。
+
+**注意**：`lobby-integration.test.js` 的 5 个用例在本项目里**本来就全红**，原因是
+本服自加的规则「游客不能创建房间」（`lobby.js:1237`），而用例还在用游客身份建房。
+用 `git show HEAD:server/lobby.js` 跑同样 5 红，与本次改动无关。
+排查时别被它误导（`_ref/pristine/` 是 1884 行的早期版本，**不能**当对照）。
+
+#### B) 资源加载慢
+
+**两个独立原因。**
+
+**B1. `assets.json` 每次打开页面都要重下（3.9 MB）**
+
+`/data/assets.json` 在 nginx 里是独立 location，**没写 Cache-Control**，
+于是沿用了节点服务返回的 `no-cache`。实测：
+
+| 情况 | 传输量 | 耗时 |
+|---|---|---|
+| 不压缩 | 4,060,993 B | 264 ms |
+| gzip | 400,679 B | 38 ms |
+
+修法：换成 `public, max-age=86400`（1 天）+ 保留 ETag（`proxy_hide_header Cache-Control`）。
+**没有用 30 天 immutable**：这几个文件是固定 URL（无 `?v=`、无内容哈希文件名），
+30 天 immutable 会让浏览器完全不发请求、ETag 没机会生效，换资源包后玩家卡在旧清单上。
+1 天后再来只回 304（几百字节）。
+
+**B2. 素材 404 被缓存 30 天（这个更致命）**
+
+源站 `assets.luobomiao.love` 对 **404 也返回** `Cache-Control: public, max-age=2592000, immutable`。
+`@assets_origin` 里虽然有 `proxy_ignore_headers Cache-Control`，但那**只影响 nginx 自己的
+缓存判断，不会阻止上游响应头转发给浏览器**。于是响应里出现两个 Cache-Control：
+
+```
+Cache-Control: public, max-age=2592000, immutable   ← 源站的 404
+Cache-Control: no-store                             ← 我们自己的 add_header
+```
+
+浏览器通常采纳第一个 → **一次 404 被缓存 30 天，刷新也拿不到**。
+玩家看到的正是「某个素材永远加载不出来 / 加载慢」。
+
+`/assets-cdn/` 早就补了 `proxy_hide_header Cache-Control` + `proxy_hide_header Expires`，
+**`@assets_origin` 一直漏着**。已补上。
+
+验证（修复后）：
+
+```
+/assets/char/__nonexistent__.png  →  Cache-Control: no-store        （只有一个头）✓
+/data/assets.json                 →  Cache-Control: public, max-age=86400  ✓
+/                                 →  200
+```
+
+**排查时记住**：看到两个同名响应头，就是「上游带头 + `add_header` 再带一个」，
+必须用 `proxy_hide_header` 把上游那个丢掉，`proxy_ignore_headers` 不够。
+
 ### 9.23 自动重启脚本长期空转，节点一直跑旧代码（2026-10-29 修复）
 
 **现象**：`node-8`、`node-10`、`node-30` 的 PM2 uptime 挂了 **23 小时**，`/admin/room/abort`
