@@ -65,6 +65,12 @@ const pinCookies = (node) => [
 
 const PUB = path.join(__dirname, 'public');
 
+// 后台共享样式目录（节点控制台 + matchmaker 后台共用，见 serveStatic 里的 /__admin-ui/）。
+// 单独走一层，是因为两个服务各有自己的 public/，互相读不到对方目录；
+// 房间玩家标签的样式就放在这里，避免两边各存一份副本。基准目录与 dashboard 一致。
+const SP_ROOT = process.env.SP_ROOT || path.resolve(__dirname, '..');
+const SHARED_ADMIN_UI = path.join(SP_ROOT, 'shared', 'admin-ui');
+
 /** @type {Map<string, any>} 票据 */
 const tickets = new Map();
 /** @type {Map<string, any>} 已组成的对局 */
@@ -495,6 +501,19 @@ function auth(ticket, id, secret) {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 
 function serveStatic(res, pathname) {
+  // 后台共享样式（维护者 2026-10-29）：房间玩家标签原先在节点控制台和本后台
+  // 各有一份副本，改一边忘一边。现统一为 `<SP_ROOT>/shared/admin-ui/` 单一来源。
+  if (pathname.startsWith('/__admin-ui/')) {
+    const rel = pathname.slice('/__admin-ui/'.length);
+    if (!rel || rel.includes('..') || path.isAbsolute(rel)) { res.writeHead(403); return res.end('forbidden'); }
+    const sharedFile = path.join(SHARED_ADMIN_UI, rel);
+    if (!sharedFile.startsWith(SHARED_ADMIN_UI)) { res.writeHead(403); return res.end('forbidden'); }
+    return fs.readFile(sharedFile, (err, buf) => {
+      if (err) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('not found'); }
+      res.writeHead(200, { 'cache-control': 'no-store', 'content-type': MIME[path.extname(sharedFile).toLowerCase()] || 'application/octet-stream' });
+      res.end(buf);
+    });
+  }
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
   const file = path.join(PUB, rel);
   if (!file.startsWith(PUB)) { res.writeHead(403); return res.end('forbidden'); }

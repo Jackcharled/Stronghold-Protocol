@@ -1710,6 +1710,61 @@ abort 接口: 200 {"ok":true,"code":"EABB","humans":1,"roomKept":true}
 **注意**：`/admin/room/abort` 第一次测返回 **405**，原因是那台节点还没重启到新代码 ——
 这正是 §9.13 那个坑的同类表现，不是接口本身的问题。
 
+### 9.22 房间玩家标签两个后台各写一份，改一边忘一边（2026-10-29 重构）
+
+**现象**：同一批玩家，「管理员」标签在节点控制台和 matchmaker 管理后台长得不一样。
+维护者反馈后改了**三轮**才对上，每次都只改到一处：
+
+1. 后台是紫色药丸（`#d9c2ff` / `rgba(160,120,255,…)`），控制台是红色。
+2. 换成琥珀色 —— 但维护者要的是**照抄控制台**，不该自己配色。
+3. 把内层徽章改对红色后，**外框还是红的**：因为后台多了一条
+   `.room-player.is-admin{border-color:rgba(217,83,79,.42)}`，而控制台
+   **从来没有这条规则**（管理员只由内层 `.room-kind.is-admin` 着红，外框保持基础灰）。
+4. 最后发现尺寸也不一样（后台 11px / `3px 6px` / `gap:3px` / `line-height:1.4`，
+   控制台 12px / `3px 7px` / `gap:4px` / `line-height:1.5`）。
+
+**根因**：同一样式在两处各维护一份。这两处后台（`dashboard/`、`matchmaker/public/admin.html`）
+都是本机自写的代码，不是上游产物，所以没有「按作者设计保存」的约束 —— 不一致纯属疏漏。
+
+**修法（单一来源）**：
+
+```
+shared/admin-ui/room-tags.css     ← 唯一权威定义（数值就是控制台原值）
+```
+
+两个服务各自把该目录映射成 `/__admin-ui/*` 挂出去（因为两边各有自己的 `public/`，
+互相读不到对方目录）：
+
+- `dashboard/server.js` → `serveStatic()` 里 `pathname.startsWith('/__admin-ui/')`
+- `matchmaker/server.js` → 同样处理，基准目录用 `SP_ROOT` 或 `../`
+
+页面里都是 `<link rel="stylesheet" href="/__admin-ui/room-tags.css">`。
+**本地只保留容器特有的约束**（控制台 `max-width:360px`、后台 `max-height:4.6rem` 滚动区），
+玩家/观战者标签本身一行都不留。
+
+**以后要改玩家标签样式，只改 `shared/admin-ui/room-tags.css` 一处，两个后台同时生效。**
+
+**验证方法**（两条都必须做）：
+
+```
+# 1. 两个服务都能吐出同一个文件
+curl http://127.0.0.1:3080/__admin-ui/room-tags.css   → 200, text/css
+curl http://127.0.0.1:3090/__admin-ui/room-tags.css   → 200, text/css（字节数相同）
+
+# 2. 本地不再残留重复规则（应为 0）
+grep -c '#rooms-bar \.room-kind\.'  dashboard/public/index.html   → 0
+grep -c '#roomBody \.room-kind\.'   matchmaker/public/admin.html  → 0
+```
+
+路径穿越防护已测：`/__admin-ui/../server.js` → 404，`/__admin-ui/` → 403。
+
+**教训**：
+
+- 用户说「跟 X 一样」就是**字面一致**，不要自作主张换配色（「暖色更顺眼」不是理由）。
+- 抄样式时**先确认目标有没有那条规则**。控制台没有 `.room-player.is-admin`，
+  后台就不该有 —— 多写一条就是多一处漂移点。
+- 两处都自写的 UI，出现不一致时优先**合并成一份**，而不是反复对齐数值。
+
 ### 9.18 HTTPS 证书续期一直失败（2026-10-29 修复）
 
 **症状**：计划任务 `SP-LetsEncrypt-Renew`（每天 03:30）**天天失败**，结果码

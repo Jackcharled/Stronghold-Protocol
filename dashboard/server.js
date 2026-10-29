@@ -119,6 +119,10 @@ const TOKEN = process.env.DASH_TOKEN || '';
 const LOG_DIR = path.join(BASE, 'logs');
 const PUB = path.join(__dirname, 'public');
 
+// 后台共享样式目录（节点控制台 + matchmaker 后台共用，见 serveStatic 里的 /__admin-ui/）。
+// 单独放一层，是因为两个服务各有自己的 public/，互相读不到对方目录。
+const SHARED_ADMIN_UI = path.join(BASE, 'shared', 'admin-ui');
+
 // nginx 的路径：跟着部署根走，不要写死旧目录。
 // ⚠ 2026-10-28：这里原来写的是 D:\sp-nginx（迁移前的旧路径），
 //   于是控制台上的「启动 / 重载配置 / 停止」按钮全都指向一个不存在的 exe，
@@ -759,6 +763,21 @@ const MIME = {
 };
 
 function serveStatic(req, res, pathname) {
+  // 后台共享样式（维护者 2026-10-29）：房间玩家标签在节点控制台和 matchmaker 后台
+  // 各有一份副本，改一边忘一边，导致同一批玩家在两处长得不一样。现统一为
+  // `<SP_ROOT>/shared/admin-ui/` 下的单一来源，两个服务各自把该目录映射成
+  // `/__admin-ui/*` 出去，避免各存一份。
+  if (pathname.startsWith('/__admin-ui/')) {
+    const rel = pathname.slice('/__admin-ui/'.length);
+    if (!rel || rel.includes('..') || path.isAbsolute(rel)) { res.writeHead(403); return res.end('forbidden'); }
+    const sharedFile = path.join(SHARED_ADMIN_UI, rel);
+    if (!sharedFile.startsWith(SHARED_ADMIN_UI)) { res.writeHead(403); return res.end('forbidden'); }
+    return fs.readFile(sharedFile, (err, buf) => {
+      if (err) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('not found'); }
+      res.writeHead(200, { 'content-type': MIME[path.extname(sharedFile).toLowerCase()] || 'application/octet-stream', 'cache-control': 'no-store' });
+      res.end(buf);
+    });
+  }
   const rel = pathname === '/' ? '/index.html' : pathname;
   const file = path.join(PUB, rel);
   if (!file.startsWith(PUB)) { res.writeHead(403); return res.end('forbidden'); }
