@@ -115,15 +115,15 @@ const ADMIN_PERMISSIONS = [
  * 与下方 DANGEROUS_PERMS 配合：任何预设都不含「删除账号 / 修改权限」。
  */
 const PERM_PRESETS = [
-  { id: 'readonly', label: '只读', desc: '只能看，什么都改不了',
+  { id: 'readonly', label: '只能看，不能改', desc: '看账号、日志、节点、房间、数据占用，但不能做任何改动',
     keys: ['accounts.view', 'audit.view', 'nodes.view', 'storage.view', 'rooms.view', 'dash.settings'] },
-  { id: 'support', label: '客服', desc: '处理玩家问题：看账号、封禁、改名、重置密码',
+  { id: 'support', label: '管玩家（封禁/改名/改密码）', desc: '处理玩家问题：看账号、封禁、改名、重置密码、隐身观战；不能动节点和房间',
     keys: ['accounts.view', 'accounts.ban', 'accounts.rename', 'accounts.resetpw',
       'audit.view', 'rooms.view', 'rooms.watch', 'dash.settings'] },
-  { id: 'ops', label: '运维', desc: '管房间与节点：结束对局、关房、维护开关、看日志',
+  { id: 'ops', label: '管房间和节点（可关房/重启）', desc: '结束对局、关闭房间、重启节点、维护开关、看日志；不能封禁或改账号',
     keys: ['accounts.view', 'audit.view', 'nodes.view', 'nodes.restart', 'storage.view',
       'rooms.view', 'rooms.abort', 'rooms.close', 'rooms.watch', 'rooms.maintenance', 'dash.settings'] },
-  { id: 'all', label: '全部', desc: '除「删除账号 / 修改权限」外的全部权限', keys: null },
+  { id: 'all', label: '全部（除删除账号和改权限）', desc: '上两者之和；「删除账号」「修改权限」永远要手动勾，任何预设都不含', keys: null },
 ];
 /** 危险权限：任何预设都不包含，必须手动勾。 */
 const DANGEROUS_PERMS = Object.freeze(['accounts.delete', 'accounts.role']);
