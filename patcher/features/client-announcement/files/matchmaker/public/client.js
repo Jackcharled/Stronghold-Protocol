@@ -2961,10 +2961,14 @@ const JOIN_COOKIE = (() => {
 
     /** 大厅的「公告」按钮此刻是否真的可见（见 probe 里的说明）。 */
     const lobbyNotice = () => {
+      // 标题页也有公告按钮（ensureTopButton allowLobby），而它不是一个合法的锚点：
+      // 恢复对局属于大厅。这里显式排掉，避免标题页靠这条判据混过去。
+      if (document.querySelector('.title-screen')) return null;
       const n = document.getElementById('mm-notice-btn');
       if (!n || !n.isConnected) return null;
       if (n.style.display === 'none') return null;
       if (typeof n.getClientRects === 'function' && n.getClientRects().length === 0) return null;
+      if (typeof n.closest === 'function' && n.closest('.title-screen')) return null;
       return n;
     };
     /** 玩家刚主动退出对局（2 分钟内）：这段时间不提醒恢复。 */
@@ -2981,9 +2985,11 @@ const JOIN_COOKIE = (() => {
       const role = window.__SP_ACCOUNT_ROLE || '';
       if (!window.__SP_ACCOUNT_TOKEN || !role || role === 'guest') { removeBtn(); return; }
       if (inRoom() || autoBusy()) { removeBtn(); return; }
-      // ★ 只在大厅显示（维护者 2026-10-29：「其他界面均不要出现恢复对局按钮」）。
-      // 判据：大厅的公告按钮此刻是否真的可见。不在大厅时 ensureTopButton 会把它
-      // display:none 并返回 null，这里拿不到，就不会插按钮。
+      // ★ 第一道：标题界面一律不显示。必须在最前面判 —— 标题页也有公告按钮
+      // （ensureTopButton allowLobby，且它在 .title-screen 里即使找不到 stat 也会保留按钮），
+      // 只靠下面的公告按钮判断会漏掉标题页。
+      if (document.querySelector('.title-screen')) { removeBtn(); return; }
+      // ★ 第二道：只在大厅显示（「其他界面均不要出现恢复对局按钮」）。
       if (!lobbyNotice()) { removeBtn(); return; }
       if (recentlyLeft()) { removeBtn(); return; }
       if (Date.now() - lastCheck < 15000 && (lastCode || !existing())) return;   // 15 秒最多查一次
