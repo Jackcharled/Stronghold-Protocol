@@ -619,10 +619,24 @@ export class Match {
     if (ps.revived) return 'already-used';
     if (!this.revivalEnabled) return 'disabled';
     if (this.teamLp != null || this.ended || this.disposed) return 'match-ended';
-    const helpers = this.order.filter((p) => this.players.get(p.playerId) === p && !p.isBot && !p.left && p.alive
-      && this._revival?.round === this.round && this._revival.eligible.has(p.playerId));
+    // 判断「本轮到底有没有人能付救援」，口径必须和客户端看到的一致。
+    //
+    // ⚠ 2026-10-29（维护者反馈「提示说都不足 11，但明明有人够」）：
+    //   旧写法先把「有资格 + 存活」的队友筛成 helpers，再要求 every(lp < 11) 才报 donor-lp。
+    //   问题在于 helpers 里**包含正要结算的这个死者自己**：他调用本函数时 alive 还是 true、
+    //   lp 已经被扣到 ≤ 0。如果他是最后一个够 11 点的人，every() 就会因为「他自己不足 11」成立，
+    //   于是提示「都不足 11」—— 而玩家在界面上看到的是**别人**的血量，自然会觉得提示不对。
+    //
+    //   现在：直接按「除死者之外、真正能付款的人」来判断，一个人都没有才说 donor-lp。
+    const helperIds = this._revival?.round === this.round && this._revival.eligible
+      ? this._revival.eligible
+      : new Set();
+    const helpers = this.order.filter((p) => p !== ps && this.players.get(p.playerId) === p
+      && !p.isBot && !p.left && p.alive && helperIds.has(p.playerId));
     if (!helpers.length) return 'no-helper';
-    return helpers.every((p) => Number.isFinite(p.lp) && p.lp < REVIVAL_MIN_DONOR_LP) ? 'donor-lp' : 'window-closed';
+    const canPay = helpers.some((p) => Number.isFinite(p.lp) && p.lp >= REVIVAL_MIN_DONOR_LP);
+    // 还有能付款的队友：这次死亡不是「没人付得起」造成的（窗口过期 / 阶段结束）。
+    return canPay ? 'window-closed' : 'donor-lp';
   }
 
   _deferDeath(ps) {

@@ -1765,6 +1765,58 @@ grep -c '#roomBody \.room-kind\.'   matchmaker/public/admin.html  → 0
   后台就不该有 —— 多写一条就是多一处漂移点。
 - 两处都自写的 UI，出现不一致时优先**合并成一份**，而不是反复对齐数值。
 
+### 9.25 救援提示「本轮合格联防队友的生命值都不足 11」与实际不符（2026-10-29）
+
+**现象**：维护者截图显示提示「本轮合格联防队友的生命值都不足 11，无法支付救援」，
+但界面上明明有队友的血量够 11。
+
+**代码位置**：`server/match/Match.js` 的 `_revivalDeathReason()`。
+
+**旧逻辑**：
+
+```js
+const helpers = this.order.filter((p) => ... && p.alive && this._revival.eligible.has(p.playerId));
+if (!helpers.length) return 'no-helper';
+return helpers.every((p) => Number.isFinite(p.lp) && p.lp < REVIVAL_MIN_DONOR_LP) ? 'donor-lp' : 'window-closed';
+```
+
+**根因**：`helpers` 里**包含正要结算的这个死者自己**。
+
+`_finalizeDeath(ps)` 通过默认参数 `reason = this._revivalDeathReason(ps)` 调用它，此刻：
+
+- `ps.alive` 仍是 `true`（`_deferDeath` 还没把它标成死亡）
+- `ps.lp` **已经被扣到 ≤ 0**（`settle.js:48` 先扣血，`settle.js:84` 才判 canRescue）
+
+于是那个「结算前够 11、扣完本轮损失后不够 11」的队友**就是死者自己**，
+`every(lp < 11)` 因为他自己成立 → 返回 `donor-lp` → 提示「都不足 11」。
+
+玩家在界面上看到的是**别人的**血量（还够），自然觉得提示是错的。
+
+**修法**：判断「有没有人付得起」时**排除死者本人**，并且直接按 `lp >= 11` 筛：
+
+```js
+const helpers = this.order.filter((p) => p !== ps && ... && p.alive && helperIds.has(p.playerId));
+if (!helpers.length) return 'no-helper';
+const canPay = helpers.some((p) => Number.isFinite(p.lp) && p.lp >= REVIVAL_MIN_DONOR_LP);
+return canPay ? 'window-closed' : 'donor-lp';
+```
+
+**注意口径一致性**：`views.js:117` 发给客户端的 `eligible` 用的是
+`revivalDonorEligible()`（含 `lp >= 11`），而旧的 `_revivalDeathReason` 用的是
+**不含 lp 过滤**的集合 —— 两处口径不一样，是这类「提示和界面打架」的常见成因。
+以后改这块务必让两边用同一组条件。
+
+**验证**：
+
+```
+test/content/feedback5-revive-redeploy.test.js      pass 4 / fail 0
+test/content/feedback5-swire2-revive-cost.test.js   pass 2 / fail 0
+```
+
+**顺带确认的既有失败（与本次无关）**：`test/match/` 下 4 个文件共 38 个用例失败
+（abyss-advisor 1、advisor-economy 12、advisor-execution 24、ai-playbook 1）。
+用 `git show HEAD:server/match/Match.js` 跑同样 38 个，数量完全一致。
+
 ### 9.24 同一玩家在房间里出现两次 + 资源加载慢（2026-10-29）
 
 #### A) 玩家占两个座位（房间 DVWE，玩家「山雎」）
