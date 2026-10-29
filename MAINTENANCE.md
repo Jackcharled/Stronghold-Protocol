@@ -1765,6 +1765,77 @@ grep -c '#roomBody \.room-kind\.'   matchmaker/public/admin.html  → 0
   后台就不该有 —— 多写一条就是多一处漂移点。
 - 两处都自写的 UI，出现不一致时优先**合并成一份**，而不是反复对齐数值。
 
+### 9.23 自动重启脚本长期空转，节点一直跑旧代码（2026-10-29 修复）
+
+**现象**：`node-8`、`node-10`、`node-30` 的 PM2 uptime 挂了 **23 小时**，`/admin/room/abort`
+一直返回 405（旧代码）。但 `sync-nodes --apply` 显示「0 处差异」—— 文件早就到位了，
+只是进程没重启。
+
+**三层原因，一层比一层深**：
+
+1. **mtime 误判**：脚本用「`node-1/server` 下最新 mtime」当 `codeAt`，而每次
+   `sync-nodes --apply` 都会刷新 mtime（即使内容一模一样）。于是 `codeAt` 不断前移，
+   进程启动时间不动，节点永远被判「旧代码」。
+   → 改为内容指纹 `content/rolling-code-stamp.json`，内容没变就沿用上次部署时刻。
+
+2. **脚本语法整体崩掉（真正的元凶）**：`deploy/rolling-restart.ps1` 是 **UTF-8 无 BOM**，
+   计划任务用 `powershell.exe`（5.1）跑，**5.1 对无 BOM 的 .ps1 按 GBK 解析**。文件里的
+   中文注释/字符串导致引号和括号配对错乱，5.1 报：
+
+   ```
+   Unexpected token 'UTF8Encoding.GetBytes' in expression or statement.
+   The string is missing the terminator: '.
+   The Try statement is missing its Catch or Finally block.
+   ```
+
+   而脚本开头有 `$ErrorActionPreference = 'SilentlyContinue'`，**把解析/运行错误全吞掉**，
+   表现成「找不到进程 → 静默 exit 0」。日志里长期只是：
+   ```
+   no node processes visible -> skip
+   ```
+   → **已给 .ps1 加 UTF-8 BOM**，`throw` 消息全部改 ASCII。
+
+3. **`Get-FileHash` 不可用**：这个 cmdlet 来自 `Microsoft.PowerShell.Utility` 模块，
+   在计划任务的精简环境里可能整个模块都没加载，报 `not recognized`。
+   → 改用 `[System.Security.Cryptography.SHA256]::Create()` 直接算字节哈希。
+
+**顺带踩到的 5.1 坑**（都写进脚本注释了）：
+
+| 写法 | 结果 |
+|---|---|
+| `$a.B |` 换行接 `Measure-Object` | 跨行管道可能算出 null |
+| `New-Object System.Text.UTF8Encoding $false` | 位置参数 `$false` 被吞，静默返回 **null** |
+| `[System.Text.Encoding]::UTF8.GetBytes()` | 某些宿主下静态属性为 null |
+| 无 BOM 的 .ps1 含中文 | 5.1 按 GBK 解析 → 语法崩 |
+
+**排查方法（关键）**：不要只看日志。脚本里的 `SilentlyContinue` 会吞掉一切，
+必须直接看 5.1 的 stderr：
+
+```powershell
+cmd /c 'powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "D:\Stronghold-Protocol\deploy\rolling-restart.ps1" 2>&1'
+```
+
+**验证（修复后实测）**：
+
+```
+第一次运行：1.9 秒，server/ content changed -> new stamp a26428824d44
+第二次运行：16.4 秒，idle + old code: 7,9,10,12,14,15 -> startOrReload
+                    restarted 6/6 (7,9,10,12,14,15)
+```
+
+第二次运行正确复用戳（未重写），并真实重启了 6 个空闲节点。
+**逐个核对过日志：这 6 个节点重启前的最后一条对局记录都是 `match ended` + `disposed (empty)`，
+没有打断任何玩家。**
+
+**重启纪律不变**：脚本只动 `matches=0 且 sockets=0 且 rooms=0` 的节点。
+
+**教训**：
+
+- 定时任务里的 PowerShell 脚本**必须带 BOM**，否则中文会毁掉整个文件。
+- `$ErrorActionPreference = 'SilentlyContinue'` 在运维脚本里是双刃剑：
+  它能避免噪音，但也会让「脚本根本没跑起来」伪装成「没有可做的事」。
+- 判断「代码是否更新」用**内容指纹**，永远不要用 mtime。
+
 ### 9.18 HTTPS 证书续期一直失败（2026-10-29 修复）
 
 **症状**：计划任务 `SP-LetsEncrypt-Renew`（每天 03:30）**天天失败**，结果码
