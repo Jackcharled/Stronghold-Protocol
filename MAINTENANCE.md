@@ -1422,6 +1422,94 @@ Get-Content D:\Stronghold-Protocol\logs\restart-watch.log -Tail 20
 # 2026-10-28 13:57:58 ok alive=30/30 avg_uptime=784s
 ```
 
+### 9.18 HTTPS 证书续期一直失败（2026-10-29 修复）
+
+**症状**：计划任务 `SP-LetsEncrypt-Renew`（每天 03:30）**天天失败**，结果码
+`4294967295`（= `-1`）。证书本身暂时没事（当时还剩 80 天），但再没人管就会到期。
+
+#### 两个路径都是旧的
+
+| 位置 | 原来写的 | 实际 |
+|---|---|---|
+| `tools/acme/renew.bat` | `D:\Program Files\nodejs\node.exe` | **`D:\nodejs\node.exe`** |
+| `tools/acme/renew.cjs` | `D:/sp-nginx/nginx.exe` + `-p D:/sp-nginx/` | `D:/Stronghold-Protocol/nginx/` |
+
+第一个让整个脚本**根本没启动**：`renew.log` 里只有一行「系统找不到指定的路径。」
+第二个更隐蔽：即使续期成功，`nginx -s reload` 也**永远静默失败**（旧路径不存在），
+新证书写到磁盘、nginx 还在用旧的 —— 表现是「证书明明续了，浏览器还报过期」。
+
+> 这和控制台那个「nginx 按钮指向 `D:\sp-nginx`」是同一个历史遗留：
+> 服务器从 `D:\sp-nginx` 迁到 `D:\Stronghold-Protocol\nginx` 时，有些地方没跟着改。
+> **凡是看到 `sp-nginx` 的地方，基本都是迁移漏网之鱼。**
+
+#### 修复
+
+**`renew.bat`**：不再写死路径，先找 PATH 里的 node，再退回已知位置：
+
+```bat
+set "NODE_EXE="
+for %%I in (node.exe) do if not "%%~$PATH:I"=="" set "NODE_EXE=%%~$PATH:I"
+if not defined NODE_EXE if exist "D:\nodejs\node.exe" set "NODE_EXE=D:\nodejs\node.exe"
+```
+
+**`renew.cjs`**：`NGINX_PREFIX = 'D:/Stronghold-Protocol/nginx/'`；
+reload 失败时打印 `WARN ...` 而不是无声吞掉。
+
+**⚠ `.bat` 文件必须保持纯 ASCII。** cmd.exe 按 OEM 代码页解析 `.bat`，
+UTF-8 的中文注释或中文引号会被当成命令执行（无害但满屏报错）。
+第一次改的时候我写了中文 REM，立刻炸出一堆「不是内部或外部命令」，
+所以最终版的注释全是英文。
+
+#### 验证方式
+
+**1. 手动跑一次**（证书还有 80 天时会直接跳过，不当真续）：
+
+```powershell
+cmd /c "D:\Stronghold-Protocol\tools\acme\renew.bat"
+Get-Content D:\Stronghold-Protocol\tools\acme\renew.log
+# 正常输出：
+#   using "D:\nodejs\node.exe"
+#   certificate days left: 80
+#   no renewal needed
+```
+
+**2. 触发计划任务，看返回码**：
+
+```powershell
+schtasks /Run /TN "SP-LetsEncrypt-Renew"
+Start-Sleep 20
+(Get-ScheduledTaskInfo -TaskName 'SP-LetsEncrypt-Renew').LastTaskResult   # 必须是 0
+```
+
+**3. 验证 ACME 挑战路径可从公网读到**（续期成败的关键，**必须走 HTTP/80**）：
+
+```powershell
+# 建一个临时文件，然后用 http:// 访问（不是 https）
+#   http://stronghold.luobomiao.love/.well-known/acme-challenge/<文件名>
+# 能读回同样内容 = Let's Encrypt 也能读到
+```
+
+nginx 的配置是 `listen 80` 的 server 里：
+
+```nginx
+location /.well-known/acme-challenge/ { root D:/Stronghold-Protocol/acme; try_files $uri =404; }
+```
+
+**别用 https 测**——443 的 server 块里没有这条 location，会 404，但那不代表续期会失败
+（http-01 挑战只走 80 端口）。我第一次就是这么误判的。
+
+#### 当前状态（2026-10-29 12:43）
+
+- 证书：`CN=stronghold.luobomiao.love`，到期 **2027-01-18**，剩 80 天
+- 计划任务：手动触发返回 **0（成功）**
+- 续期脚本：实跑输出正常
+- ACME 挑战路径：实测可达
+- `acme-client` 依赖：5.4.0 正常
+
+**注意：nginx 以 SYSTEM 运行，`-s reload` 可能被拒（Access denied）。**
+真到续期那天，如果 reload 失败，新证书已经在磁盘上，**下次 nginx 重启就会用上**；
+脚本会打印 `WARN nginx reload failed (...)`，看到它就在方便时重启一次 nginx。
+
 ### 9.17 nginx 进程越积越多（1 master + 十几个 worker）（2026-10-29 修复）
 
 **症状**：`Get-Process nginx` 越跑越多，实测累积到 **11 个**。正常应当是
