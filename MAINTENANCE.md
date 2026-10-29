@@ -1765,6 +1765,44 @@ grep -c '#roomBody \.room-kind\.'   matchmaker/public/admin.html  → 0
   后台就不该有 —— 多写一条就是多一处漂移点。
 - 两处都自写的 UI，出现不一致时优先**合并成一份**，而不是反复对齐数值。
 
+**后续事故（2026-10-29，同一天发现）**：合并成共享文件后，**管理后台的玩家标签一度完全没有样式**
+（玩家名变成纯文字、没有胶囊边框）。原因是：
+
+- Node 服务侧已经能吐 `/__admin-ui/room-tags.css`（本机 `:3090` 直连 → 200 ✓）
+- 但 **nginx 里没有加转发规则**，经域名访问 `/__admin-ui/room-tags.css` 被 `location /`
+  打到游戏节点上 → **404**
+
+维护者是通过 `https://stronghold.luobomiao.love/mm/admin.html` 访问后台的，
+所以 CSS 拿不到，标签退化成纯文字。节点控制台那边是本地访问，因此看起来正常 ——
+这种「一边正常一边不正常」最容易误判成样式写错。
+
+**已在 nginx 补上**：
+
+```nginx
+location ^~ /__admin-ui/ {
+  proxy_pass http://127.0.0.1:3090;    # 原样转发，matchmaker 的 serveStatic 认 /__admin-ui/
+  proxy_hide_header Cache-Control;
+  add_header Cache-Control "no-store" always;
+}
+```
+
+**验证（必须两边都测，只测本机会漏掉这类问题）**：
+
+```
+直连: :3090/__admin-ui/room-tags.css                      → 200, 3302 B
+域名: https://stronghold.luobomiao.love/__admin-ui/room-tags.css → 200, 3302 B
+```
+
+**教训**：新增一个静态资源路径时，**Node 服务能返回 ≠ 浏览器能拿到**。
+只要页面实际是通过 nginx 域名访问的，就必须同时在 `nginx.conf` 里加对应的
+`location` 转发。以前 `/mm/*`、`/css/`、`/js/` 都是这么处理的，这次漏了。
+
+**排查这类「样式突然没了」的最快顺序**：
+
+1. 浏览器 F12 → Network，看那个 CSS 是不是 404（本例就是）
+2. 直连 Node 端口试同一个路径（200 说明服务端没问题，问题在 nginx）
+3. 搜 `nginx.conf` 有没有对应的 `location`
+
 ### 9.25 救援提示「本轮合格联防队友的生命值都不足 11」与实际不符（2026-10-29）
 
 **现象**：维护者截图显示提示「本轮合格联防队友的生命值都不足 11，无法支付救援」，
