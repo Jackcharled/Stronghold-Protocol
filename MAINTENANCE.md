@@ -747,6 +747,17 @@ curl --resolve stronghold.luobomiao.love:443:127.0.0.1 -o NUL -s -w "%{http_code
 | `ecosystem.config.cjs` | PM2 30 节点配置 |
 | `.secrets/secrets.json` | 数据库密码、邮箱授权码（**绝不外传**） |
 
+### 已规划、尚未实现的功能（不要当成现有功能）
+
+| 文档 | 内容 | 状态 |
+|---|---|---|
+| `../docs-plan/开场动画与登录前置-预案.md` | 登录注册单独成屏 → 点击进入 → 开场动画 → 原标题页（代号框留在原位）→ 大厅。含参考实现 PR #878 的完整代码拆解 | **等待上游 PR #878 合并后接入**；维护者 2026-10-30 明确「不需要你现在接入」 |
+| `../docs-plan/登录界面设计/` | **第一屏（登录 / 注册）的设计稿**：`login-screen.css` + `login-screen.html`（四状态总览，双击可开）+ `phone-preview.html` + `README.md`（视觉参数表、接入步骤、待确认项） | **设计稿完成，未接入任何代码**；2026-10-30 维护者叫停「先暂停吧。我晚点再跟你做」 |
+
+> ⚠ 当前代码里**没有**「点击进入」屏，也没有开场动画（`allianceScene.js` / `entryFilm.js` 都还不存在）。
+> 搜 `点击进入` 在 `public/` 下零命中。`public/js/ui/protocolBoot.js` 是**对局内**的「协议启动！」，
+> 与启动流程无关，别搞混。
+
 ---
 
 ## 九、更新 GitHub 前必查（每次提交/推送都要走一遍）
@@ -1802,6 +1813,59 @@ location ^~ /__admin-ui/ {
 1. 浏览器 F12 → Network，看那个 CSS 是不是 404（本例就是）
 2. 直连 Node 端口试同一个路径（200 说明服务端没问题，问题在 nginx）
 3. 搜 `nginx.conf` 有没有对应的 `location`
+
+### 9.28 部署静态文件：先写 `node-1`，`shared` 里的走 junction（2026-10-30）
+
+**分发脚本的源是 `node-1`，不是 `repo-sync`。** `deploy/sync-nodes.cjs` 第 33 行：
+
+```js
+for (const d of DIRS) ref[d] = walk(path.join(ROOT, 'node-1', d));
+```
+
+所以「改仓库 → 跑 `--apply`」**什么都不发生**（会输出「完成：共复制 0 个文件」），
+因为 `node-1` 自己还是旧版，30 个节点跟它一致。正确顺序是：
+
+```
+repo-sync/<file>  →  node-1/<file>  →  node-2…30
+                       ↑ 先手动覆盖这一份
+```
+
+**这一条以前没写清楚，2026-10-30 踩到过一次。**
+
+#### 哪些目录是 junction（写了就等于写 30 个节点）
+
+| 路径 | 类型 | 指向 |
+|---|---|---|
+| `node-N/public/i18n` | **Junction** | `shared/public/i18n` |
+| `shared/` 其余部分 | Junction | 由部署脚本建立 |
+| `node-N/public/js/` | **真实目录**（逐节点副本） | — |
+| `node-N/server/` | **真实目录**（逐节点副本） | — |
+
+推论：
+
+- **改 i18n 文案**：写一次 `shared/public/i18n/`（或经 `node-1/public/i18n/`，
+  它指向同一个地方），30 个节点**立刻全部生效**，`sync-nodes` 会报「0 处差异」——
+  **这是正常的，不是没同步**。
+- **改 `public/js/`、`server/`**：必须走上面的「先 node-1 再分发」两步。
+
+#### 生效条件
+
+| 改动 | 生效方式 |
+|---|---|
+| `public/js/**`、`public/i18n/**`、`public/css/**` | **玩家刷新即可**，不需要重启节点 |
+| `server/**` | 必须重启节点（按重启纪律，只动 `matches=0` 的） |
+
+`/js/**` 线上返回 `Cache-Control: no-cache`，所以刷新一定能拿到新版，不会卡在旧缓存。
+
+#### 验证命令
+
+```powershell
+# 1. 一致性（必须 0 处差异）
+$env:SP_ROOT='D:\Stronghold-Protocol'; node repo-sync\deploy\sync-nodes.cjs
+
+# 2. 线上真的返回新内容（挑几个节点直连 port，再走一次 nginx）
+(Invoke-WebRequest "http://127.0.0.1:3001/js/screens/<file>.js" -UseBasicParsing).Content.Contains('<新代码里的唯一字符串>')
+```
 
 ### 9.27 `SP_REDIS_URL` 断点持久化 —— **0.3.1 遗留代码，官方已移除（重要）**
 

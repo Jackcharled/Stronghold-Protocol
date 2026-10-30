@@ -1,0 +1,113 @@
+/*
+ * 房间玩家标签 —— 唯一权威定义
+ *
+ * 维护者 2026-10-29 反馈：节点控制台（dashboard/public/index.html 的 #rooms-bar）
+ * 与 管理后台（matchmaker/public/admin.html 的 #roomBody）各写了一份几乎相同的
+ * 玩家标签样式，改一边忘一边，导致同一批玩家的「管理员」标签在两处长得不一样。
+ * 那次来回改了三轮才对上，所以把这组样式抽出来做单一来源。
+ *
+ * 用法：两处都 <link rel="stylesheet" href=".../room-tags.css">，不要再本地复制。
+ * 这里的数值就是【节点控制台】的原始值，后台的紧凑排版（11px / 3px 6px）已废弃。
+ *
+ * 结构（两处一致）：
+ *   .room-players           玩家列表容器
+ *   .room-player            玩家胶囊（可带 .is-host / .is-admin）
+ *   .room-kind              身份小标签（.is-player / .is-guest / .is-admin）
+ *   .room-spectators        观战者容器
+ *   .room-spectator         观战者胶囊
+ *
+ * 选择器用 :is() 同时匹配两个容器的 id，避免依赖父级作用域。
+ */
+
+/* ---- 容器 ---- */
+:is(#rooms-bar, #roomBody) .room-players {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: none;
+  align-content: flex-start;
+}
+
+:is(#rooms-bar, #roomBody) .room-spectators {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: none;
+  align-content: flex-start;
+}
+
+/* ---- 胶囊 ---- */
+:is(#rooms-bar, #roomBody) .room-player,
+:is(#rooms-bar, #roomBody) .room-spectator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid rgba(120, 160, 165, .2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .035);
+  color: #d9e9e6;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 房主：琥珀描边。注意控制台从来没有 .room-player.is-admin —— 管理员只由
+   内层的 .room-kind.is-admin 着红色，外框保持上面的基础灰，别再自己加。 */
+:is(#rooms-bar, #roomBody) .room-player.is-host {
+  border-color: rgba(232, 178, 90, .38);
+  background: rgba(232, 178, 90, .08);
+  color: #ffe0ab;
+}
+
+:is(#rooms-bar, #roomBody) .room-player em {
+  font-style: normal;
+  color: #e8b25a;
+  font-size: 10px;
+}
+
+:is(#rooms-bar, #roomBody) .room-player i,
+:is(#rooms-bar, #roomBody) .room-spectator i {
+  font-style: normal;
+  color: #8fa4a6;
+  font-size: 10px;
+}
+
+/* ---- 身份标签 ---- */
+:is(#rooms-bar, #roomBody) .room-kind {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  line-height: 1.5;
+  font-style: normal;
+}
+
+:is(#rooms-bar, #roomBody) .room-kind.is-player {
+  color: #9fe8cf;
+  background: rgba(78, 216, 175, .12);
+  border: 1px solid rgba(78, 216, 175, .28);
+}
+
+:is(#rooms-bar, #roomBody) .room-kind.is-guest {
+  color: #ffd08a;
+  background: rgba(232, 178, 90, .1);
+  border: 1px solid rgba(232, 178, 90, .28);
+}
+
+:is(#rooms-bar, #roomBody) .room-kind.is-admin {
+  color: #ffb4a8;
+  background: rgba(217, 83, 79, .14);
+  border: 1px solid rgba(217, 83, 79, .42);
+  font-weight: 700;
+}
+
+/* ---- 观战者 ---- */
+:is(#rooms-bar, #roomBody) .room-spectator {
+  border-color: rgba(120, 160, 165, .16);
+  background: rgba(120, 160, 165, .05);
+  color: #b9cecb;
+}

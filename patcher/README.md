@@ -75,7 +75,7 @@ patcher\
 | 功能 | 涉及文件 | 所属补丁 | 生效方式 |
 |---|---|---|---|
 | 5–20 人同盟（容量实验） | `server/match/Match.js`、`server/match/match/phases.js`、`shared/playerCapacity.js`、`shared/experimental.js`、`public/js/screens/room.js`<br>**结算显示（2026-10-27）**：`public/js/ui/stats.js`（`MAX_PLAYERS` 取 `MAX_PLAYER_CAPACITY`，原本写死 6 → 记录被截断）、`public/js/screens/settle.js`（`staggerOf`：5–20 张同盟卡片的入场步长，原本 `Math.min(i,7)` 让第 8 张之后同时出现）、`public/css/screens/settle.css`（`.tcard` 动画改用 `var(--step)`） | `server-player-capacity` / `game-core-client-ui` / `game-core-client-style` | 刷新页面 + 重启节点 |
-| 并发草稿（仅 allowRepeat 时） | `server/match/Match.js:concurrentDraft()`、`server/match/match/phases.js` | `game-core-match` | 重启节点 |
+| 并发草稿（仅 allowRepeat 时） | `server/match/Match.js:concurrentDraft()`、`server/match/match/phases.js`<br>**提示文案（2026-10-30）**：`public/js/screens/bandDraft.js:draftTip()` 按 `concurrent` 分支——并发草稿里**没有跳过**（`phases.js:298` 直接拒），超时也**不固定给华法琳**（`taken` 置空后 `autoPickBand` 优先当前高亮），旧提示两件事都写，属于说不得的承诺 | `game-core-match` / `game-core-client-screens` / `game-core-client-ui` | 刷新页面（`bandDraft.js` + i18n） |
 | 悬赏决策公共计时 | `server/match/match/spDraft.js:_concurrentSpStep()` | `game-core-match` | 重启节点 |
 | 跳过按钮（仅非 allowRepeat） | `public/js/match/matchChrome.js:StepHeader`、`server/match/match/phases.js` | `game-core-match` | 刷新页面 + 重启节点 |
 | **鸭爵策略可叠加**（实验开关） | `server/sim/content/bands/meta.js:duckGlobal`、`server/match/Match.js`、`server/match/gamedata.js`、`server/match/snapshot.js`、`shared/experimental.js`、`public/js/screens/room.js` | `game-core-server` / `server-snapshot-checkpoint` / `server-player-capacity` | **重启节点** |
@@ -129,6 +129,7 @@ patcher\
 | 皮肤导入/导出 | `public/js/ui/skinIO.js` | `client-skin-io` | 刷新页面 |
 | 标题界面 Q群按钮定位 | `matchmaker/public/client.js:2022`、`shared/public/css/screens/title.css` | `matching-party` / `game-core-client-style` | 刷新页面 |
 | 版本号右下角对齐 | `shared/public/css/screens/title.css`（`.title-foot__meta`） | `game-core-client-style` | 刷新页面 |
+| **房间玩家标签唯一样式源**（控制台 `:3080` 与管理后台 `:3090` 共用，避免各写一份改一边忘一边） | `shared/admin-ui/room-tags.css`（经 `/__admin-ui/room-tags.css` 由两侧 Node 提供；nginx 需有对应转发，见手册 §9.22）、`dashboard/public/index.html`、`matchmaker/public/admin.html`（**不进仓库**） | `admin-ui-shared` | 刷新页面（两侧 Node 都在跑时即可） |
 
 ### 部署与运维
 
