@@ -170,7 +170,11 @@ function applyDocument(lang) {
   if (!doc) return;
   doc.documentElement.lang = htmlLang(lang);
   doc.documentElement.dataset.lang = lang;
-  doc.documentElement.dataset.script = scriptOf(t('Stronghold-Protocol'));
+  // ⚠ 这里必须用中文标题判断，不能用 'Stronghold-Protocol' —— 那是拉丁字母，
+  // scriptOf 对任何语言都会返回 'alphabetic'，导致 title.css 的
+  // html[data-script="alphabetic"] .title-login .btn--xl 规则对中文也生效
+  // （「开始」按钮套上英文的 letter-spacing .3em）。上游原句就是 t('卫戍协议')。
+  doc.documentElement.dataset.script = scriptOf(t('卫戍协议'));
   doc.title = t('卫戍协议：盟约 · STRONGHOLD PROTOCOL');
   updateRotateHintPwaI18n(doc);
 }

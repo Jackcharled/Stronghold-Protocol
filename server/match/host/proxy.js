@@ -51,6 +51,16 @@ export function wireOptions(opts) {
   for (const k of ['roomCode', 'mode', 'difficulty', 'modeId', 'aiPicksLast', 'soloUnlimited', 'seats', 'spectators', 'seed', 'matchNo', 'cs', 'vs', 'requireCs', 'kitted', 'version']) {
     if (opts[k] !== undefined) out[k] = opts[k];
   }
+  // 5–20 人容量实验是本服新增的：Match 从 opts.experimental 推 playerCapacity，
+  // 座位数超过容量时抛 RangeError（Match.js「seats exceed room capacity」）。
+  // 上面那份白名单里有 seats 却没有 experimental —— 于是走内容插件 host（跨 worker/子进程）
+  // 的房间上了第 5 个座位就开不了局，日志里是
+  //   [host] match <code> could not be created RangeError: Match: seats exceed room capacity
+  // 2026-10-26～30 累计出现过 481 次（node-28 独占 338 次）。
+  // 只转发普通对象：它会 JSON 序列化过去，别的房间的 worker payload 保持不变。
+  if (opts.experimental && typeof opts.experimental === 'object' && !Array.isArray(opts.experimental)) {
+    out.experimental = opts.experimental;
+  }
   // A test room must arrive as a test match. Forwarding these only when the flag is set keeps every other
   // worker payload identical. Dropping the flag fails closed: the worker match refuses g.test.
   if (opts.test === true) {
