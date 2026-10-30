@@ -97,6 +97,8 @@ export function AdminTools({ open, onClose, anchor = null }) {
   // 但**能不能用**完全由服务端这一次连接的实际状态决定 —— 否则会出现
   // 「前端说已生效、点功能却回没有权限」的矛盾（2026-10-31 实测）。
   const adminCode = useStore((s) => s.adminCode === true);
+  // 身份门：是 owner/admin 账号（不看有没有验证码）。面板的「能不能打开」用它判断。
+  const adminId = useStore((s) => s.adminId === true);
   if (!open) return null;
 
   const push = (ok, text) => setLog((l) => [{ ok, text }, ...l].slice(0, 10));
@@ -229,8 +231,32 @@ export function AdminTools({ open, onClose, anchor = null }) {
   //   ② 验码门：必须兑换过验证码且未过期（localStorage 的 sp.adminCodeExp）。
   // 只过第一道 → 只能看见取码框，功能全部不渲染；
   // 只过第二道 → 身份门已挡在前面，连面板入口都不会出现（hud 用 store.adminTools 判）。
-  if (!adminTools) {
+  // ★ 必须在所有 return 之前定义：const 有 TDZ，声明在使用之后会抛
+  //   "Cannot access 'panelStyle' before initialization"，面板整个渲染不出来。
+  const panelStyle = (() => {
+    if (!anchor) return '';
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+    const W = Math.min(340, vw - 32);
+    const H = Math.min(540, Math.round(vh * 0.62));
+    // 用**右对齐**：面板右边缘贴住胶囊右边缘。
+    // 之前用 left 定位，胶囊在屏幕右侧时面板会从胶囊左边缘往右铺，
+    // 结果整块落到屏幕中间（DevTools 里 inset: 69px auto auto 225px 就是这现象）。
+    // anchor.left + anchor.width = 胶囊右边缘；从右边量就是 vw - 这个值。
+    const pillRight = anchor.left + (anchor.width || 0);
+    let right = Math.max(16, Math.round(vw - pillRight));
+    // 面板宽度不能把左边界顶出屏幕
+    right = Math.min(right, Math.max(16, Math.round(vw - W - 16)));
+    let top = Math.round(anchor.top);
+    // 下方空间不够就往上翻
+    if (top + H > vh - 16) top = Math.max(16, Math.round(anchor.top - H - 16));
+    return `right:${right}px;top:${top}px;left:auto;bottom:auto;`;
+  })();
+
+  if (!adminId) {
     // 不是管理员：连取码框都不给 —— 免得他们以为拿个码就能用。
+    // ★ 判据必须是 adminId（身份门），不是 adminTools（两道门都过）。
+    //   用 adminTools 会导致「管理员退出授权后」被当成非管理员，看不到取码框 —— 死锁。
     return html`<div class="admintools" style=${panelStyle} data-testid="admin-tools" role="dialog" aria-label=${t('管理员工具')}>
       <header class="admintools__head">
         <b>${t('管理员工具')}</b>
@@ -258,25 +284,6 @@ export function AdminTools({ open, onClose, anchor = null }) {
 
   // 面板定位：优先贴在触发它的胶囊正下方；拿不到坐标时退回右侧固定位置。
   // 用 fixed + 计算出的 left/top，并夹在视口内，保证任何屏幕宽度都不会跑出去。
-  const panelStyle = (() => {
-    if (!anchor) return '';
-    const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
-    const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
-    const W = Math.min(340, vw - 32);
-    const H = Math.min(540, Math.round(vh * 0.62));
-    // 用**右对齐**：面板右边缘贴住胶囊右边缘。
-    // 之前用 left 定位，胶囊在屏幕右侧时面板会从胶囊左边缘往右铺，
-    // 结果整块落到屏幕中间（DevTools 里 inset: 69px auto auto 225px 就是这现象）。
-    // anchor.left + anchor.width = 胶囊右边缘；从右边量就是 vw - 这个值。
-    const pillRight = anchor.left + (anchor.width || 0);
-    let right = Math.max(16, Math.round(vw - pillRight));
-    // 面板宽度不能把左边界顶出屏幕
-    right = Math.min(right, Math.max(16, Math.round(vw - W - 16)));
-    let top = Math.round(anchor.top);
-    // 下方空间不够就往上翻
-    if (top + H > vh - 16) top = Math.max(16, Math.round(anchor.top - H - 16));
-    return `right:${right}px;top:${top}px;left:auto;bottom:auto;`;
-  })();
 
   const list = () => {
     const tabDef = TABS.find((x) => x.id === tab);
