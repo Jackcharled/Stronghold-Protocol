@@ -1044,7 +1044,10 @@ async function loadOps() {
   $('ops-restart').textContent = can.length ? `重启这 ${can.length} 个空闲节点` : '没有可重启的节点';
 
   const open = opsData.openList;
-  $('ops-open').disabled = !opsData.fresh.length;
+  // 「立即同步存活节点」随时可用：它只探测 /healthz 并按存活状态重写开放列表，
+  // 不改代码、不重启任何东西。以前这个按钮依赖 fresh（已跑新代码的节点）非空，
+  // 那套逻辑会把跑旧代码的节点从 map 里摘掉，导致那些节点的玩家刷新即掉大厅。
+  $('ops-open').disabled = false;
   $('ops-open-now').textContent = open
     ? `当前开放 ${open.length} 个；已跑新代码 ${opsData.fresh.length} 个`
     : '读不到 nginx 配置';
@@ -1074,7 +1077,58 @@ async function loadOps() {
       if (!idle.length && !busy.length) $('ops-open-now').textContent += '　（都已开放）';
     }
   }
+  renderRedline();
   renderOpenSync(opsData.openSync);
+}
+
+// 红线告警：有节点正在对外开放，但跑的还是旧代码；或节点已经连不上却还留在开放列表里。
+//
+// 为什么必须常驻显示：这条红线不是「点一下按钮就能修好」的，它只能靠重启那台节点来解决，
+// 而节点上只要还有对局就绝对不能重启 —— 于是它可以合法地持续好几个小时。
+// 只在某一行小字里提一句，很容易被当成噪音忽略，等它持续一整天也没人发现。
+//
+// ⚠ 但**绝不能**用「把旧代码节点从开放列表里摘掉」来解决！那正是 2026-10-31
+// 「刷新掉回大厅」的成因：map $cookie_sp_route 里没有该节点 → 该节点的玩家
+// 刷新时 cookie 被判无效 → 重新分流到别的节点 → 没有他的会话 → 掉回大厅。
+// 旧代码节点照样能正常游玩，踢走玩家的代价远大于多跑几小时旧代码。
+function renderRedline() {
+  const el = $('ops-alarm');
+  if (!el) return;
+  const open = opsData && opsData.openList;
+  if (!Array.isArray(open)) { el.style.display = 'none'; return; }
+
+  // stale = 活着但跑旧代码；与开放列表取交集就是正在对外服务的旧代码节点
+  const staleOpen = (opsData.stale || []).filter((n) => open.includes(n));
+  const busy = [];
+  const idle = [];
+  for (const n of staleOpen) {
+    const x = (opsData.nodes || []).find((y) => y.n === n) || {};
+    (x.matches > 0 ? busy : idle).push(n);
+  }
+
+  // 另一类：节点已经连不上，却还留在开放列表里。自动同步每 5 分钟会摘掉它，
+  // 但在那之前新访客会被分过去、直接连不上。
+  const downOpen = (opsData.nodes || [])
+    .filter((x) => open.includes(x.n) && !x.alive).map((x) => x.n);
+
+  if (!staleOpen.length && !downOpen.length) { el.style.display = 'none'; return; }
+
+  const parts = [];
+  if (staleOpen.length) {
+    parts.push(`<b>⚠ 有 ${staleOpen.length} 个跑着旧代码的节点正在对外开放</b>`);
+    const detail = [];
+    if (busy.length) detail.push(`其中 ${busy.length} 个还有对局，正在游戏，现在不能重启：${fmtList(busy)}`);
+    if (idle.length) detail.push(`${idle.length} 个已空闲、可以重启：${fmtList(idle)}`);
+    parts.push(detail.join('；') + '。');
+    parts.push('这些节点本身能正常游玩，只是缺了最近的修复。等对局结束后点上面的「重启这 N 个空闲节点」即可，不会自己好。'
+      + '<b>不要</b>把它们从开放列表里关掉 —— 那会让这些节点上的玩家刷新就掉回大厅。');
+  }
+  if (downOpen.length) {
+    parts.push(`<b>⚠ 有 ${downOpen.length} 个节点已经连不上，却还被当作开放节点：${fmtList(downOpen)}</b>`
+      + `（自动同步每 5 分钟会摘掉它们；等不及就点「立即同步存活节点」）`);
+  }
+  el.innerHTML = parts.map((p) => `<div>${p}</div>`).join('');
+  el.style.display = '';
 }
 
 // 自动同步的任务（SP-Open-Nodes，每 5 分钟）跑没跑、跑得怎么样。
@@ -1145,22 +1199,24 @@ if (document.getElementById('ops-bar')) {
     opsPost('/api/ops/restart-idle', '重启空闲节点', $('ops-restart'));
   };
   $('ops-open').onclick = () => {
-    const f = opsData ? opsData.fresh : [];
-    if (!f.length) return toast('没有任何已更新节点');
-    // 有玩家在房间/等待室里的节点要单独讲清楚：开放之后新访客会直接落进去
-    const occupied = f
-      .map((n) => opsData.nodes.find((y) => y.n === n))
-      .filter((x) => x && ((x.rooms || 0) > 0 || (x.sockets || 0) > 0));
-    let msg = `把 nginx 开放列表改成「所有已跑新代码的节点」共 ${f.length} 个：\n${fmtList(f)}\n\n`;
-    if (occupied.length) {
-      msg += `⚠ 其中 ${occupied.length} 个节点上现在就有玩家：\n`
-        + occupied.map((x) => `  ${NAMES[x.n - 1]}：${x.rooms} 房 / ${x.sockets} 连（${x.players} 人）`).join('\n')
-        + `\n开放之后，新访客会被随机分到这些节点，直接进到那些人的等待室里。\n`
-        + `已经在房间里的人不受影响（他们一直回自己的节点）。\n\n`;
+    // 语义：「探测存活节点 → 重写 open-nodes.conf → reload」。
+    // 只读各节点 /healthz，不重启任何东西、不改代码。
+    const open = opsData ? opsData.openList : null;
+    const alive = opsData ? (opsData.summary && opsData.summary.alive) : '?';
+    const downOpen = opsData
+      ? (opsData.nodes || []).filter((x) => Array.isArray(open) && open.includes(x.n) && !x.alive).map((x) => x.n)
+      : [];
+    let msg = `立即同步存活节点：探测全部节点的 /healthz，\n`
+      + `把「活着」的节点写进 nginx 开放列表并 reload。\n\n`
+      + `当前开放 ${Array.isArray(open) ? open.length : '?'} 个，探测到在线 ${alive} 个。\n`;
+    if (downOpen.length) {
+      msg += `\n⚠ 这些节点已经连不上，却还在开放列表里：${fmtList(downOpen)}\n`
+        + `同步之后新访客就不会再被分过去。\n`;
     }
-    msg += `自动备份配置，nginx -t 校验，失败会自动回滚。\n正在对局的玩家不受影响（sp_route 永远回原节点）。\n\n确认更新？`;
+    msg += `\n只读取状态，不重启任何节点，也不影响正在对局的人。\n`
+      + `（计划任务 SP-Open-Nodes 每 5 分钟会自动做一次，这里是不想等。）\n\n现在同步？`;
     if (!confirm(msg)) return;
-    opsPost('/api/ops/open-list', '更新开放列表', $('ops-open'));
+    opsPost('/api/ops/open-list', '同步开放列表', $('ops-open'));
   };
 
   // 重启 nginx：走 tools/restart-nginx.mjs（先清进程 → 再经计划任务启动到 Session 0）

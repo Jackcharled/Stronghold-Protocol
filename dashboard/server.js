@@ -788,46 +788,71 @@ function closeRoom(codeIn, nodeIn) { return adminRoomAction('close', codeIn, nod
 /** 只结束当前这一局，房间和座位都留下，玩家可以缓一下再重新开局。 */
 function abortMatch(codeIn, nodeIn) { return adminRoomAction('abort', codeIn, nodeIn); }
 
-/** 把 nginx 开放列表改成「所有已跑新代码的节点」。
+/** 立即同步 nginx 的开放列表 = 跑一次 tools/sync-open-nodes.ps1 -Apply。
  *
- * 开放的口径是维护者定死的：**能更新重启的节点就对外开，不能重启的不开**，
- * 所以这里取的是 `fresh`，跟节点上有没有人无关 —— 有人也照样开放，
- * 因为开放只影响「新访客被随机分到哪」，正在房间里的人一直回自己的节点。
+ * ★ 2026-10-31 改语义（原来是按 fresh 列表写死节点号）。
  *
- * 但「有人」这件事必须如实告诉维护者：那台节点上可能正有玩家在等待室，
- * 开放之后新访客会直接落进去。所以下面把这些人列出来，不藏。 */
+ * 为什么必须改 —— 那套旧逻辑会**直接造成「刷新掉回大厅」**：
+ *   旧逻辑把开放列表写成「只有已跑新代码的节点」。于是只要有一台节点还在跑旧代码，
+ *   它就会从 `map $cookie_sp_route` 里被摘掉。而 `map` 决定的是
+ *   **浏览器带来的 sp_route cookie 还算不算有效**：
+ *
+ *       玩家在 node-4 对局中刷新 → 带 sp_route=4 → map 里没有 4 → $sp_cookie_open=0
+ *       → 判定 cookie 失效 → 被重新随机分到别的节点 → 新节点没有他的会话 → 掉回大厅
+ *
+ *   这正是 2026-10-31 上午修掉的那个 bug（当时是 11 个节点的白名单漏了 node-1）。
+ *   旧按钮等于「谁没跟上代码就把谁的用户踢出去」，完全反了 —— 跑旧代码的节点
+ *   照样能正常游玩，而踢走玩家的代价是毁灭性的。
+ *
+ * 现在的口径：**谁活着谁就开放**（计划任务 SP-Open-Nodes 每 5 分钟做同一件事，
+ * 这个按钮就是不等那 5 分钟、立刻做一次）。
+ *   · 节点挂掉 → 摘掉，新访客不会分过去，已经分到过的 cookie 失效后重新分流（对）；
+ *   · 节点活着、只是代码旧 → 保持开放，里面的玩家刷新照常回房（对）。
+ *
+ * 「旧代码节点还在开放」仍是需要盯的红线，但那是**重启节奏**的问题，
+ * 靠面板报警解决（见 /api/ops/state 的 stale + 前端 renderRedline），不在这里关节点。 */
 function opsSetOpenList() {
   return new Promise((resolve) => {
-    const script = path.join(BASE, 'tools', '_set-open-nodes.mjs');
-    if (!fs.existsSync(script)) return resolve({ ok: false, error: '找不到 tools/_set-open-nodes.mjs' });
+    const script = path.join(BASE, 'tools', 'sync-open-nodes.ps1');
+    if (!fs.existsSync(script)) return resolve({ ok: false, error: '找不到 tools/sync-open-nodes.ps1' });
     opsCache = { at: 0, data: null };
-    opsState().then((st) => {
-      if (!st.fresh.length) return resolve({ ok: false, error: '没有任何已更新节点，拒绝执行（会把站点关掉）' });
-      // 这些节点上已经有人了（房间开着 / 有连接）：开放后新访客会直接进来
-      const occupied = st.nodes.filter((x) => x.fresh && (Number(x.rooms) > 0 || Number(x.sockets) > 0))
-        .map((x) => ({ n: x.n, rooms: Number(x.rooms) || 0, sockets: Number(x.sockets) || 0 }));
-      execFile(process.execPath, [script, st.fresh.join(',')],
-        { cwd: BASE, timeout: 60000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
-        (err, stdout, stderr) => {
-          opsCache = { at: 0, data: null };
-          let message = err ? '更新失败（已自动回滚）' : `已开放 ${st.fresh.length} 个节点`;
-          if (!err && occupied.length) {
-            message += `；其中 ${occupied.length} 个当时有玩家在房间/等待室里（开放后新访客会直接落进去）：`
-              + occupied.map((o) => `node-${o.n}(${o.rooms} 房/${o.sockets} 连)`).join('、');
+    const before = readOpenList();
+    execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Apply'],
+      { cwd: BASE, timeout: 120000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, PYTHONIOENCODING: 'utf-8', SP_CHCP: '65001' } },
+      (err, stdout, stderr) => {
+        opsCache = { at: 0, data: null };
+        const after = readOpenList();
+        // powershell.exe 往管道里写的是控制台代码页（中文系统 = GBK/936），
+        // 直接当 UTF-8 用会得到一串「ڵ�̽��」这样的乱码，面板上没法看。
+        // 这里按 UTF-8 解一次，解出替换字符就退回 GBK 再解。
+        const decode = (buf) => {
+          if (!buf || !buf.length) return '';
+          const utf8 = buf.toString('utf8');
+          if (!utf8.includes('\uFFFD')) return utf8;
+          try {
+            return new TextDecoder('gbk').decode(buf);
+          } catch {
+            return utf8;
           }
-          resolve({
-            ok: !err,
-            nodes: st.fresh,
-            occupied,
-            out: String(stdout || '').slice(-2000),
-            err: String(stderr || (err && err.message) || '').slice(-1000),
-            message,
-          });
+        };
+        const out = decode(stdout);
+        const changed = JSON.stringify(before) !== JSON.stringify(after);
+        let message = err ? `同步失败${/回滚/.test(out) ? '（已自动回滚）' : ''}` : '已同步存活节点';
+        if (!err) {
+          message += `：开放 ${Array.isArray(after) ? after.length : '?'} 个`;
+          if (changed) message += `（由 ${Array.isArray(before) ? before.length : '?'} 个变化而来）`;
+          else message += '，无变化';
+        }
+        resolve({
+          ok: !err,
+          nodes: after,
+          out: out.slice(-2000),
+          err: decode(stderr).slice(-1000) || String((err && err.message) || '').slice(-1000),
+          message,
         });
-    });
+      });
   });
 }
-
 
 function logFiles(name) {
   let files = [];

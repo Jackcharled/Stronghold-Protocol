@@ -1367,6 +1367,112 @@ dashboard 重启不影响任何对局（它只读 `pm2 jlist` 和各节点 `/hea
 nginx reload 后新访客不会分到死节点，而已经分到过的浏览器也会被判为 cookie 无效、重新随机。
 所以**这一行变红 = 玩家正在被往死节点上分**，要当事故处理，见 §9.34。
 
+---
+
+### 9.34 开放列表的口径：**谁活着谁就开放**，绝不能「谁代码新就开放」（2026-10-31）
+
+#### 结论（先记住这一条）
+
+`nginx/conf/open-nodes.conf` 里的两个块，语义完全不同，别搞混：
+
+| 块 | 决定什么 | 节点少了会怎样 |
+|---|---|---|
+| `split_clients` | **新访客**（没有 cookie）随机分到哪 | 少了无所谓，只是不往那分 |
+| `map $cookie_sp_route` | **老玩家的 cookie 还算不算有效** | ⚠ **少了就是事故**——那台节点上的玩家一刷新就掉回大厅 |
+
+所以这两个块**永远只能按「节点是否活着」来写**，不能按「节点是否跑了新代码」来写。
+
+#### 事故经过（当天犯了两次，第二次是自己造成的）
+
+上午刚修完「刷新掉回大厅」，根因是 nginx 的开放白名单只有 11 个节点、**node-1 不在里面**：
+
+```
+玩家在 node-1 对局中刷新 → 带 sp_route=1 → map 里没有 1 → $sp_cookie_open=0
+→ 判定 cookie 失效 → 重新随机分到别的节点 → 新节点没有他的会话 → 掉回大厅
+```
+
+修法是把 30 个节点全放开（并加 `sync-open-nodes.ps1` 按存活自动维护）。
+但**控制台那个「更新 nginx 开放列表」按钮还留着旧逻辑**：把列表写成「所有已跑新代码的节点」。
+当天有 12 台节点因为上面在对局、没法重启，仍是旧代码 → 点一次按钮就把它们从 `map` 里摘掉 →
+**那 12 台节点上的玩家刷新即掉大厅**，等于把一个刚修好的 Bug 原样重新引爆。
+
+它还会更糟：`_set-open-nodes.mjs` 去 `nginx.conf` 里找 `split_clients`，
+而那个块当天已移进 `open-nodes.conf`，于是按钮直接报 `找不到 split_clients 块` 而失败。
+**失败反而是好事**（脚本有回滚），真正危险的是它成功的时候。
+
+#### 现在的口径
+
+- `tools/sync-open-nodes.ps1`（计划任务 `SP-Open-Nodes`，每 5 分钟）**是唯一该改这份文件的东西**；
+  探测 `/healthz`，活着就开、挂了才摘。
+- 控制台按钮已改名「立即同步存活节点」，就是「不等那 5 分钟，立刻跑一次同一个脚本」。
+- 「跑旧代码的节点还开着」仍是要盯的红线，但**解决方式是重启那台节点**，
+  不是把它关掉。面板顶部有红色横幅专门讲这件事，并明确写着「不要关掉它们」。
+
+> 判断依据：旧代码节点照样能正常游玩，只缺最近的修复；
+> 而把玩家踢下线的代价是毁灭性的。两者完全不对等。
+
+#### 自查命令（任何时候都该是「一致」）
+
+```powershell
+# 逐个节点验证 cookie 粘性：必须每个都落回自己
+1..30 | ForEach-Object {
+  $n = $_
+  $h = curl.exe -k -s -o NUL -D - -H "Cookie: sp_route=$n" https://127.0.0.1/ 2>&1
+  $got = ($h | Select-String '^X-SP-Node:\s*(\d+)').Matches.Groups[1].Value
+  if ($got -ne "$n") { "✗ node-$n 变成了 $got" }
+}
+```
+
+30 个都落回自己 = 刷新不会掉大厅。任何一个不对，就是 `map` 块缺了它。
+
+---
+
+### 9.35 含中文的 `.ps1` 必须带 UTF-8 BOM（2026-10-31 踩到）
+
+PowerShell 5.1 **无 BOM 时按 GBK 解析脚本**，含中文的脚本会直接解析失败：
+
+```
+Missing closing '}' in statement block or type definition.
+Unexpected token ')' in expression or statement.
+└─ 提示的行号还指向别的地方，看不出来是编码问题
+```
+
+当天 `tools/sync-open-nodes.ps1` 在给输出加注释后变成无 BOM，**每 5 分钟的自动同步整条挂掉**，
+而且计划任务只报 `Last Result: 1`，不看脚本输出根本不知道原因。
+
+写入时显式带 BOM：
+
+```powershell
+$enc = New-Object System.Text.UTF8Encoding($true)   # $true = 带 BOM
+[System.IO.File]::WriteAllText($path, $content, $enc)
+```
+
+检查：
+
+```powershell
+$b = [System.IO.File]::ReadAllBytes($path)[0..2]
+if ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { '✓ 有 BOM' } else { '✗ 无 BOM' }
+```
+
+> 用 `Out-File -Encoding UTF8` / `Set-Content -Encoding UTF8` 在 **PowerShell 7** 下**不加** BOM，
+> 在 5.1 下会加。两种都可能踩到，所以不要依赖 cmdlet 的默认行为，一律显式写字节。
+
+#### 连带问题：被 dashboard 调用时中文变乱码
+
+`powershell.exe` 作为子进程时 stdout 是管道，默认按控制台代码页（中文系统 = GBK/936）输出，
+而 `dashboard/server.js` 按 UTF-8 读 → 面板上显示成 `ڵ�̽��: ��� 30`。
+
+修法是在脚本开头强制管道输出用 UTF-8（已加进 `sync-open-nodes.ps1`）：
+
+```powershell
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+```
+
+注意日志文件本身一直是正确的 UTF-8——**只有管道那段错了**，
+所以别因为面板显示乱码就去改 `Out-File -Encoding UTF8`。
+
+
 #### ⚠ 踩过的坑：pm2 的 ecosystem 路径必须写绝对路径
 
 整合当天，面板点「重启空闲节点」后显示：
