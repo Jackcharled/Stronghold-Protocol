@@ -205,6 +205,7 @@
       <button id="ops-nginx" style="background:rgba(232,178,90,.08);border:1px solid rgba(232,178,90,.38);color:#ffd899;border-radius:8px;padding:6px 12px">重启 nginx</button>
       <span class="muted" id="ops-open-now" style="font-size:12px"></span>
     </div>
+    <div class="muted" id="ops-open-sync" style="font-size:12px"></div>
     <div class="muted" style="font-size:12px">顺序不能反：先重启、后开放。开放列表只影响新访客，正在对局的玩家永远回原节点。</div>
     <div class="muted" style="font-size:12px">卡片颜色说明：绿=在线可访问 · 黄=进程在但网页无响应 · 灰=已停止 · 红=异常</div>
     <div class="muted" id="ops-nginx-hint" style="font-size:12px">重启 nginx 会让站点中断 5–20 秒，所有在线玩家断线后自动重连（对局数据不丢）。改了 <code>/mm/*.js</code> 的版本号、或残留 worker 变多时用它。</div>

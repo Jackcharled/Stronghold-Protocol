@@ -1074,6 +1074,43 @@ async function loadOps() {
       if (!idle.length && !busy.length) $('ops-open-now').textContent += '　（都已开放）';
     }
   }
+  renderOpenSync(opsData.openSync);
+}
+
+// 自动同步的任务（SP-Open-Nodes，每 5 分钟）跑没跑、跑得怎么样。
+// 上面那一行是「按当前 nginx 配置 + 探测结果」算出来的期望值，这一行是「上一次自动同步实际做了什么」。
+// 两者不一致就说明定时任务停了 —— 这就是「部分节点关掉后还能用」所依赖的那条链路。
+function renderOpenSync(s) {
+  const el = $('ops-open-sync');
+  if (!el) return;
+  if (!s || !s.available) {
+    el.textContent = '自动同步：还没跑过（或没有日志）。每 5 分钟一次，见计划任务 SP-Open-Nodes。';
+    return;
+  }
+  const parts = [];
+  const ago = s.agoSec;
+  let when;
+  if (ago == null) when = '时间未知';
+  else if (ago < 90) when = `${ago} 秒前`;
+  else if (ago < 5400) when = `${Math.round(ago / 60)} 分钟前`;
+  else when = `${(ago / 3600).toFixed(1)} 小时前`;
+  parts.push(`自动同步：${when}`);
+  if (s.alive != null) parts.push(`在线 ${s.alive}`);
+  if (s.dead) parts.push(`⚠ 挂掉 ${s.dead} 个${s.deadNodes && s.deadNodes.length ? '（' + fmtList(s.deadNodes) + '）' : ''}`);
+  if (s.changed === true) parts.push('刚更新了开放列表');
+  else if (s.changed === false) parts.push('配置无变化');
+  if (s.lastLine) parts.push(`上次结果：${s.lastLine}`);
+
+  let bad = false;
+  // 定时任务每 5 分钟一次；超过 15 分钟没动 = 任务没在跑，玩家的「换节点」能力会慢慢失效。
+  if (ago != null && ago > 900) { bad = true; parts.push(`⚠ 超过 15 分钟没跑，检查计划任务 SP-Open-Nodes`); }
+  if (s.dead > 0) bad = true;
+  // 日志里说挂了的节点，和当前探测到的在线数对不上 = 两者之间又有节点掉了
+  if (s.alive != null && Array.isArray(opsData && opsData.openList) && s.alive !== opsData.openList.length) {
+    parts.push(`（当前实际开放 ${opsData.openList.length} 个，等下一次自动同步补齐）`);
+  }
+  el.textContent = parts.join('　');
+  el.style.color = bad ? '#ff9f9f' : '';
 }
 
 async function opsPost(path, label, btn) {

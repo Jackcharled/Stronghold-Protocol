@@ -414,18 +414,107 @@ function latestCodeMtime(breakdown) {
   return breakdown ? { at: st.at, byKind: st.kindAt, sig: st.sig } : st.at;
 }
 
-/** nginx.conf 里当前对外开放的节点（解析 split_clients 的权重行）。 */
+/**
+ * nginx 当前对外开放的节点（解析 split_clients 的权重行）。
+ *
+ * ★ 2026-10-31：节点列表从 nginx.conf 移到了 `nginx/conf/open-nodes.conf`
+ *   （由 tools/sync-open-nodes.ps1 按「/healthz 是否存活」自动生成并 reload，
+ *    见 MAINTENANCE.md §9.34）。所以先读那份，读不到再退回主配置里的旧位置
+ *   —— 兼容还没做这次改动的部署。
+ */
 function readOpenList() {
-  try {
-    const conf = fs.readFileSync(path.join(BASE, 'nginx', 'conf', 'nginx.conf'), 'utf8');
+  const parse = (text) => {
     const out = [];
     const re = /^\s*[\d.]+%\s+(?:\$sp_route_)?(\d+);/gm;
     let m;
-    while ((m = re.exec(conf))) out.push(Number(m[1]));
+    while ((m = re.exec(text))) out.push(Number(m[1]));
     return Array.from(new Set(out)).sort((a, b) => a - b);
+  };
+  try {
+    const openFile = path.join(BASE, 'nginx', 'conf', 'open-nodes.conf');
+    if (fs.existsSync(openFile)) {
+      const parsed = parse(fs.readFileSync(openFile, 'utf8'));
+      if (parsed.length) return parsed;
+    }
+  } catch { /* fall through */ }
+  try {
+    return parse(fs.readFileSync(path.join(BASE, 'nginx', 'conf', 'nginx.conf'), 'utf8'));
   } catch {
     return null;
   }
+}
+
+/**
+ * 节点开放列表自动维护（tools/sync-open-nodes.ps1 + 计划任务 SP-Open-Nodes）的运行情况。
+ *
+ * 为什么放在这里：这份列表决定了「新访客落到哪些节点」，是线上可用性的一部分。
+ * 维护者需要在控制台直接看到「谁在维护它、上次什么时候跑的、有没有节点被摘掉」，
+ * 而不是去翻日志文件。
+ *
+ * @returns {{ available: boolean, logAt: number|null, agoSec: number|null,
+ *   alive: number[]|null, dead: number[]|null, changed: boolean|null,
+ *   lastLine: string|null, fileAt: number|null } }
+ */
+function readOpenSync() {
+  const out = {
+    available: false, logAt: null, agoSec: null,
+    alive: null, dead: null, deadNodes: [], changed: null, lastLine: null, fileAt: null,
+  };
+  const openFile = path.join(BASE, 'nginx', 'conf', 'open-nodes.conf');
+  try {
+    if (fs.existsSync(openFile)) out.fileAt = fs.statSync(openFile).mtimeMs;
+  } catch { /* ignore */ }
+
+  try {
+    const logFile = path.join(BASE, 'logs', 'open-nodes.log');
+    if (!fs.existsSync(logFile)) return out;
+    out.available = true;
+    // 日志按「===== 时间 =====」分块。只取最后一个块：
+    // 末尾经常还夹着别处（nginx-reload 子任务）的输出，所以从尾部往前找最后一条
+    // 「节点探测」行是更稳的做法，比整块正则匹配可靠。
+    const raw = fs.readFileSync(logFile, 'utf8');
+    const lines = raw.split(/\r?\n/);
+    let stampIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^===== \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} =====$/.test(lines[i].trim())) { stampIdx = i; break; }
+    }
+    if (stampIdx >= 0) {
+      const m = /^===== (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) =====$/.exec(lines[stampIdx].trim());
+      if (m) {
+        const t = Date.parse(`${m[1]}T${m[2]}`);
+        if (Number.isFinite(t)) {
+          out.logAt = t;
+          out.agoSec = Math.max(0, Math.round((Date.now() - t) / 1000));
+        }
+      }
+    }
+    // 从最后一条「节点探测」往后扫，直到遇到下一条时间戳
+    let start = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/节点探测:/.test(lines[i])) {
+        // 确认它属于最新那一块（即 stampIdx 之前没有更新的块）
+        if (stampIdx >= 0 && i < stampIdx) break;
+        start = i; break;
+      }
+    }
+    if (start >= 0) {
+      const tail = [];
+      for (let i = start; i < lines.length && i < start + 12; i++) {
+        if (i > start && /^===== /.test(lines[i].trim())) break;
+        tail.push(lines[i]);
+      }
+      const block = tail.join('\n');
+      const aliveM = /节点探测:\s*存活\s*(\d+)\s*\/\s*挂掉\s*(\d+)/.exec(block);
+      if (aliveM) { out.alive = Number(aliveM[1]); out.dead = Number(aliveM[2]); }
+      const deadListM = /挂掉:\s*([\d,]+)/.exec(block);
+      if (deadListM) out.deadNodes = deadListM[1].split(',').map(Number).filter(Number.isInteger);
+      if (/节点列表变化/.test(block)) out.changed = true;
+      else if (/配置无变化/.test(block)) out.changed = false;
+      const last = tail.filter((l) => l.trim()).pop();
+      if (last) out.lastLine = last.trim().slice(0, 120);
+    }
+  } catch { /* ignore */ }
+  return out;
 }
 
 async function opsState() {
@@ -480,6 +569,10 @@ async function opsState() {
     stale,
     fresh: nodes.filter((x) => x.fresh).map((x) => x.n),
     openList: readOpenList(),
+    // 2026-10-31：节点开放列表由 tools/sync-open-nodes.ps1 每 5 分钟自动维护
+    //（SP-Open-Nodes，SYSTEM，Session 0）。这里把那一侧的运行情况一起报出来，
+    // 否则控制台只能看到「开放了哪些」，看不到「谁在维护它、上次跑得怎么样」。
+    openSync: readOpenSync(),
     summary: {
       alive: nodes.filter((x) => x.alive).length,
       matches: nodes.reduce((s, x) => s + x.matches, 0),

@@ -1340,6 +1340,33 @@ pm2.cmd restart dashboard --update-env     # 注意是 pm2.cmd，不是 pm2.ps1
 `dashboard/` 在仓库里也是**独立一份**（不是 junction），漏同步就会「线上改了、仓库没改」。
 dashboard 重启不影响任何对局（它只读 `pm2 jlist` 和各节点 `/healthz`）。
 
+> ⚠ **方向别搞反**：pm2 拉起的是**部署目录**的 `D:\Stronghold-Protocol\dashboard\server.js`，
+> 不是 `repo-sync\dashboard\`。所以在仓库里改完不复制过去，线上**一点变化都没有**，
+> 而 `pm2 restart dashboard` 也救不回来（它重启的仍是部署目录那份）。
+> 2026-10-31 加「自动同步状态」时就先踩了这一步：改了 `repo-sync` 的文件、刷新控制台没反应。
+> 判据：`Get-FileHash` 比一下两边的 MD5，或者直接 `curl http://127.0.0.1:3080/app.js`
+> 看里面有没有你刚加的函数名。
+
+#### 自动同步状态行（「部分节点关掉后还能用」的监控）
+
+运维面板「更新 nginx 开放列表」下面那行灰色小字，是**计划任务 `SP-Open-Nodes` 上一次实际执行的结果**：
+
+```
+自动同步：2 分钟前　在线 30　配置无变化　上次结果：配置无变化，不 reload
+```
+
+- 数据来自 `logs/open-nodes.log` 最后一块，由 `dashboard/server.js` 的 `readOpenSync()` 解析，
+  挂在 `GET /api/ops/state` 的 `openSync` 字段上；
+- 上面那行「当前开放 N 个；已跑新代码 M 个」是**按 nginx 当前配置算出来的期望值**，
+  这一行是**自动任务实际做了什么**——两者不一致就说明定时任务停了；
+- **超过 15 分钟没跑**会标红（任务每 5 分钟一次），告诉你去看计划任务；
+- `dead > 0` 也会标红并列出挂掉的节点编号。
+
+这条链路就是「保证在部分节点关闭的状态下也能用」所依赖的东西：节点挂了 → 5 分钟内
+`open-nodes.conf` 被重写（把死节点从 `split_clients` 和 `map $cookie_sp_route` 里摘掉）→
+nginx reload 后新访客不会分到死节点，而已经分到过的浏览器也会被判为 cookie 无效、重新随机。
+所以**这一行变红 = 玩家正在被往死节点上分**，要当事故处理，见 §9.34。
+
 #### ⚠ 踩过的坑：pm2 的 ecosystem 路径必须写绝对路径
 
 整合当天，面板点「重启空闲节点」后显示：
