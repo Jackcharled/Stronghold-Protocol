@@ -108,10 +108,14 @@ import { unhashedUrl } from '../../shared/assetPaths.js';
  * @param {string} url
  * @returns {string}
  */
-const REMOTE_ASSET_RE = __spRemoteAssetRe();
+// ★ 2026-10-30：正则改为每次现算（原来这里是模块级常量）。
+//   模块常在水合完成前被求值，那时拿不到 data/config.json 的 assetOrigin，
+//   正则会退化成 `^https?:\/\/\/assets\/`，永远匹配不上 —— 音频就不改写，
+//   直接指向资源站（或被 CSP 拦掉）。与 ui/gameComponents.js、assets.js 是同一个坑。
 function externalToProxy(url) {
   if (typeof url !== 'string') return url;
-  if (REMOTE_ASSET_RE.test(url)) return '/assets/' + url.replace(REMOTE_ASSET_RE, '');
+  const re = __spRemoteAssetRe();
+  if (re.test(url)) return '/assets/' + url.replace(re, '');
   return url;
 }
 

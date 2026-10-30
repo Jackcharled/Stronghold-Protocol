@@ -25,11 +25,24 @@ import {
 } from './assetUrls.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
-const REMOTE_ASSET_RE = __spRemoteAssetRe();
-/** Route raw manifest art through the same /assets-cdn/ URLs the import cache and game use. */
-const localAssetSrc = (src) => (typeof src === 'string' && REMOTE_ASSET_RE.test(src)
-  ? '/assets/' + src.replace(REMOTE_ASSET_RE, '')
-  : src);
+// ★ 2026-10-30 修：这里原来是模块级常量
+//     const REMOTE_ASSET_RE = __spRemoteAssetRe();
+//   它在模块求值那一刻就算死了。而模块往往在窗口对象 `window.__SP__.data`
+//   （manifest）就绪**之前**被求值 —— 实测 DOMContentLoaded 在 224ms，data 到 388ms
+//   才就绪。那一刻 assetOrigin 读不到 → host 为空 → 正则变成
+//     ^https?:\/\/\/assets\/
+//   **永远匹配不上任何真实 URL**，于是 localAssetSrc() 原样返回资源站地址，
+//   所有经过本组件的图片都走外站。外站单文件可达 3.4 s（见 assets.js 的实测注释），
+//   表现成「立绘半天不出来」；而且不 404、不报错，日志里完全看不出来 ——
+//   这就是「资源加载慢」找了很久的根因。
+//
+//   改法：**每次调用时现算**。构造一个正则很便宜，正确性远比这点开销重要。
+//   assets.js 里那份是同样的写法，也已一并改成延迟求值。
+const localAssetSrc = (src) => {
+  if (typeof src !== 'string') return src;
+  const re = __spRemoteAssetRe();
+  return re.test(src) ? '/assets/' + src.replace(re, '') : src;
+};
 
 /** Data files the in-match screens use (`backups`: the 补位 stand-ins' bodies — cards, the board model, the detail card). */
 export const GAME_FILES = ['config', 'assets', 'chess', 'bonds', 'items', 'bands', 'enemies', 'bosses', 'stages', 'tokens',

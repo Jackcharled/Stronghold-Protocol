@@ -865,12 +865,21 @@ const transientFetch = (err) => {
 // /assets-cdn/，等于把就近的磁盘副本让给外网代理，这是「加载了完整资源包
 // 还是很慢」的主因（冷缓存 895 ms vs 194 ms）。
 const LOCAL_ASSET_PREFIX = '/assets/';
-const REMOTE_ASSET_RE = __spRemoteAssetRe();
 
-/** 源站 URL → 本机路径。只有源站地址会被改写，其它地址原样返回。 */
+/**
+ * 源站 URL → 本机路径。只有源站地址会被改写，其它地址原样返回。
+ *
+ * ★ 2026-10-30：正则改成**每次现算**。原来这里是模块级常量
+ *   `const REMOTE_ASSET_RE = __spRemoteAssetRe();`，在模块求值那一刻就固定了；
+ *   而本模块常在水合/manifest 就绪之前被求值，那时 `window.__SP__.data` 还没有
+ *   `config.assetOrigin` → host 为空 → 正则变成 `^https?:\/\/\/assets\/`，
+ *   永远匹配不上，所有素材都留在资源站地址上（单文件可达 3.4 s）。
+ *   ui/gameComponents.js 里是同样的写法，已一并改成延迟求值。
+ */
 function localizeOne(url) {
   if (typeof url !== 'string') return url;
-  return REMOTE_ASSET_RE.test(url) ? LOCAL_ASSET_PREFIX + url.replace(REMOTE_ASSET_RE, '') : url;
+  const re = __spRemoteAssetRe();
+  return re.test(url) ? LOCAL_ASSET_PREFIX + url.replace(re, '') : url;
 }
 
 /** Route manifest art through this server's own /assets/ (disk first, origin as the nginx-side fallback). */

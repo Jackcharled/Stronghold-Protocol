@@ -105,6 +105,8 @@ patcher\
 | **名片立绘跟随账号** | `matchmaker/account.cjs`（DOMAINS + validatePrefPayload + decodePrefPayload）、`matchmaker/public/account-title.js:PREF_MAP.card`、`public/js/ui/seatArt.js` | `account-and-dashboard` / `matching-party` | 重启 matchmaker |
 | 账号登录 / 管理后台 | `matchmaker/account.cjs`、`matchmaker/public/admin.html` | `account-and-dashboard` | 重启 matchmaker |
 | **刷新不掉出房间：`onDisconnect` 漏查隐身观战席位**（`roomOf()` 认座位/普通观战/隐身观战三种身份，取 seat 却只查前两种 → 隐身观战者断线时 `seat.connected` 抛 TypeError，`startGrace`/`broadcastState`/`leftHumanLeftAt` 全被跳过，房间状态与真实情况脱节。线上 2026-10-26～30 共 12 节点 31 次）。`startGrace` 定时器里同样的取席方式也一并改（不崩，但隐身观战者过期后永不移除） | `server/lobby.js`（`onDisconnect` 用 `seatOf \|\| watcherOf`、`startGrace` 定时器同） | `game-core-server` / `server-idle-guard` / `client-room-spectator` | **重启节点** |
+| **素材地址改写正则取太早 → 大量图片走外站**（2026-10-30，**立绘/头像「半天不出来」的根因**）：`const REMOTE_ASSET_RE = __spRemoteAssetRe()` 是模块级常量，在模块求值时就算死；而模块常在 `window.__SP__.data`（manifest）就绪**之前**求值（实测 DOMContentLoaded 224ms、data 388ms），那一刻 `assetOrigin` 读不到 → host 为空 → 正则退化成 `^https?:\/\/\/assets\/` → **永远匹配不上**，`localAssetSrc()` 原样返回资源站地址，所有图片走外站（单文件最慢 3.4s）。且不 404、不报错，日志里完全看不出来。改成**每次调用时现算** | `public/js/ui/gameComponents.js`（`localAssetSrc`）、`public/js/assets.js`（`localizeOne`）、`public/js/audio.js`（`externalToProxy`） | `game-core-client-ui` / `game-core-client-core` | **刷新页面** |
+| **素材日志带 IP**（排查「小文件也要 3 秒」需要知道是哪些玩家在卡）：`log_format sp_asset` 加 `ip=$remote_addr req=${request_length}B`，插在 `uri=` 之前，行尾格式不变 | `nginx/conf/nginx.conf` | 部署配置（`deploy/nginx.conf`） | `restart-nginx.mjs --apply` |
 
 ### 网络与性能
 
