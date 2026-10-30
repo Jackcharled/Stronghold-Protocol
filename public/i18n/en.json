@@ -2395,5 +2395,9 @@
   "模拟已过期": "The simulation has expired",
   "服务器维护中，模拟已关闭": "Server maintenance: the simulation was closed",
   "模拟超时未开始，已自动结束": "The simulation timed out before starting and was closed",
-  "该模拟已被管理员关闭": "This simulation was closed by an administrator"
-}
+  "该模拟已被管理员关闭": "This simulation was closed by an administrator",
+  "所有博士同时选择，可重复选择，每人只能选择一次": "All doctors choose at the same time; the same Strategy may be picked more than once (each doctor picks once)",
+  "{head}；本局不限时": "{head}; no time limit this match",
+  "{head}；{clock}": "{head}; {clock}",
+  "{head}；{clock}，超时将自动选择当前选中的「{autoName}」": "{head}; {clock}. On timeout the highlighted one is taken: {autoName}"
+  }

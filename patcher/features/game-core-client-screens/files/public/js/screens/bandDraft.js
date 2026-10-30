@@ -151,13 +151,27 @@ export function autoPickBand(sel, { bands, taken, myPick = null, defaultId = DEF
 /**
  * The tip under the co-op draft order: the one skip, the turn clock and what a turn that runs out assigns me (the
  * highlighted band while free — autoPickBand). Untimed drafts (a single human) name no clock.
- * @param {{ timed: boolean, turnSeconds?: number|null, autoName?: string|null, selected?: boolean }} o
+ *
+ * 并发草稿（5–20 人大厅勾了「允许重复策略」，draft.concurrent）说不得这两件事：
+ *   - 没有「跳过」—— canSkip 在并发时恒为 false（见下面 canSkip 的条件），提示却写着可以跳过；
+ *   - 超时不会固定选华法琳 —— 并发 + 允许重复时 taken 被置空，autoPickBand 优先给当前高亮的策略。
+ * 所以并发时改用另一套话术，只讲「同时选、可重复、超时按当前高亮」。
+ * @param {{ timed: boolean, turnSeconds?: number|null, autoName?: string|null, selected?: boolean,
+ *   concurrent?: boolean }} o
  *   selected: the auto pick is the highlighted band (not the default standing in for a band a teammate holds)
+ *   concurrent: 并发草稿（5–20 人大厅 allowRepeat）
  */
-export function draftTip({ timed, turnSeconds = null, autoName = null, selected = true }) {
+export function draftTip({ timed, turnSeconds = null, autoName = null, selected = true, concurrent = false }) {
+  const clock = Number(turnSeconds) > 0 ? t('每位博士有 {n} 秒', { n: Math.round(turnSeconds) }) : t('每位博士限时决策');
+  if (concurrent) {
+    // 并发：每人同时选一次，可重复；超时按当前高亮
+    const head = t('所有博士同时选择，可重复选择，每人只能选择一次');
+    if (!timed) return t('{head}；本局不限时', { head });
+    if (!autoName) return t('{head}；{clock}', { head, clock });
+    return t('{head}；{clock}，超时将自动选择当前选中的「{autoName}」', { head, clock, autoName });
+  }
   const skip = t('联合模拟在选择策略时可以进行一次跳过');
   if (!timed) return t('{skip}；本局不限时', { skip });
-  const clock = Number(turnSeconds) > 0 ? t('每位博士有 {n} 秒', { n: Math.round(turnSeconds) }) : t('每位博士限时决策');
   if (!autoName) return t('{skip}；{clock}', { skip, clock });
   return selected ? t('{skip}；{clock}，超时将自动选择当前选中的「{autoName}」', { skip, clock, autoName })
     : t('{skip}；{clock}，超时将自动选择「{autoName}」', { skip, clock, autoName });
@@ -437,7 +451,7 @@ export function BandDraftScreen({ held = null } = {}) {
               arts=${artOf(p)} medal=${p.playerId === myId ? myMedal : null} gd=${gd} onPeek=${peekBand} />`;
           })}
         </div>
-        ${!solo ? html`<p class="draft-order__tip" data-testid="draft-tip">${draftTip({ timed, turnSeconds: turnLen, autoName: myPick ? null : autoName, selected: open && autoId === sel })}</p>` : null}
+        ${!solo ? html`<p class="draft-order__tip" data-testid="draft-tip">${draftTip({ timed, turnSeconds: turnLen, autoName: myPick ? null : autoName, selected: open && autoId === sel, concurrent: draft.concurrent })}</p>` : null}
       </aside>
       <i class="draft__link" aria-hidden="true"></i>
 

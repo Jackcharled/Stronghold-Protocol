@@ -320,6 +320,61 @@ describe('UI: one countdown and the highlighted band (user playtest #4 item 4)',
     assert.equal(draftTip({ timed: false, autoName: '华法琳' }), '联合模拟在选择策略时可以进行一次跳过；本局不限时');
   });
 
+  // 2026-10-30：5–20 人大厅勾「允许重复策略」走并发草稿，此时 canSkip 恒为 false、超时也不固定给华法琳，
+  // 旧提示却两件事都写 —— 说不得的承诺。并发时改用另一套话术。
+  test('a concurrent draft (5–20 大厅 allowRepeat) promises neither the skip nor 华法琳 on timeout', () => {
+    // 绝不能再出现「跳过」
+    for (const o of [
+      { timed: true, turnSeconds: 50, autoName: '华法琳', concurrent: true },
+      { timed: true, turnSeconds: 50, autoName: null, concurrent: true },
+      { timed: false, autoName: '华法琳', concurrent: true },
+    ]) {
+      assert.ok(!draftTip(o).includes('跳过'), 'a concurrent draft has no skip: ' + draftTip(o));
+    }
+    // 只讲同时选 / 可重复 / 每人一次
+    assert.equal(
+      draftTip({ timed: true, turnSeconds: 50, autoName: null, concurrent: true }),
+      '所有博士同时选择，可重复选择，每人只能选择一次；每位博士有 50 秒',
+    );
+    assert.equal(
+      draftTip({ timed: false, autoName: '华法琳', concurrent: true }),
+      '所有博士同时选择，可重复选择，每人只能选择一次；本局不限时',
+    );
+    assert.equal(
+      draftTip({ timed: true, turnSeconds: 50, autoName: '华法琳', concurrent: true }),
+      '所有博士同时选择，可重复选择，每人只能选择一次；每位博士有 50 秒，超时将自动选择当前选中的「华法琳」',
+    );
+    // 顺序草稿（不并发）照旧保留「跳过」
+    assert.match(draftTip({ timed: true, turnSeconds: 50, autoName: null, concurrent: false }), /可以进行一次跳过/);
+  });
+
+  test('canSkip is false once the draft is concurrent — the tip above says so', () => {
+    // 服务端侧证据：并发草稿（5–20 人大厅 allowRepeat）下 g.bandSkip 被拒，
+    // 理由就是 phases.js:298 的 'no skip in a concurrent draft'。
+    // 注意：allowRepeat 只在 capacityExperiment（>4 人）时生效（Match.js:344），
+    // 且 concurrentDraft() = capacityExperiment && !isSolo && allowRepeat（Match.js:715）。
+    const h = makeMatch({
+      mode: 'coop',
+      humans: 5,
+      seed: 4,
+      experimental: { revivalEnabled: false, disableSharedPool: false, playerCapacity: 8, allowRepeat: true },
+    }).start();
+    const m = h.m;
+    try {
+      for (const ps of m.players.values()) if (!ps.isBot) m.handle(ps.playerId, { t: 'g.infoReady' });
+      h.sched.advance(1);
+      assert.equal(m.phase, PHASE.BAND_DRAFT);
+      assert.equal(m.concurrentDraft(), true, 'setup: this room must reach a concurrent draft');
+      const pub = m.publicView();
+      assert.equal(pub.draft.concurrent, true, 'setup: the public draft says concurrent');
+      const me = [...m.players.values()].find((ps) => !ps.isBot).playerId;
+      const r = m.handle(me, { t: 'g.bandSkip' });
+      assert.notEqual(r && r.ok, true, 'a concurrent draft must not accept a skip, got: ' + JSON.stringify(r));
+    } finally {
+      m.dispose();
+    }
+  });
+
   test('a single human with AI teammates: the draft is untimed (soloUntimed), keeps the co-op order and its skip', () => {
     const h = draftOf({ humans: 1, bots: 3, seed: 4 });
     const m = h.m;
