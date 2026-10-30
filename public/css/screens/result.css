@@ -75,8 +75,12 @@
 .rstat { display: flex; align-items: baseline; justify-content: space-between; gap: .06rem; padding: .05rem .1rem; background: #0e1210; box-shadow: 0 0 0 1px var(--line); font-size: calc(.13 * var(--t)); color: var(--text-lo); white-space: nowrap; min-width: 0; }
 .rstat b { font-size: calc(.18 * var(--t)); color: #fff; }
 .rstat.is-best b { color: var(--gold); }
-.result__foot { flex: 0 0 auto; margin-top: auto; padding-top: .2rem; display: flex; }
-.result__foot .btn { min-width: 3.4rem; }
+.result__foot { flex: 0 0 auto; margin-top: auto; padding-top: .2rem; display: flex; align-items: center; gap: .16rem; }
+.result__foot .btn { min-width: 3.4rem; margin-left: auto; }
+
+/* 「这台服务器还在用旧版本，刷新换新版本」—— 只在本节点跑旧代码时出现（ui/nodeCodeHint.js）。
+   放在结算页页脚左侧、按钮之前：玩家这时已经打完，刷新不会打断任何人，提示才是有用的。 */
+.result__nodehint { margin: 0; max-width: 60%; font-size: calc(.12 * var(--t)); line-height: 1.5; text-align: left; }
 
 /* a match with gameplay plugins (DESIGN §32.6): the unofficial mark under the headline */
 .result__modmark { align-self: flex-start; margin-top: .06rem; }

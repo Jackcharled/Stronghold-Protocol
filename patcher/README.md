@@ -143,15 +143,19 @@ patcher\
 | 多节点同步（**含 `server/`**） | `deploy/sync-nodes.cjs` | 不入补丁（`deploy/` 已进 IGNORE） | 手动运行 |
 | 重启旧代码节点 | `tools/_restart-stale.ps1` | 不入补丁 | 手动运行 |
 | 重建 nginx 开放列表 | `tools/_set-open-nodes.ps1` | 不入补丁 | 手动运行 |
-| **按存活维护开放列表**（每 5 分钟，SP-Open-Nodes） | `tools/sync-open-nodes.ps1`、`nginx/conf/open-nodes.conf`、`nginx/conf/nginx.conf`（`include` 那一行） | 入仓库 | 计划任务自动 reload |
-| **按节点号手工设开放列表** | `tools/_set-open-nodes.mjs` | 入仓库 | 写 `open-nodes.conf` + reload |
+| **按代码新旧维护开放列表**（每 5 分钟，SP-Open-Nodes） | `tools/sync-open-nodes.ps1`、`nginx/conf/open-nodes.conf`、`nginx/conf/nginx.conf`（`include` 与 `X-SP-Accepts-New`） | 入仓库 | 计划任务自动 reload |
+| **结算页「刷新换新版本」提示** | `public/js/ui/nodeCodeHint.js`、`public/js/screens/result.js`、`public/css/screens/result.css`、`public/i18n/*.json` | 入补丁 | 玩家刷新页面 |
+| 按节点号手工设开放列表 | `tools/_set-open-nodes.mjs` | 入仓库 | 写 `open-nodes.conf` + reload |
 | nginx 配置备份 | `deploy/nginx.conf` | 入仓库 | `nginx -s reload` |
 
-> ⚠ **开放列表只能按「节点是否活着」维护，不能按「节点是否跑了新代码」**。
-> 后者会把跑旧代码的节点从 `map $cookie_sp_route` 里摘掉，导致那台的玩家一刷新就掉大厅
-> （2026-10-31 事故，详见 `MAINTENANCE.md` §9.34）。
-> 升级上游后若 `nginx.conf` 被整体替换，务必确认 `include open-nodes.conf;` 还在——
-> 丢了它，两个块都不生效，`_set-open-nodes.mjs` 会主动报错退出。
+> ⚠ **开放列表的口径：`split_clients` 按「代码新旧」，`map $cookie_sp_route` 按「是否存活」。**
+> 两者的范围**故意不同**，不要为了整齐改成一样：
+> 把旧代码节点从 `map` 里摘掉 → 那台上的玩家一刷新就掉大厅（2026-10-31 事故，详见 `MAINTENANCE.md` §9.34）。
+>
+> 升级上游后若 `nginx.conf` 被整体替换，务必确认这两样还在：
+> `include open-nodes.conf;` 和 `add_header X-SP-Accepts-New $sp_node_accepts_new always;`。
+> 丢了 `include`，所有块都不生效（`_set-open-nodes.mjs` 会主动报错退出）；
+> 丢了响应头，结算页提示只是不出现，不影响游玩。
 
 ### ⚠ 已知陷阱（踩过一次，别再踩）
 

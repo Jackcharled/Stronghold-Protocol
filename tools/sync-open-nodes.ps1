@@ -68,9 +68,46 @@ for ($n = 1; $n -le $TOTAL; $n++) {
   if ($ok) { $alive += $n } else { $dead += $n }
 }
 
+# ── 1.5) 哪些节点还在跑旧代码 ──────────────────────────────────────
+# ★ 这是「新玩家不往旧代码节点发」的依据，也是本脚本与维护者需求的接口。
+#
+#   维护者要的是：「根据代码判断，不要我手动管每个节点」——
+#   跑旧代码的节点自动不接新玩家，但那台上**已经在玩的人完全不受影响**。
+#
+#   所以两个块分开写，这是本脚本最要紧的设计：
+#     · split_clients（新访客去哪） → 只写「活着 且 新代码」
+#     · map $cookie_sp_route（老 cookie 还算不算有效） → 写「活着」的**全部**节点
+#
+#   为什么 map 必须包含旧代码节点：map 决定的是「浏览器带来的 sp_route cookie 还算不算有效」。
+#   一旦把旧代码节点从 map 里摘掉，那台机器上的玩家刷新页面时 cookie 就被判无效、
+#   被随机分到别的节点，而新节点上没有他的会话 → 掉回大厅。
+#   这正是 2026-10-31 上午的事故（当时白名单漏了 node-1）。详见 MAINTENANCE.md §9.34。
+#
+#   那旧代码节点上的人刷新怎么办？刷新时地址栏带着 ?room=CODE（进房时写进 URL 的），
+#   nginx 的 `if ($arg_room ~ ...) { set $sp_node $cookie_sp_route; }` 会强制回原节点，
+#   不受开放列表影响。所以「只挡住新访客」和「里面的人不受影响」可以同时成立。
+#
+#   数据源：dashboard 的 /api/ops/state（它读 pm2 的进程启动时间，比 /healthz 的 build 字段准
+#   —— build 只覆盖 public/js、server/sim、shared、data，**不含 server/net.js、server/lobby.js**）。
+$stale = @()
+$codeUnknown = $false
+try {
+  $st = Invoke-RestMethod -Uri 'http://127.0.0.1:3080/api/ops/state' -TimeoutSec 20 -ErrorAction Stop
+  if ($st.stale) { $stale = @($st.stale) }
+} catch {
+  # 拿不到就**不下判断**：宁可按「全部算新代码」放行（新玩家照进旧代码节点），
+  # 也不能反过来把旧代码节点判成"不开放"后误伤 map —— 那会直接造成刷新掉大厅。
+  $codeUnknown = $true
+}
+
 $lines = @()
 $lines += ('节点探测: 存活 {0} / 挂掉 {1}' -f $alive.Count, $dead.Count)
 if ($dead.Count -gt 0) { $lines += ('  挂掉: {0}' -f ($dead -join ',')) }
+if ($codeUnknown) {
+  $lines += '★ 读不到 /api/ops/state，无法判断代码新旧：本次不做「新访客过滤」（旧代码节点照常接新玩家）'
+} elseif ($stale.Count -gt 0) {
+  $lines += ('  跑旧代码: {0}（不接新玩家，但其中的人刷新/重连不受影响）' -f ($stale -join ','))
+}
 
 if ($alive.Count -eq 0) {
   $lines += '★ 没有任何节点存活，不修改配置（否则会把所有人锁在外面）'
@@ -78,25 +115,50 @@ if ($alive.Count -eq 0) {
   exit 1
 }
 
+# 新访客可以去的节点 = 活着 且 跑新代码。挂掉的、跑旧代码的都挡在外面。
+$accept = @($alive | Where-Object { $stale -notcontains $_ })
+# 极端兜底：如果所有人都"跑旧代码"（比如代码刚更新、一台都还没重启），
+# 这时如果严格过滤，新玩家会无处可去 —— 站点等于关停。
+# 按「可用性优先」放行全部存活节点，并把这件事写进日志提醒去重启。
+if ($accept.Count -eq 0) {
+  $accept = $alive
+  $lines += '★ 所有存活节点都还在跑旧代码：本次放行全部存活节点接新玩家（否则新玩家将无处可去）'
+  $lines += '  → 请尽快重启这些节点（面板「重启这 N 个空闲节点」）'
+}
+
 # ── 2) 生成新配置内容 ──────────────────────────────────────────────
-$pct = [math]::Round(100.0 / $alive.Count, 2)
+$pct = [math]::Round(100.0 / $accept.Count, 2)
 $newLines = @(
   '# 由 tools\sync-open-nodes.ps1 自动生成，请勿手改。'
-  '# 内容 = 当前存活（/healthz 可用）的节点。节点挂了会被自动摘掉，回来会自动加回。'
+  '# split_clients = 新访客去哪（只含：存活 且 已跑新代码）'
+  '# map           = 老 cookie 还算不算有效（含全部存活节点，含旧代码节点）'
+  '#'
+  '# ⚠ 两个块的口径**故意不同**，不要为了「整齐」把它们改成一样：'
+  '#   把旧代码节点从 map 里摘掉 = 那台上的玩家一刷新就掉回大厅（2026-10-31 事故，手册 §9.34）。'
   ''
-  '# sp_route cookie 缺失/无效时去哪：只在存活节点里随机'
+  '# 新访客（无 cookie）随机分到哪：只在「存活 且 新代码」的节点里随机'
   'split_clients "$request_id" $sp_rand_node {'
 )
-for ($i = 0; $i -lt $alive.Count; $i++) {
-  $v = if ($i -eq $alive.Count - 1) { [math]::Round(100.0 - ($pct * ($alive.Count - 1)), 2) } else { $pct }
-  $newLines += ('  {0}% {1};' -f $v.ToString('0.00'), $alive[$i])
+for ($i = 0; $i -lt $accept.Count; $i++) {
+  $v = if ($i -eq $accept.Count - 1) { [math]::Round(100.0 - ($pct * ($accept.Count - 1)), 2) } else { $pct }
+  $newLines += ('  {0}% {1};' -f $v.ToString('0.00'), $accept[$i])
 }
 $newLines += '}'
 $newLines += ''
 $newLines += '# sp_route cookie 指向存活节点 → 视为有效（粘住它）；指向挂掉的节点 → 无效 → 重新分流'
+$newLines += '# ★ 这里必须是「存活」的全部节点，不能只写 $accept：'
+$newLines += '#   旧代码节点上正在对局的玩家刷新时必须能回到自己那台，否则掉回大厅。'
 $newLines += 'map $cookie_sp_route $sp_cookie_open {'
 $newLines += '  default 0;'
 $newLines += ('  {0}' -f (($alive | ForEach-Object { "$_ 1;" }) -join ' '))
+$newLines += '}'
+$newLines += ''
+$newLines += '# 「当前这个请求落在的节点，还接不接新玩家」→ 1 接 / 0 不接。'
+$newLines += '# 用途：前端拿来给那台上的玩家提示「这局打完刷新一下可换到新版本」'
+$newLines += '# （结算页的提示，见 public/js/ui/nodeCodeHint.js）。纯展示用，不参与路由。'
+$newLines += 'map $sp_node $sp_node_accepts_new {'
+$newLines += '  default 0;'
+$newLines += ('  {0}' -f (($accept | ForEach-Object { "$_ 1;" }) -join ' '))
 $newLines += '}'
 $newLines += ''
 
@@ -109,9 +171,9 @@ if ($oldContent -eq $newContent) {
   exit 0
 }
 
-$lines += ('节点列表变化: {0} -> {1}' -f `
+$lines += ('节点列表变化: {0} -> 新访客可去 [{1}]' -f `
     $(if ($oldContent) { '（旧文件存在）' } else { '（新文件）' }), `
-    ('[' + ($alive -join ',') + ']'))
+    ($accept -join ','))
 
 if (-not $Apply) {
   $lines += '（只报告。加 -Apply 才会写文件并 reload）'

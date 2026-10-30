@@ -25,6 +25,7 @@ import { audio } from '../audio.js';
 import { sentText } from '../ui/lang.js';
 import { UnofficialMark, VersionTag } from '../ui/pluginTag.js';
 import { TestMark } from '../ui/testConsole.js';
+import { NodeCodeHint } from '../ui/nodeCodeHint.js';
 import { t, tParts, N_ } from '../../../shared/i18n.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
@@ -159,6 +160,7 @@ export function ResultView({ res, pub = null, myId = null, backLabel, onBack, qu
         ${mins ? html`<p class="result__time t-lo">${tParts('本局耗时 {n} 分钟', { n: html`<b class="num">${mins}</b>`, mins })}</p>` : null}
         </div>
         <footer class="result__foot">
+          <${NodeCodeHint} />
           <${Button} variant="primary" size="xl" icon="chevronLeft" onClick=${onBack}>${backLabel}<//>
         </footer>
       </section>

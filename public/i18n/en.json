@@ -2410,5 +2410,6 @@
   "没有找到可恢复的账号对局。": "No resumable account match was found.",
   "通过账号恢复当前对局": "Resume the current match via account",
   "这个页面对应的节点上没有你的对局，它在另一个节点（房间 {code}）。点下面的按钮过去继续。": "Your match is not on this page's node — it is on another one (room {code}). Click the button below to go there and continue.",
-  "前往该房间继续对局": "Go to that room and continue"
+  "前往该房间继续对局": "Go to that room and continue",
+  "这台服务器还在使用旧版本。本局已结束，刷新页面即可换到新版本（不会影响你的账号和对局记录）。": "This server is still running an older version. The match is over — reload the page to move to the new version (your account and match history are not affected)."
 }

@@ -191,9 +191,6 @@
   </div>
   <div class="muted" id="ops-summary" style="font-size:12px"></div>
 
-  <!-- 红线告警：开放中却有跑旧代码的节点 / 连不上却还开放。默认隐藏，由 renderRedline 决定。 -->
-  <div id="ops-alarm" style="display:none;border:1px solid #ff6b6b;border-left-width:4px;border-radius:8px;padding:10px 12px;background:rgba(255,107,107,.10);color:#ffd0d0;font-size:13px;line-height:1.65"></div>
-
   <!-- 可重启的节点 -->
   <div id="ops-box" style="border:1px solid #27393b;border-radius:10px;padding:12px;background:#0b1214;display:flex;flex-direction:column;gap:8px">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -204,12 +201,11 @@
     <div id="ops-busy" class="muted" style="font-size:12px"></div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button id="ops-restart">重启这些空闲节点</button>
-      <button id="ops-open" style="background:#131c1f;border:1px solid #27393b;color:#9fb4b8;border-radius:8px;padding:6px 12px">立即同步存活节点</button>
+      <button id="ops-open" style="background:#131c1f;border:1px solid #27393b;color:#9fb4b8;border-radius:8px;padding:6px 12px">更新 nginx 开放列表</button>
       <button id="ops-nginx" style="background:rgba(232,178,90,.08);border:1px solid rgba(232,178,90,.38);color:#ffd899;border-radius:8px;padding:6px 12px">重启 nginx</button>
       <span class="muted" id="ops-open-now" style="font-size:12px"></span>
     </div>
-    <div class="muted" id="ops-open-sync" style="font-size:12px"></div>
-    <div class="muted" style="font-size:12px">开放列表 = 新访客会被随机分到哪里，由「节点是否活着」自动决定（每 5 分钟一次）。上面的按钮只是不等那 5 分钟、立刻同步一次。正在对局的玩家永远回原节点。<b>不要</b>为了让节点「跑新代码」而把它从开放列表里关掉 —— 那会让这台上的人刷新就掉回大厅。</div>
+    <div class="muted" style="font-size:12px">顺序不能反：先重启、后开放。开放列表只影响新访客，正在对局的玩家永远回原节点。</div>
     <div class="muted" style="font-size:12px">卡片颜色说明：绿=在线可访问 · 黄=进程在但网页无响应 · 灰=已停止 · 红=异常</div>
     <div class="muted" id="ops-nginx-hint" style="font-size:12px">重启 nginx 会让站点中断 5–20 秒，所有在线玩家断线后自动重连（对局数据不丢）。改了 <code>/mm/*.js</code> 的版本号、或残留 worker 变多时用它。</div>
     <pre id="ops-out" style="display:none;margin:0;max-height:180px;overflow:auto;font-size:12px;background:#0d1417;border:1px solid #27393b;border-radius:6px;padding:8px;color:#9fb4b8"></pre>

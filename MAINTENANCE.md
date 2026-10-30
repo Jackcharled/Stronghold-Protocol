@@ -1400,30 +1400,82 @@ nginx reload 后新访客不会分到死节点，而已经分到过的浏览器�
 而那个块当天已移进 `open-nodes.conf`，于是按钮直接报 `找不到 split_clients 块` 而失败。
 **失败反而是好事**（脚本有回滚），真正危险的是它成功的时候。
 
-#### 现在的口径
+#### 现在的口径（维护者 2026-10-31 定稿）
 
-- `tools/sync-open-nodes.ps1`（计划任务 `SP-Open-Nodes`，每 5 分钟）**是唯一该改这份文件的东西**；
-  探测 `/healthz`，活着就开、挂了才摘。
-- 控制台按钮已改名「立即同步存活节点」，就是「不等那 5 分钟，立刻跑一次同一个脚本」。
-- 「跑旧代码的节点还开着」仍是要盯的红线，但**解决方式是重启那台节点**，
-  不是把它关掉。面板顶部有红色横幅专门讲这件事，并明确写着「不要关掉它们」。
+> **「根据代码判断，不想手动控制每个节点」** ——
+> 跑旧代码的节点自动不接新玩家；那台上**已经在玩的人完全不受影响**。
 
-> 判断依据：旧代码节点照样能正常游玩，只缺最近的修复；
-> 而把玩家踢下线的代价是毁灭性的。两者完全不对等。
+`nginx/conf/open-nodes.conf` 里三个块的语义**故意不同**，各写各的：
 
-#### 自查命令（任何时候都该是「一致」）
+| 块 | 决定什么 | 写哪些节点 |
+|---|---|---|
+| `split_clients` | 新访客（无 cookie）随机分到哪 | **存活 且 已跑新代码** |
+| `map $cookie_sp_route` | 老玩家的 cookie 还算不算有效 | **全部存活节点**（含旧代码） |
+| `map $sp_node $sp_node_accepts_new` | 通知前端「本节点还接不接新玩家」 | 新代码 = `1`，其余 `0` |
+
+第二块**必须含旧代码节点**，否则那台上的人刷新就掉回大厅（就是 §9.34 的事故）。
+第三块只用于结算页的一句提示，不参与路由。
+
+**为什么这样就能两头兼顾**：刷新时地址栏带着 `?room=CODE`（进房时写进 URL 的），
+nginx 的 `if ($arg_room ~ "^[A-Za-z0-9]{4,6}$") { set $sp_node $cookie_sp_route; }`
+会强制回原节点，不受 `split_clients` 影响。所以：
+
+- 新访客 → 不进旧代码节点（`split_clients` 里没有它们）
+- 旧代码节点上的玩家 → 刷新、重连、继续玩全部正常（走 `map` + `?room=`）
+
+**已实测验证**（`tools/e2e-refresh-on-stale.mjs`，2026-10-31）：
+
+```
+✓ 首页落在 node-1（旧代码节点）
+✓ 建房 → 房间 JRHX
+✓ 刷新后仍落在 node-1（未被改派）
+✓ 刷新后仍在房间 JRHX
+✓ playerId 未变（p_736aa34c08）
+```
+
+另一侧也验证过：40 次无 cookie 请求，**0 次**落到旧代码节点。
+
+#### 唯一会改这份文件的东西
+
+`tools/sync-open-nodes.ps1`（计划任务 `SP-Open-Nodes`，每 5 分钟）。
+它的代码新旧判断来自 `GET /api/ops/state` 的 `stale`（dashboard 按 pm2 进程启动时间算的，
+**不用 `/healthz.build`**——那个字段不含 `server/net.js`、`server/lobby.js`）。
+
+- 拿不到 `/api/ops/state` 时**不下判断**，按「全部算新代码」放行：宁可让新玩家进旧代码节点，
+  也不能反过来误伤 `map`（那才会掉大厅）。
+- 万一所有存活节点都是旧代码，`accept` 会退化为「全部存活」，否则新玩家无处可去。
+
+#### 玩家怎么换到新节点
+
+旧代码节点上的人打完一局后，结算页会出现一行提示（`public/js/ui/nodeCodeHint.js`）：
+「这台服务器还在使用旧版本。本局已结束，刷新页面即可换到新版本。」
+刷新后 `split_clients` 之外的 `map` 分支已经不含该节点，浏览器自然被分到新代码节点。
+
+`X-SP-Accepts-New` 响应头就是给它用的（`1` 接新 / `0` 不接），只在结算页读，
+**不在对局中打扰**——对局中刷新有风险，而提示的意义只是「什么时候方便就刷新」。
+
+#### 自查命令
 
 ```powershell
-# 逐个节点验证 cookie 粘性：必须每个都落回自己
+# 1) 逐节点 cookie 粘性：30 个必须全部落回自己（任何一个不对 = 那台会掉大厅）
 1..30 | ForEach-Object {
   $n = $_
   $h = curl.exe -k -s -o NUL -D - -H "Cookie: sp_route=$n" https://127.0.0.1/ 2>&1
   $got = ($h | Select-String '^X-SP-Node:\s*(\d+)').Matches.Groups[1].Value
   if ($got -ne "$n") { "✗ node-$n 变成了 $got" }
 }
+
+# 2) 新访客不能落到旧代码节点（旧代码节点号看 /api/ops/state 的 stale）
+# 3) 完整验证（需 Chrome/Edge）：
+cd repo-sync
+$env:SP_E2E_BASE='https://127.0.0.1'; $env:SP_ROOT='D:\Stronghold-Protocol'
+node tools\e2e-refresh-on-stale.mjs     # 旧代码节点上刷新仍在房间
+node tools\e2e-node-code-hint.mjs       # 结算页提示只在旧代码节点出现
 ```
 
-30 个都落回自己 = 刷新不会掉大厅。任何一个不对，就是 `map` 块缺了它。
+> ⚠ 建 e2e 脚本时注意：登录验证码是**每个字符一个 `<text>` 元素**（实测 4 个），
+> 用 `/<text[^>]*>([^<]+)<\/text>/` 的 `exec` 只会拿到第一个字符，登录必然 `captcha_wrong`。
+> 要用 `matchAll` 拼起来。`tools/e2e-refresh-room.mjs` 里就有这个 bug（偶尔碰巧能过）。
 
 ---
 
