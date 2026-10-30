@@ -759,8 +759,18 @@ export class Network {
       if (session) {
         if (session.connected && session.ws && session.ws !== conn.ws
           && (msg.noReplace || (Number.isFinite(msg.claimAt) && session.claimAt != null && msg.claimAt > session.claimAt))) {
+          // 这条拒绝以前不留任何痕迹，排查「刷新后回不到房间」时无从下手。记一行：
+          // token 前 8 位、哪一侧赢得 claim、旧 socket 是否还连着。
+          this.log.warn('[net] SESSION_IN_USE player=' + session.playerId + ' token=' + String(session.token).slice(0, 8)
+            + ' noReplace=' + !!msg.noReplace + ' claimAt=' + msg.claimAt + ' sessionClaimAt=' + session.claimAt
+            + ' oldConnected=' + session.connected);
           this.reply(conn, errorMsg(ERR.SESSION_IN_USE, rid));
           return;
+        }
+        // 同一个 token 的新连接接管旧连接：这是**正常刷新**的路径，不是错误。
+        if (session.ws && session.ws !== conn.ws) {
+          this.log.warn('[net] resume took over player=' + session.playerId + ' token=' + String(session.token).slice(0, 8)
+            + ' oldConnected=' + session.connected);
         }
         resumed = true;
         if (session.ws && session.ws !== conn.ws) this.detachReplaced(session.ws);

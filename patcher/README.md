@@ -103,6 +103,7 @@ patcher\
 | **DOCTOR # 显示真实账号 tag** | `server/lobby.js`（`room.state seats[].tag`）、`public/js/screens/room.js:seatNo()` | `game-core-server` / `server-player-capacity` | **重启节点**（前端回退到哈希） |
 | **名片立绘跟随账号** | `matchmaker/account.cjs`（DOMAINS + validatePrefPayload + decodePrefPayload）、`matchmaker/public/account-title.js:PREF_MAP.card`、`public/js/ui/seatArt.js` | `account-and-dashboard` / `matching-party` | 重启 matchmaker |
 | 账号登录 / 管理后台 | `matchmaker/account.cjs`、`matchmaker/public/admin.html` | `account-and-dashboard` | 重启 matchmaker |
+| **刷新不掉出房间：`onDisconnect` 漏查隐身观战席位**（`roomOf()` 认座位/普通观战/隐身观战三种身份，取 seat 却只查前两种 → 隐身观战者断线时 `seat.connected` 抛 TypeError，`startGrace`/`broadcastState`/`leftHumanLeftAt` 全被跳过，房间状态与真实情况脱节。线上 2026-10-26～30 共 12 节点 31 次）。`startGrace` 定时器里同样的取席方式也一并改（不崩，但隐身观战者过期后永不移除） | `server/lobby.js`（`onDisconnect` 用 `seatOf \|\| watcherOf`、`startGrace` 定时器同） | `game-core-server` / `server-idle-guard` / `client-room-spectator` | **重启节点** |
 
 ### 网络与性能
 

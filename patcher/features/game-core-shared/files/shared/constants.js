@@ -148,6 +148,9 @@ export const ERR = Object.freeze({
   NOT_IN_ROOM: 'NOT_IN_ROOM',
   ROOM_NOT_FOUND: 'ROOM_NOT_FOUND',
   ROOM_FULL: 'ROOM_FULL',
+  // 房间满员，但**无法判断这次加入的是不是原座位主人**（账号身份还没送到）。
+  // 客户端应等 sp-account-token 事件后重新握手再重试一次，而不是直接报满员 —— 见 lobby.js join()。
+  IDENTITY_PENDING: 'IDENTITY_PENDING',
   SERVER_FULL: 'SERVER_FULL',     // the online cap (SP_MAX_ONLINE) has no seat for a new player
   ROOM_STARTED: 'ROOM_STARTED',
   // a fixed alliance key (--room-code): one room at a time can hold it

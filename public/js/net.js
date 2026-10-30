@@ -817,7 +817,26 @@ function defaultChannel() {
 export function createIdentity(deps = {}) {
   const local = deps.local !== undefined ? deps.local : safeStorage('localStorage');
   const session = deps.session !== undefined ? deps.session : safeStorage('sessionStorage');
-  const tabId = deps.tabId || Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // ★ 2026-10-30：标签页 id **持久化在 sessionStorage**（刷新后不变）。
+  //
+  // 以前每次页面加载都随机生成，于是「刷新后的新 document」无法认出
+  // 「频道上应答的那个 from 就是我自己上一个 document」，把自己的 token 让了出去，
+  // init() 随即 sdelete sp.token → hello 不带 token → 服务端建新会话 → playerId 变
+  // → main.js 的 backToLobby() → 玩家刷新后掉回大厅。
+  // 实测轨迹：刷新瞬间收到 who（from=旧document, claims.owned=true）→ 两行后 sp.token 被换掉。
+  //
+  // 复制出来的标签页：sessionStorage 会被复制，所以它一开始带着同一个 tabId；
+  // 下面的 dupId 用一个「存活声明」把它换掉（见 markTabAlive）。
+  const TAB_KEY = 'sp.tabId';
+  const tabId = deps.tabId || (() => {
+    let id = null;
+    try { id = session ? session.getItem(TAB_KEY) : null; } catch { /* ignore */ }
+    if (!id || typeof id !== 'string' || id.length < 6) {
+      id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      try { if (session) session.setItem(TAB_KEY, id); } catch { /* ignore */ }
+    }
+    return id;
+  })();
   const setTimer = deps.setTimeout || ((fn, ms) => globalThis.setTimeout(fn, ms));
   const now = deps.now || (() => Date.now());
   const queryMs = Number.isFinite(deps.queryMs) && deps.queryMs >= 0 ? deps.queryMs : CLAIM_QUERY_MS;
@@ -879,8 +898,16 @@ export function createIdentity(deps = {}) {
   };
   const peerWins = (peer, from, ours) => {
     if (!peer || !ours) return true; // an older client answering "mine" is conservatively treated as live
+    // ★ 2026-10-30：对方自报的标签页 id 与我相同 ⇒ 那是**同一标签页的上一个 document**
+    //   （刷新时旧页面还没销毁，它的 BroadcastChannel 仍在应答）。
+    //   tabId 现在持久化在 sessionStorage，刷新后不变，所以这个比较是可靠的。
+    //   以前 tabId 每次加载都随机，认不出自己，于是把自己的 token 让了出去 ——
+    //   这正是「第一次刷新 token 必变、之后才稳定」的原因。
+    if (from === tabId) return false;
     const a = Number.isFinite(peer.at) && peer.at >= 0 ? peer.at : Infinity;
     const b = Number.isFinite(ours.at) && ours.at >= 0 ? ours.at : Infinity;
+    // `at` 完全相同也只可能是同一个标签页的两个 document（独立连接不会同毫秒 welcome）
+    if (a === b && a !== Infinity) return false;
     if (a !== b) return a < b;
     if (!!peer.owned !== !!ours.owned) return !!peer.owned;
     if (!!peer.live !== !!ours.live) return !!peer.live;
@@ -928,7 +955,8 @@ export function createIdentity(deps = {}) {
     // Without a channel we cannot tell whether a shared token is in use: never adopt one.
     const candidates = owned ? [owned] : channel ? [...new Set(readRecent())] : [];
     if (!channel || candidates.length === 0) return owned;
-    return queryCandidates(candidates);
+    const picked = await queryCandidates(candidates);
+    return picked;
   }
 
   async function queryCandidates(candidates) {

@@ -225,14 +225,57 @@ export function rememberRoom(code, test = false) {
   savePref('recentRooms', recent);
 }
 
+/**
+ * 等账号身份送到服务端（`sp-account-token` 事件），最多 `ms`。
+ *
+ * 刷新后 `window.__SP_ACCOUNT_TOKEN` 要等 account-title.js 的 `/api/auth/me` 返回才有，
+ * 而服务端要靠它认人。玩家在身份到达之前点「加入同盟」，服务端会回 IDENTITY_PENDING，
+ * 这里等一下再重试，就能认回自己的座位。
+ * @param {number} ms
+ * @returns {Promise<boolean>} 超时前拿到账号令牌了没有
+ */
+function waitAccountToken(ms = 6000) {
+  const have = () => typeof window.__SP_ACCOUNT_TOKEN === 'string' && window.__SP_ACCOUNT_TOKEN.length > 0;
+  if (have()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      try { window.removeEventListener('sp-account-token', onTok); } catch { /* ignore */ }
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const onTok = () => { if (have()) finish(true); };
+    try { window.addEventListener('sp-account-token', onTok); } catch { /* ignore */ }
+    const timer = setTimeout(() => finish(have()), ms);
+  });
+}
+
 export async function joinKnown(type, key) {
-  try { return await net.request(type, { code: key }); } catch (err) {
+  const attempt = (extra) => net.request(type, { code: key, ...(extra || {}) });
+  try {
+    return await attempt();
+  } catch (err) {
+    // 房间满员，但服务端说「还没有账号身份」—— 这说明它判断不了这次是不是原座位的主人
+    // （很可能就是玩家自己刷新后留下的幽灵座位占着）。等身份送达后重试一次即可。
+    if (err?.code === ERR.IDENTITY_PENDING) {
+      const got = await waitAccountToken();
+      if (got) {
+        // 身份到了：重新握手让服务端拿到 accountToken，再试一次
+        try { net.close(); net.connect(); } catch { /* ignore */ }
+        await new Promise((r) => setTimeout(r, 800));
+        return await attempt();
+      }
+      // 等不到身份（未登录 / 网络慢）：退化成原来的「房间已满」，不再无限等
+      throw Object.assign(new Error('房间已满'), { code: ERR.ROOM_FULL });
+    }
     if (err?.code !== ERR.TEST_CONFIRM) throw err;
     const text = type === 'room.spectate'
       ? t('这是测试房间，不计入任何记录。确认观战？')
       : t('这是测试房间，不计入任何记录。确认加入？');
     if (await confirmDialog({ title: t('测试'), text })) {
-      return net.request(type, { code: key, testAck: true });
+      return attempt({ testAck: true });
     }
   }
 }
