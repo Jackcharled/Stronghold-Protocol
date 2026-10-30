@@ -488,8 +488,14 @@ async function ensureSchema() {
       ua VARCHAR(255) NULL,
       ip VARCHAR(45) NULL,
       first_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_ip VARCHAR(45) NULL,
+      last_seen TIMESTAMP NULL,
       PRIMARY KEY (account_id, device)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    // 异地登录提醒（游戏账号侧，2026-10-31）：老库补两列，记录该设备上次登录的 IP / 时间。
+    // 只在管理员账号（role owner/admin）上用；普通玩家不写这张表，也就不会触发邮件。
+    try { await c.query('ALTER TABLE admin_devices ADD COLUMN last_ip VARCHAR(45) NULL'); } catch { /* 已有 */ }
+    try { await c.query('ALTER TABLE admin_devices ADD COLUMN last_seen TIMESTAMP NULL'); } catch { /* 已有 */ }
     // 老库遗留：name 必填 + 唯一键，会阻止「注册后再设代号」的流程
     try { await c.query('ALTER TABLE accounts MODIFY COLUMN name VARCHAR(40) NULL DEFAULT NULL'); } catch { /* 已可空 */ }
     try { await c.query('ALTER TABLE accounts DROP INDEX uk_name'); } catch { /* 无该索引 */ }
@@ -779,6 +785,48 @@ async function handle(req, res, pathname) {
       return sendJson(res, 401, { ok: false, error: 'bad_credentials' });
     }
     await db().query('UPDATE accounts SET last_login_at = NOW() WHERE id = ?', [u.id]);
+    // 异地登录提醒（游戏账号侧，2026-10-31）。
+    // 背景：管理员工具（游戏内 F9 面板）靠「登录游戏账号时下发的 adminToken」授权，
+    // 所以游戏账号登录也成了拿到管理权限的途径 —— 必须能在异常登录时通知服主。
+    //
+    // 只在管理员账号上做（role owner/admin）：普通玩家一个邮件都不发，避免骚扰。
+    // 发信条件（维护者定稿）：**新设备 或 IP 和这台设备上次登录的 IP 不同**。
+    //   同一台设备 + 同一 IP 反复登录 → 不发；
+    //   常用设备换了网络 → 发（异地）；
+    //   新设备（同网络也算）→ 发（新设备）。
+    // device = sha256(ua + '|' + accept-language)，和后台登录用的是同一种指纹。
+    if (u.role === 'owner' || u.role === 'admin') {
+      try {
+        const ua = String(req.headers['user-agent'] || '').slice(0, 255);
+        const lang = String(req.headers['accept-language'] || '');
+        const dev = crypto.createHash('sha256').update(ua + '|' + lang).digest('hex');
+        const [known] = await db().query('SELECT last_ip FROM admin_devices WHERE account_id = ? AND device = ?', [u.id, dev]);
+        const prevIp = known[0] ? (known[0].last_ip || null) : null;
+        const isNewDevice = !known[0];
+        const ipChanged = !isNewDevice && prevIp != null && prevIp !== ip;
+        if (isNewDevice || ipChanged) {
+          const [owners] = await db().query("SELECT email FROM accounts WHERE role = 'owner' AND email IS NOT NULL AND deleted_at IS NULL");
+          const what = isNewDevice ? '在新设备登录' : '在异地登录（IP 变了）';
+          const subject = '【萝卜喵公益服】管理员账号' + what;
+          const text = '管理员账号 ' + (u.email || '') + '（' + (u.nickname || '') + '#' + (u.tag || '') + '）' + what + '。\n'
+            + 'IP: ' + ip + (ipChanged ? '（上次 ' + prevIp + '）' : '') + '\n'
+            + 'UA: ' + ua + '\n'
+            + (u.role === 'owner' ? '' : '')
+            + '如非本人操作，请立即到后台重置密码或收回权限。\n\n—— 萝卜喵公益服 · 卫戍协议：盟约';
+          for (const o of owners) {
+            if (!o.email) continue;
+            try { await mail().sendMail({ from: `"萝卜喵公益服" <${MAIL.user}>`, to: o.email, subject, text }); } catch { /* 忽略 */ }
+          }
+          await audit({ id: u.id, email: u.email }, isNewDevice ? 'game-new-device' : 'game-ip-changed', u.id, ip, ip);
+        }
+        // 每次登录都刷新该设备的最后 IP / 时间（新设备也顺手插一条）
+        await db().query(
+          'INSERT INTO admin_devices (account_id, device, ua, ip, last_ip, last_seen) VALUES (?,?,?,?,?,NOW()) '
+          + 'ON DUPLICATE KEY UPDATE last_ip = VALUES(last_ip), last_seen = NOW(), ua = VALUES(ua)',
+          [u.id, dev, ua, ip, ip],
+        );
+      } catch { /* 设备识别 / 发信失败都不影响登录 */ }
+    }
     const sid = await createSession(u.id, req, res);
     const display = displayOf(u);
     return sendJson(res, 200, { ok: true, token: sid, userToken: userTokenFor(u), adminToken: adminTokenFor(u), user: { id: u.id, email: u.email, nickname: u.nickname, tag: u.tag, role: u.role || 'player', name: display, displayName: display, titleName: u.nickname ? u.nickname + '#' + u.tag : null } });
