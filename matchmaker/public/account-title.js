@@ -815,6 +815,15 @@
     document.addEventListener('click', async (e) => {
       const btn = e.target && e.target.closest ? e.target.closest('button') : null;
       if (!btn || !/开始/.test((btn.textContent || '').trim())) return;
+      // ★ 2026-10-28：只在【标题页】拦截。
+      //
+      //   房间里的「开始模拟」按钮同样含「开始」两个字，以前也被这个监听抓住，
+      //   于是它跑到标题页去找代号输入框 —— 房间里根本没有那个 input，
+      //   取到空字符串后弹 alert('请输入博士代号')，玩家点了开始却只看到这句话，
+      //   根本不知道该怎么办（反馈截图：已经在 4 人房里、点开始模拟弹这个框）。
+      //
+      //   代号只在标题页设置；房间里的开始按钮交给游戏自己的流程。
+      if (!titleScreen()) return;
       if (state.user && state.user.nickname) {
         const inp2 = findCallsign();
         const nm2 = String(state.user.nickname || state.user.titleName || state.user.name || '').replace(/#\d{4}\s*$/, '').trim();

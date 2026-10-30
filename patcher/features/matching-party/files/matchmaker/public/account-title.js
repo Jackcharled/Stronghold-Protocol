@@ -5,6 +5,43 @@
 
   const state = { user: null, guest: false, busy: false, mode: 'login', cooldown: 0, timer: null, captchaId: '', authReady: false };
 
+  // 博士代号的规则：必须与服务端 matchmaker/account.cjs 的 /api/auth/set-name 完全一致。
+  // 按**显示宽度**计算：一个汉字记 2、一个英文/数字记 1，上限 16 个宽度单位，
+  // 也就是 8 个汉字 或 16 个英文/数字（或任意混合，如 4 汉字 + 8 英文）。
+  // 以前前端只查 1~8 字、服务端只收 1~7 字，8 个字符的代号（ZcElytra）会被拒，
+  // 而玩家只看到「代号保存失败，请稍后重试」，完全不知道原因。
+  const NICK_W_MAX = 16;
+  const NICK_RE = /^[\p{L}\p{N}_\-·]+$/u;
+  const NICK_RULE = '代号最多 8 个汉字或 16 个英文字母/数字（可混合），只能使用中英文、数字、下划线、短横线和间隔号「·」';
+  /** 显示宽度：全角/宽字符记 2，其余记 1（与服务端 nickWidth 同一套范围） */
+  function nickWidth(str) {
+    let w = 0;
+    for (const ch of String(str || '')) {
+      const cp = ch.codePointAt(0);
+      w += (cp >= 0x1100 && (
+        cp <= 0x115f ||
+        cp === 0x2329 || cp === 0x232a ||
+        (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+        (cp >= 0xac00 && cp <= 0xd7a3) ||
+        (cp >= 0xf900 && cp <= 0xfaff) ||
+        (cp >= 0xfe30 && cp <= 0xfe6f) ||
+        (cp >= 0xff00 && cp <= 0xff60) ||
+        (cp >= 0xffe0 && cp <= 0xffe6) ||
+        (cp >= 0x20000 && cp <= 0x3fffd)
+      )) ? 2 : 1;
+    }
+    return w;
+  }
+  /** @returns {string|null} 一句可以直接给玩家看的原因；合规时返回 null */
+  function nickProblem(v) {
+    const s = String(v || '').trim();
+    if (!s) return '请输入博士代号';
+    if (!NICK_RE.test(s)) return NICK_RULE;
+    const w = nickWidth(s);
+    if (w > NICK_W_MAX) return `代号太长：最多 8 个汉字或 16 个英文字母/数字，当前相当于 ${Math.ceil(w / 2)} 个汉字宽`;
+    return null;
+  }
+
   const api = async (path, opts) => {
     const o = { credentials: 'same-origin', cache: 'no-store', ...(opts || {}) };
     try {
@@ -189,10 +226,15 @@
     logged.querySelector('#mm-acc-rename').onclick = async (e) => {
       e.preventDefault();
       const cur = state.user ? (state.user.nickname || '') : '';
-      const v = prompt('输入新的博士代号（1~7 字）', cur);
+      const v = prompt('输入新的博士代号（最多 8 个汉字或 16 个字母/数字）', cur);
       if (!v) return;
-      const r = await api('/api/auth/set-name', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nickname: v.trim() }) });
-      if (!r.body || !r.body.ok) { alert('修改失败：代号需 1~7 个字'); return; }
+      const why = nickProblem(v);
+      if (why) { alert(why); return; }
+      const r = await api('/api/auth/set-name', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nickname: String(v).trim() }) });
+      if (!r.body || !r.body.ok) {
+        alert(r.body && r.body.error === 'invalid_nickname' ? NICK_RULE : '修改失败，请稍后重试');
+        return;
+      }
       state.user = { ...state.user, ...r.body.user };
       window.__SP_ACCOUNT_TOKEN = r.body.userToken || window.__SP_ACCOUNT_TOKEN || null;
       window.__SP_ADMIN_TOKEN = r.body.adminToken || window.__SP_ADMIN_TOKEN || null;
@@ -415,7 +457,7 @@
       if (!r.body || !r.body.ok) {
         const map = {
           bad_credentials: '邮箱或密码错误', email_taken: '该邮箱已注册', invalid_email: '邮箱格式不正确',
-          invalid_password: '密码需 8 位以上', invalid_nickname: '昵称不合法（1~16 字）', invalid_code: '验证码格式不正确',
+          invalid_password: '密码需 8 位以上', invalid_nickname: NICK_RULE, invalid_code: '验证码格式不正确',
           code_required: '请先获取验证码', code_expired: '验证码已过期，请重新获取', code_wrong: '邮箱验证码错误',
           code_attempts: '验证码错误次数过多，请重新获取', too_many_requests: '操作过于频繁，请稍后再试',
           captcha_wrong: '图形验证码错误',
@@ -741,17 +783,12 @@
       }
     }, true);
 
-    // 旧缓存自检：若拿到的大厅脚本还是旧版（不含 accountTag），强制刷新一次
-    try {
-      const probe = await fetch('/js/screens/lobby.js', { cache: 'no-store' });
-      const txt = await probe.text();
-      if (!txt.includes('accountTag') && !sessionStorage.getItem('mm.reload1')) {
-        sessionStorage.setItem('mm.reload1', '1');
-        location.reload();
-        return;
-      }
-      sessionStorage.removeItem('mm.reload1');
-    } catch { /* 忽略 */ }
+    // 旧缓存自检已移除（2026-10-26）：它检查 /js/screens/lobby.js 里是否含 'accountTag'，
+    // 但整个项目从来没有写入过这个标记，于是**每次进入页面都判定「脚本是旧版」并强制
+    // location.reload() 一次**。后果不只是多刷一次：
+    //   第 1 次加载读走 sessionStorage 里的 mm.pendingRoom（跨节点加入/观战的目标房间）并删除，
+    //   第 2 次加载读不到它 —— 玩家在「加入同盟 / 观战」跨节点后必须再输一次房间号。
+    // 页面本身已有 buildGuard 负责「服务端换版后刷新」，不需要这层失效的自检。
 
     try {
       const r = await api('/api/auth/me');
@@ -778,6 +815,15 @@
     document.addEventListener('click', async (e) => {
       const btn = e.target && e.target.closest ? e.target.closest('button') : null;
       if (!btn || !/开始/.test((btn.textContent || '').trim())) return;
+      // ★ 2026-10-28：只在【标题页】拦截。
+      //
+      //   房间里的「开始模拟」按钮同样含「开始」两个字，以前也被这个监听抓住，
+      //   于是它跑到标题页去找代号输入框 —— 房间里根本没有那个 input，
+      //   取到空字符串后弹 alert('请输入博士代号')，玩家点了开始却只看到这句话，
+      //   根本不知道该怎么办（反馈截图：已经在 4 人房里、点开始模拟弹这个框）。
+      //
+      //   代号只在标题页设置；房间里的开始按钮交给游戏自己的流程。
+      if (!titleScreen()) return;
       if (state.user && state.user.nickname) {
         const inp2 = findCallsign();
         const nm2 = String(state.user.nickname || state.user.titleName || state.user.name || '').replace(/#\d{4}\s*$/, '').trim();
@@ -793,11 +839,16 @@
       e.stopImmediatePropagation();
       const input = findCallsign();
       const val = (input && input.value ? input.value : '').trim();
-      if (val.length < 1 || val.length > 8) { alert('请输入 1~8 字的博士代号'); if (input) input.focus(); return; }
+      // 与服务端 matchmaker/account.cjs 的 checkNickname 保持一致（按显示宽度，8 汉字 / 16 英文）
+      const bad = nickProblem(val);
+      if (bad) { alert(bad); if (input) input.focus(); return; }
       const r = await api('/api/auth/set-name', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nickname: val }),
       });
-      if (!r.body || !r.body.ok) { alert('代号保存失败，请稍后重试'); return; }
+      if (!r.body || !r.body.ok) {
+        alert(r.body && r.body.error === 'invalid_nickname' ? NICK_RULE : '代号保存失败，请稍后重试');
+        return;
+      }
       state.user = r.body.user;
       if (input) input.value = state.user.titleName || state.user.nickname || state.user.name;
       window.__SP_ACCOUNT_TOKEN = r.body.userToken || window.__SP_ACCOUNT_TOKEN || null;
