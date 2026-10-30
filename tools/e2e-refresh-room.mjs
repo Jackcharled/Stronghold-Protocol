@@ -20,7 +20,10 @@ const EDGE = [
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
 ].find((p) => existsSync(p));
 
-const acc = JSON.parse(readFileSync('../.secrets/test-accounts.json', 'utf8')).accounts[0];
+// SP_E2E_ACCOUNT=<下标> 换一个测试账号。同一个账号在别的节点上残留房间时，
+// 「账号已有房间」会把新建房挡掉，换账号可以避开这种测试污染。
+const acc = JSON.parse(readFileSync('../.secrets/test-accounts.json', 'utf8'))
+  .accounts[Number(process.env.SP_E2E_ACCOUNT || 0)];
 const log = (...a) => console.log(...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
