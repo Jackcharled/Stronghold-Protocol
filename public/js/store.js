@@ -91,8 +91,8 @@ export const initialState = Object.freeze({
   room: null,
   // welcome.testMode (DESIGN §34.8). The server omits the key when the switch is off; the client cannot set it.
   testMode: false,
-  // 本服：welcome.adminTools —— 只有 adminToken 验签通过（owner/admin 账号）服务端才下发 true。
-  // 它决定左上角延迟胶囊能否点开管理员工具；前端无法自行置真，改这里也没用（服务端仍会拒绝 g.test）。
+  // 本服：welcome.adminTools —— 两道门（身份 + 验码）**同时通过**时服务端才下发 true。
+  // 用它决定「要不要创建管理员工具面板」；前端无法自行置真，改这里也没用（服务端仍会拒绝 g.test）。
   adminTools: false,
   // 本服：两道门各自的真实状态（服务端下发，前端不猜）
   adminId: false,      // 身份门：是 owner/admin 账号

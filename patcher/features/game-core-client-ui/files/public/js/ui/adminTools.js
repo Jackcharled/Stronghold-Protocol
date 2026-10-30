@@ -254,16 +254,15 @@ export function AdminTools({ open, onClose, anchor = null }) {
   })();
 
   if (!adminId) {
-    // 不是管理员：连取码框都不给 —— 免得他们以为拿个码就能用。
-    // ★ 判据必须是 adminId（身份门），不是 adminTools（两道门都过）。
-    //   用 adminTools 会导致「管理员退出授权后」被当成非管理员，看不到取码框 —— 死锁。
-    return html`<div class="admintools" style=${panelStyle} data-testid="admin-tools" role="dialog" aria-label=${t('管理员工具')}>
-      <header class="admintools__head">
-        <b>${t('管理员工具')}</b>
-        <button type="button" class="admintools__x" onClick=${onClose} aria-label=${t('关闭')}><${Icon} name="close" /></button>
-      </header>
-      <p class="admintools__note">${t('本账号不是管理员，无法使用管理员工具。')}</p>
-    </div>`;
+    // 不是管理员：**返回 null，连面板外壳都不渲染**。
+    // 以前这里返回一个「本账号不是管理员」的提示面板 —— 那等于告诉普通玩家
+    // 「这里有个管理员工具」，属于信息泄露。维护者 2026-10-31 明确要求：
+    // 普通玩家不应该能打开管理员工具界面（连提示都不该看到）。
+    // 真正的拦截在更外层：hud.js 用 adminId 决定要不要创建本组件，
+    // mm/client.js 用 adminId 决定点击要不要派发事件 —— 这里是第三层兜底。
+    // ★ 判据仍是 adminId（身份门），不是 adminTools（两道门都过）：
+    //   用 adminTools 会让「管理员退出授权后」看不到取码框 —— 死锁。
+    return null;
   }
   if (!adminCode) {
     // 是管理员，但还没兑换 / 码已过期：只给取码框，功能一律不渲染。

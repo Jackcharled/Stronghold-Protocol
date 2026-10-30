@@ -537,6 +537,7 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
   // 本服：管理员工具。只有登录 owner/admin 账号（服务端 welcome.adminTools）时，点延迟胶囊才
   // 打开面板；普通玩家这里连 onClick 都不会挂 —— 点了只是原本的延迟显示，没有任何反应。
   const adminTools = useStore((s) => s.adminTools === true);
+  const adminId = useStore((s) => s.adminId === true);
   const [adminOpen, setAdminOpen] = useState(false);
   // 面板锚点：从节点胶囊的实际屏幕位置来，面板开在它正下方。
   const [adminAnchor, setAdminAnchor] = useState(null);
@@ -568,7 +569,11 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
         ${ruleLine(room?.content?.rules) ? html`<span class="gtop__rules" data-testid="plugin-rules">${ruleLine(room?.content?.rules)}</span>` : null}
       </div>
     </div>
-    ${adminTools && adminOpen ? html`<div class="admintools-host"><${AdminTools} open=${true} anchor=${adminAnchor} onClose=${() => setAdminOpen(false)} /></div>` : null}
+    ${/* 判据用 adminId（身份门）而不是 adminTools（两道门都过）：
+           ① 普通玩家 adminId=false → 连子元素都不创建，DOM 里没有任何管理员痕迹；
+           ② 管理员退出授权后 adminId 仍为 true → 能打开面板去重新输码（否则死锁）。
+           能不能用功能，由 AdminTools 内部的两道门把关。 */
+        adminId && adminOpen ? html`<div class="admintools-host"><${AdminTools} open=${true} anchor=${adminAnchor} onClose=${() => setAdminOpen(false)} /></div>` : null}
 
     <div class="gtop__center">
       <span class="gtop__frame gtop__frame--l">
