@@ -2399,5 +2399,16 @@
   "所有博士同时选择，可重复选择，每人只能选择一次": "All doctors choose at the same time; the same Strategy may be picked more than once (each doctor picks once)",
   "{head}；本局不限时": "{head}; no time limit this match",
   "{head}；{clock}": "{head}; {clock}",
-  "{head}；{clock}，超时将自动选择当前选中的「{autoName}」": "{head}; {clock}. On timeout the highlighted one is taken: {autoName}"
-  }
+  "{head}；{clock}，超时将自动选择当前选中的「{autoName}」": "{head}; {clock}. On timeout the highlighted one is taken: {autoName}",
+  "你有进行中的对局": "You have a match in progress",
+  "· 进入大厅后点右下角「恢复对局」切回来": "· enter the lobby, then click “Resume match” at the bottom right to switch back",
+  "对局已在另一设备/标签页继续。要在这台切回来，点大厅右下角的「恢复对局」。": "The match continued on another device or tab. To switch back to this one, click “Resume match” at the bottom right of the lobby.",
+  "你有进行中的对局（已在另一台设备或标签页继续）。点下面的「恢复对局」可以切回这台。": "You have a match in progress (continued on another device or tab). Click “Resume match” below to switch back to this one.",
+  "你有进行中的对局，点这里切回来": "You have a match in progress — click here to switch back",
+  "恢复账号对局": "Resume account match",
+  "这条记录对应的对局已经不在了（可能已结束或所在节点重启过）。回到大厅重新开始吧。": "The match this record points to is gone (it may have ended, or its node restarted). Go back to the lobby and start again.",
+  "没有找到可恢复的账号对局。": "No resumable account match was found.",
+  "通过账号恢复当前对局": "Resume the current match via account",
+  "这个页面对应的节点上没有你的对局，它在另一个节点（房间 {code}）。点下面的按钮过去继续。": "Your match is not on this page's node — it is on another one (room {code}). Click the button below to go there and continue.",
+  "前往该房间继续对局": "Go to that room and continue"
+}

@@ -338,7 +338,18 @@ export function installAccountObserver() {
     //   现在按「一台设备占用一个对局」的既定规则处理：这台设备已经让位，就回大厅，
     //   不再尝试旁观自己的座位 —— 想在这台继续玩，刷新页面走正常的恢复流程即可。
     pendingRoom = null;
-    toast(t('对局已转移到另一设备，当前设备已断开局内连接。想在这台继续玩，请刷新页面。'), 'warn', { ttl: 8000 });
+    // ★ 2026-10-30 按维护者要求改：被接管时**不再只弹一条 8 秒就消失的 toast**。
+    //   那句话说「请刷新页面」，可刷新后这台设备还是回不到对局（座位已经被另一台占着），
+    //   玩家只能自己在大厅里找「恢复对局」按钮 —— 找到了是运气，找不到就以为对局丢了。
+    //
+    //   现在留下一个**本标签页周期内常驻**的标记（sessionStorage，与「一次性意图」
+    //   sp.accountResume 不同，它表达的是「这台设备现在有一局可以抢回来」）：
+    //     * ui/resumeMatch.js 读到它 → 按钮高亮并显示提示条
+    //     * 玩家点下「恢复对局」并成功 → 由 resumeMatch.js 清掉
+    //   只写 sessionStorage：刷新后仍在（刷新是同一台设备），换标签页不继承。
+    try { sessionStorage.setItem('sp.resumeAvailable', '1'); } catch { /* 隐私模式 */ }
+    try { window.dispatchEvent(new Event('sp-resume-available')); } catch { /* ignore */ }
+    toast(t('对局已在另一设备/标签页继续。要在这台切回来，点大厅右下角的「恢复对局」。'), 'warn', { ttl: 12000 });
     try { store.set({ room: null, match: null }); } catch { /* ignore */ }
     try { store.patch('ui', { pendingJoin: null, restoring: false }); } catch { /* ignore */ }
     for (const id of ['mm-overlay', 'mm-back', 'mm-room-timer']) {

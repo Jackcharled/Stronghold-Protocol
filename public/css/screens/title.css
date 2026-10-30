@@ -277,6 +277,14 @@
 }
 .title-invite .icon { width: .2rem; height: .2rem; }
 .title-invite b { font-size: calc(.2 * var(--t)); letter-spacing: .2em; color: #ffd08a; }
+/* 「你有进行中的对局」：和同盟邀请同样的版式，用冷色区分（邀请=暖色/行动，提示=冷色/告知） */
+.title-resume {
+  background: rgba(120, 196, 255, .08);
+  border-color: rgba(120, 196, 255, .45);
+  color: #cfe9ff;
+}
+.title-resume .icon { color: #9fd3ff; }
+.title-resume .t-lo { color: rgba(207, 233, 255, .75); }
 .title-conn { display: flex; align-items: center; justify-content: center; gap: .1rem; min-height: .32rem; font-size: calc(.14 * var(--t)); color: var(--text-lo); }
 /* 「已连接服务器」这一段恢复成上游原貌（整行正常排布）。
    本服曾为「不折行」加过 white-space:nowrap + overflow:hidden + text-overflow:ellipsis，

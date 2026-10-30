@@ -1181,6 +1181,35 @@
 .verchip.is-other { border-color: rgba(120, 196, 255, .6); color: #cfe9ff; }
 .verchip.is-failed { border-color: rgba(255, 106, 61, .7); }
 .verchip.is-failed .verchip__state { color: #ff8a5c; }
+/* 「你有进行中的对局」：被另一台设备/标签页接管后要抢眼的入口（ui/resumeMatch.js 的 urgent）。
+   用暖色 + 轻微脉动，和普通的版本 chip 明确区分；尊重 prefers-reduced-motion。 */
+.verchip--urgent {
+  border-color: rgba(255, 176, 74, .85);
+  color: #ffe2b8;
+  background: rgba(255, 176, 74, .14);
+  animation: verchip-urgent 1.8s ease-in-out infinite;
+}
+.verchip--urgent .icon { color: #ffc46b; }
+@keyframes verchip-urgent {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 176, 74, .45); }
+  50% { box-shadow: 0 0 0 max(3px, .05rem) rgba(255, 176, 74, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .verchip--urgent { animation: none; }
+}
+.resume-banner {
+  margin-left: .16rem;
+  padding: .06rem .14rem;
+  border: 1px solid rgba(255, 176, 74, .6);
+  background: rgba(255, 176, 74, .12);
+  color: #ffe2b8;
+  font-size: calc(.13 * var(--t));
+  line-height: 1.5;
+  white-space: nowrap;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .verchip:hover:not(.verchip--ro), .verchip:focus-visible { filter: brightness(1.2); }
 .verchip--ro { cursor: default; }
 .verchip__retry { flex: none; height: max(.42rem, 28px); padding: 0 .12rem; border: 1px solid rgba(255, 106, 61, .7); background: rgba(255, 106, 61, .14); color: #ffb39a; font: inherit; font-size: calc(.13 * var(--t)); }
