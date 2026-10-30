@@ -382,7 +382,9 @@ export class Match {
      * normal match stays byte-identical.
      */
     this.test = opts.test === true;
-    if (this.test) {
+    // 本服：普通对局里有管理员座位时，也要有计量与审计状态（游戏内管理员工具）。
+    // 判定用的是已校验的座位标记，不是客户端传来的任意字段。
+    if (this.test || (Array.isArray(opts.seats) && opts.seats.some((s) => s && s.admin === true))) {
       /** phase deadlines are armed. false holds the callback (g.test timers) instead of scaling time to 0. */
       this.testTimers = true;
       /** successful g.test commands this match (m.result.testActions) */

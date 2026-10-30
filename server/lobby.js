@@ -2862,8 +2862,11 @@ export class Lobby {
     const room = this.roomOf(session);
     if (!room) return fail(ERR.NOT_IN_ROOM);
     if (msg.t === 'g.test') {
-      if (!this.testEnabled) return fail(ERR.TEST_DISABLED);
-      if (room.test !== true) return fail(ERR.TEST_FORBIDDEN);
+      // 本服：管理员（session.admin，由 net.js 验 adminToken 得出）在**正常房间**里也能用测试指令，
+      // 对应「游戏内管理员工具」。普通玩家仍走原来的两道门，判定来源只有服务端这一个。
+      const isAdmin = session.admin === true;
+      if (!this.testEnabled && !isAdmin) return fail(ERR.TEST_DISABLED);
+      if (room.test !== true && !isAdmin) return fail(ERR.TEST_FORBIDDEN);
     }
     if (!room.match) return fail(ERR.WRONG_PHASE, 'no running match');
     if (msg.t === 'g.leave') {

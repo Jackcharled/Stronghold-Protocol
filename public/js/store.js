@@ -91,6 +91,9 @@ export const initialState = Object.freeze({
   room: null,
   // welcome.testMode (DESIGN §34.8). The server omits the key when the switch is off; the client cannot set it.
   testMode: false,
+  // 本服：welcome.adminTools —— 只有 adminToken 验签通过（owner/admin 账号）服务端才下发 true。
+  // 它决定左上角延迟胶囊能否点开管理员工具；前端无法自行置真，改这里也没用（服务端仍会拒绝 g.test）。
+  adminTools: false,
   match: emptyMatch(),
   ticker: [],
   emotes: [],

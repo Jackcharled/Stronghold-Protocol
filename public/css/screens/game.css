@@ -1268,3 +1268,61 @@
 
 .ai-vote { display:flex; flex-wrap:wrap; gap:.12rem; align-items:center; margin:.15rem 0; padding:.1rem; border:1px solid #426055; }
 .ai-participation-entry { flex:none; }
+
+/* ===== 管理员工具（本服新增 2026-10-31）=====
+   入口：对局中点击左上角延迟胶囊。只有登录 owner/admin 账号时才渲染（server welcome.adminTools）。
+   风格对齐游戏本体：深色玻璃卡片 + 金色描边，和测试房那个 ami 黄块面板区分开。 */
+.admintools {
+  position: fixed; left: 14px; top: 64px; z-index: 60;
+  width: min(330px, calc(100vw - 28px)); max-height: min(70vh, 520px);
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 10px 8px;
+  background: linear-gradient(180deg, rgba(10,16,18,.96), rgba(6,10,12,.97));
+  border: 1px solid var(--gold-a20); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,198,0,.06);
+  color: var(--text-md); font-size: 12px;
+}
+.admintools__head { display: flex; align-items: center; gap: 8px; }
+.admintools__head b { color: var(--gold); font-size: 13px; letter-spacing: .04em; }
+.admintools__hint { color: var(--text-dim); font-size: 11px; }
+.admintools__x { margin-left: auto; width: 22px; height: 22px; display: grid; place-items: center;
+  background: transparent; border: 1px solid var(--gold-a20); border-radius: 6px; color: var(--text-lo); cursor: pointer; }
+.admintools__x:hover { color: var(--gold); border-color: var(--gold); }
+.admintools__tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.admintools__tab { padding: 5px 0; background: rgba(255,198,0,.05); border: 1px solid var(--gold-a20);
+  border-radius: 6px; color: var(--text-lo); cursor: pointer; font-size: 12px; }
+.admintools__tab.is-on { background: var(--gold-a20); border-color: var(--gold); color: var(--gold); font-weight: 600; }
+.admintools__search { padding: 5px 8px; background: #0b1214; border: 1px solid #27393b; border-radius: 6px;
+  color: var(--text-hi); font-size: 12px; }
+.admintools__search:focus { outline: none; border-color: var(--gold-a20); }
+.admintools__list { flex: 1 1 auto; min-height: 60px; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 2px; padding-right: 2px; }
+.admintools__row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: 5px; color: var(--text-md); cursor: pointer; }
+.admintools__row:hover:not(:disabled) { background: rgba(255,198,0,.08); border-color: var(--gold-a20); color: var(--text-hi); }
+.admintools__row:disabled { opacity: .45; cursor: default; }
+.admintools__name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admintools__tier { flex: none; color: var(--gold); font-size: 11px; }
+.admintools__empty { padding: 12px 0; text-align: center; color: var(--text-dim); }
+.admintools__funds { display: flex; gap: 6px; }
+.admintools__funds input { flex: 1 1 auto; min-width: 0; padding: 5px 8px; background: #0b1214;
+  border: 1px solid #27393b; border-radius: 6px; color: var(--text-hi); }
+.admintools__funds button { flex: none; padding: 5px 10px; background: var(--gold-a20);
+  border: 1px solid var(--gold); border-radius: 6px; color: var(--gold); cursor: pointer; font-weight: 600; }
+.admintools__log { list-style: none; margin: 0; padding: 6px 0 0; border-top: 1px solid #1b2a2c;
+  max-height: 88px; overflow-y: auto; font-size: 11px; }
+.admintools__log li { padding: 1px 0; color: var(--text-lo); }
+.admintools__log li.is-ok { color: var(--mint-600); }
+.admintools__log li.is-bad { color: var(--red-premium); }
+.admintools__note { margin: 0; color: var(--text-lo); font-size: 12px; line-height: 1.6; }
+.admintools__msg { color: var(--amber); font-size: 12px; }
+/* 二次确认开关：常驻一行；勾上后出现警示文字与「恢复确认」，避免静默免确认。 */
+.admintools__warn { display: flex; align-items: center; gap: 8px; padding: 2px 2px 6px; font-size: 12px; }
+.admintools__chk { display: inline-flex; align-items: center; gap: 6px; color: var(--text-lo); cursor: pointer; }
+.admintools__chk input { margin: 0; accent-color: var(--amber); }
+.admintools__warnon { color: var(--amber); font-weight: 600; }
+.admintools__mini { margin-left: auto; padding: 2px 10px; font-size: 12px; cursor: pointer;
+  background: transparent; color: var(--gold); border: 1px solid var(--gold-a20); border-radius: 6px; }
+.admintools__mini:hover { background: var(--gold-a20); }
+.admintools__pingbox.is-admin { cursor: pointer; border-radius: 8px; box-shadow: 0 0 0 1px var(--gold-a20); }
+.admintools__pingbox.is-admin:hover { box-shadow: 0 0 0 1px var(--gold); }

@@ -148,6 +148,10 @@ export class PlayerState {
     this.name = seat.name;
     this.isBot = !!seat.isBot;
     this.connected = this.isBot ? true : !!seat.connected;
+    // 管理员（adminAuth 用 .secrets/watch-secret 验签 adminToken 得出，net.js → seat.admin）：
+    // 允许在**普通房间**里使用 g.test 测试指令（本服的管理员工具，见 testCommands.js）。
+    // 缺键即 false —— 普通玩家永远是 false，行为与上游一致。
+    this.admin = seat.admin === true;
     this.left = false;
     this.autoplay = false;
     this.alive = true;

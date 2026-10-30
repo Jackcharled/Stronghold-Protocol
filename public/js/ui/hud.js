@@ -35,6 +35,9 @@ import { data, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
 import { reducedMotion } from './device.js';
 import { serverNow } from '../store.js';
+// 本服：游戏内管理员工具（点延迟胶囊开关）
+import { useStore } from '../store.js';
+import { AdminTools } from './adminTools.js';
 import { isCombatPhase, isBossPhase, prepCapsuleLabel, bossFrac, bossPctText, fmtNum, shopBlockReason } from './gameLogic.js';
 import { uniteBudgetInfo } from './gameLogic/phases.js';
 import { overtimeState, overtimeDrainPerSec, remainAt } from './matchStatus.js';
@@ -531,12 +534,23 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
   useEffect(() => { preloadCapsuleArt(); }, []);
   const onLeft = () => (pen ? onPen(false) : onDrawer('info'));
   const onRight = () => (pen ? onPen(false) : penAvail ? onPen(true) : null);
+  // 本服：管理员工具。只有登录 owner/admin 账号（服务端 welcome.adminTools）时，点延迟胶囊才
+  // 打开面板；普通玩家这里连 onClick 都不会挂 —— 点了只是原本的延迟显示，没有任何反应。
+  const adminTools = useStore((s) => s.adminTools === true);
+  const [adminOpen, setAdminOpen] = useState(false);
   return html`<header class=${cx('gtop', pen && 'is-pen')}>
     <div class="gtop__left">
       <${Button} variant="danger" size="lg" square=${true} icon="exit" onClick=${onExit} aria-label=${t('离开')} title=${t('离开 / 暂离')} class="gtop__exit tapx" />
       <div class="gtop__meta">
         <div class="gtop__net">
-          <${PingPill} ms=${conn?.ping} online=${conn?.status === 'online'} />
+          <span class=${cx('gtop__pingbox', adminTools && 'is-admin')}
+            role=${adminTools ? 'button' : undefined}
+            tabindex=${adminTools ? '0' : undefined}
+            title=${adminTools ? t('管理员工具（点击开关）') : undefined}
+            onClick=${adminTools ? () => setAdminOpen((v) => !v) : undefined}
+            onKeyDown=${adminTools ? ((e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAdminOpen((v) => !v); } }) : undefined}>
+            <${PingPill} ms=${conn?.ping} online=${conn?.status === 'online'} />
+          </span>
           <${SpectatorPill} spectators=${spectators} myId=${myId} isHost=${isHost} onRemove=${onRemoveSpectator} />
         </div>
         ${pub?.difficulty ? html`<${DifficultyTag} difficulty=${pub.difficulty} size="sm" />` : null}
@@ -545,6 +559,7 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
         ${ruleLine(room?.content?.rules) ? html`<span class="gtop__rules" data-testid="plugin-rules">${ruleLine(room?.content?.rules)}</span>` : null}
       </div>
     </div>
+    ${adminTools ? html`<${AdminTools} open=${adminOpen} onClose=${() => setAdminOpen(false)} />` : null}
 
     <div class="gtop__center">
       <span class="gtop__frame gtop__frame--l">

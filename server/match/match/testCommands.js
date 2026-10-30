@@ -56,7 +56,9 @@ export class MatchTestCommands {
    * @param {{ cmd?: string, args?: object }} msg
    */
   applyTestCommand(ps, msg) {
-    if (this.test !== true) return fail(ERR.TEST_FORBIDDEN);
+    // 本服：持 adminToken 进房的管理员在普通对局里也能用这些命令（游戏内管理员工具）。
+    // 放行条件只有一个来源 —— 座位上的 admin 标记，它由 lobby 从已校验的 session.admin 写入。
+    if (this.test !== true && !(ps && ps.admin === true)) return fail(ERR.TEST_FORBIDDEN);
     if (!ps) return fail(ERR.NOT_HOST);
     // [ASSUMED] Every seat shares one bucket per command, including a guest or a spectator.
     // The stamp happens before the refusal audit so those attempts consume a slot.

@@ -105,6 +105,13 @@ const ADMIN_PERMISSIONS = [
   // 所以「服务器设置」页签里的公告板、房间时长、nginx、日志等，仍然共用这一项，
   // 不再往下拆 —— 拆了就和页签对不上了。
   { key: 'dash.settings', label: '服务器设置', desc: '公告板、房间时长、维护开关、服务器状态、日志等', def: false },
+  // 2026-10-31 新增：游戏内管理员工具（刷干员 / 装备 / 盟约 / 数值 / 阶段）。
+  // 默认关闭 —— 它能让持有者在**正常对局**里直接改对局状态，属于高风险能力，
+  // 必须由最高管理员在「权限设置」里手动勾上。勾上后：
+  //   · 后台「游戏内管理员工具」卡片会显示，能生成 6 位验证码；
+  //   · 游戏内点延迟胶囊 → 输码 → 面板可用 4 小时。
+  // 没勾这项的 admin 即使在游戏里输了码，兑换接口也会返回 not_admin。
+  { key: 'tools.game', label: '游戏内管理员工具', desc: '在正常对局里刷干员 / 装备 / 盟约 / 数值（高风险）', def: false },
 ];
 
 /**
@@ -160,6 +167,16 @@ async function getAdminPerms() {
   adminPermsCache = { at: Date.now(), list: DEFAULT_ADMIN_PERMS };
   return DEFAULT_ADMIN_PERMS;
 }
+/** 某个 admin 账号是否被授予了某权限。
+ *  权限表是全局的（所有 admin 共用 admin_perms 这一份），所以这里只查全局列表；
+ *  只有 admin 角色会被限制，owner（最高管理员）在调用处直接放行。
+ *  @param {number} _adminId 预留：以后若要按账号细分权限，改这里即可
+ *  @param {string} key @returns {Promise<boolean>} */
+async function adminHasPerm(_adminId, key) {
+  const list = await getAdminPerms();
+  return list.includes(key);
+}
+
 async function setAdminPerms(list) {
   const valid = [...new Set((Array.isArray(list) ? list : []).filter((k) => ADMIN_PERMISSIONS.some((p) => p.key === k)))];
   await db().query("INSERT INTO admin_settings (k, v) VALUES ('admin_perms', ?) ON DUPLICATE KEY UPDATE v = VALUES(v)", [JSON.stringify(valid)]);
@@ -1061,6 +1078,66 @@ async function handle(req, res, pathname) {
     await db().query('DELETE FROM admin_codes WHERE email = ?', [u.email]);
     await audit({ id: u.id, email: u.email }, 'login-code', u.id, u.role, ipOf(req));
     return sendJson(res, 200, { ok: true, token, admin: { id: u.id, email: u.email, nickname: u.nickname, tag: u.tag, role: u.role } });
+  }
+  // ---------------- 游戏内管理员工具：一次性授权码（本服，2026-10-31）----------------
+  // 设计目标：游戏内那个刷干员 / 刷装备的面板，**不能只靠"登录了管理员账号"就长期有效**。
+  // 维护者要求：几小时过期一次，过期后必须回管理后台取新的码才能继续用。
+  //
+  // 流程（码只能在后台生成，游戏页拿不到）：
+  //   1) 后台已登录 → POST /api/admin2/tool-code  → 拿到 6 位码（后台页面显示给你）
+  //   2) 游戏页 → POST /api/admintool/exchange { email, code }
+  //              → 验证码正确且账号 role 为 owner/admin → 下发 adminToken（4 小时）
+  //   3) 节点 net.js 验签该 token → session.admin → 放行 g.test
+  //
+  // 为什么码要有 TTL（10 分钟）而 token 是 4 小时：码是「一次授权动作」，token 是「这段工作时间内有效」。
+  // 码用过即删，避免被重复兑换。
+  if (method === 'POST' && pathname === '/api/admin2/tool-code') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'login_required' });
+    if (u.role !== 'owner' && u.role !== 'admin') return sendJson(res, 403, { ok: false, error: 'not_admin' });
+    // 最高管理员恒有；普通 admin 要在「权限设置」里勾了 tools.game 才行
+    if (u.role !== 'owner' && !(await adminHasPerm(u.id, 'tools.game'))) {
+      return sendJson(res, 403, { ok: false, error: 'no_perm' });
+    }
+    if (limited('toolcode:' + (ipOf(req) || '?'), 20, 3600_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
+    const code = String(crypto.randomInt(100000, 1000000));
+    const key = 'tool_code:' + String(u.email || '').toLowerCase();
+    // 复用 admin_settings 的 k/v 表：只存哈希 + 过期时间，不新增表
+    const val = JSON.stringify({ h: hashCode(key, code), exp: Date.now() + 10 * 60_000, uid: u.id });
+    await db().query('INSERT INTO admin_settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)', [key, val]);
+    await audit({ id: u.id, email: u.email }, 'tool-code-issue', u.id, u.role, ipOf(req));
+    return sendJson(res, 200, { ok: true, code, minutes: 10, hours: 4, note: '在游戏内点左上角延迟胶囊，输入这个码' });
+  }
+  if (method === 'POST' && pathname === '/api/admintool/exchange') {
+    // ⚠ 路径不能挂在 /api/admin/ 下：那个前缀在本文件上方有「仅本机 IP」+「Bearer 鉴权」两道旧守卫，
+    //    游戏页从公网访问会被直接 403/401。
+    if (limited('toolex:' + (ipOf(req) || '?'), 30, 3600_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
+    const body = await readBody(req, 8 * 1024);
+    const email = String(body.email || '').trim().toLowerCase();
+    const code = String(body.code || '').trim();
+    if (!email || !/^[0-9]{6}$/.test(code)) return sendJson(res, 400, { ok: false, error: 'invalid' });
+    const key = 'tool_code:' + email;
+    const [rows] = await db().query('SELECT v FROM admin_settings WHERE k = ?', [key]);
+    const rec = rows[0] ? JSON.parse(rows[0].v) : null;
+    if (!rec || Number(rec.exp) < Date.now()) return sendJson(res, 400, { ok: false, error: 'code_expired' });
+    if (rec.h !== hashCode(key, code)) return sendJson(res, 400, { ok: false, error: 'code_wrong' });
+    // 角色仍以账号表为准：验证码只证明「后台已登录并发过码」，不替代角色判定
+    const [acc] = await db().query('SELECT id, email, nickname, tag, role, disabled, deleted_at FROM accounts WHERE email = ?', [email]);
+    const a = acc[0];
+    if (!a || a.disabled || a.deleted_at || (a.role !== 'owner' && a.role !== 'admin')) {
+      return sendJson(res, 403, { ok: false, error: 'not_admin' });
+    }
+    // 权限吊销后即使手里还有旧码也不能用：最高管理员恒有，普通 admin 要 tools.game
+    if (a.role !== 'owner' && !(await adminHasPerm(a.id, 'tools.game'))) {
+      await db().query('DELETE FROM admin_settings WHERE k = ?', [key]);
+      return sendJson(res, 403, { ok: false, error: 'no_perm' });
+    }
+    await db().query('DELETE FROM admin_settings WHERE k = ?', [key]);   // 一次性
+    await audit({ id: a.id, email: a.email }, 'tool-code-redeem', a.id, a.role, ipOf(req));
+    // adminToken 有效期 4 小时（adminTokenFor 写死 12 小时，这里单独签一个短期的）
+    const payload = Buffer.from(JSON.stringify({ v: 1, uid: a.id, role: a.role, exp: Date.now() + 4 * 3600_000 })).toString('base64url');
+    const sig = crypto.createHmac('sha256', watchSecret()).update(payload).digest('base64url');
+    return sendJson(res, 200, { ok: true, adminToken: payload + '.' + sig, hours: 4, role: a.role });
   }
   if (method === 'POST' && pathname === '/api/admin2/login') {
     const body = await readBody(req, 8 * 1024);

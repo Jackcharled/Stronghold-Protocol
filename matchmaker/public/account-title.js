@@ -488,6 +488,9 @@
     window.__SP_ACCOUNT_USER = state.user ? state.user.name : null;
     window.__SP_ACCOUNT_TAG = state.user && state.user.tag ? String(state.user.tag) : null;
     window.__SP_ACCOUNT_ROLE = state.user && state.user.role ? String(state.user.role) : null;
+    // 本服：游戏内管理员工具兑换验证码时要用邮箱（/api/admintool/exchange）。
+    // 只暴露给本页脚本，不写进任何 DOM / URL。
+    window.__SP_ACCOUNT_EMAIL = state.user && state.user.email ? String(state.user.email) : null;
     // 角色是判定「管理员 / 服主」的唯一前端依据（房间免销毁、维护开关放行都用它）。
     // 它可能比 sp-account-token 更晚写入，所以单独派发一次，让游戏侧重握手补身份。
     // render() 会被反复调用，只在角色真的变化时派发，避免触发无意义的重复握手。

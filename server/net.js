@@ -825,6 +825,11 @@ export class Network {
     let extra = null;
     try { extra = this.handler.welcomeInfo?.() ?? null; } catch (e) { this.log.error('[net] welcomeInfo crashed', e); }
     const welcome = { ...(extra && typeof extra === 'object' ? extra : null), t: 'welcome', playerId: session.playerId, token: session.token, name: session.name, tag: session.tag || null, serverNow: now, version: PROTOCOL_VERSION, resumed };
+    // 本服：告诉前端「这个连接是管理员」（adminToken 已验签，见上面 session.admin）。
+    // 前端据此渲染游戏内管理员工具（点延迟胶囊）。真正的放行在服务端
+    // （routeGameNow + Match.applyTestCommand 都查 session.admin / ps.admin），改前端没用。
+    // 非管理员不带这个键，所以普通玩家的 welcome 与上游逐字相同。
+    if (session.admin === true) welcome.adminTools = true;
     if (session.aiTakeoverFrom) { welcome.takeoverFrom = session.aiTakeoverFrom; session.aiTakeoverFrom = null; }
     if (validRid(rid)) welcome.rid = rid;
     this.reply(conn, welcome);
