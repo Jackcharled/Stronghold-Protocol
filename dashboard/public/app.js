@@ -301,7 +301,12 @@ function renderRoomsTable() {
         + esc(p.name || '') + (p.host ? '<em>房主</em>' : '') + (p.connected === false ? '<i>离线</i>' : '')
         + '</span>';
     }).join('') || '<span class="room-empty">—</span>';
-    const spectatorHtml = (x.spectatorPlayers || []).map((p) => '<span class="room-spectator">' + esc(p.name || '') + (p.connected === false ? '<i>离线</i>' : '') + '</span>').join('') || '<span class="room-empty">—</span>';
+    // 2026-10-31：以前只在 connected === false 时标「离线」，字段缺失就什么都不显示，
+    //   看起来像在线。改成明确区分三种：true=在线（不标）、false=离线、其它=未知。
+    const spectatorHtml = (x.spectatorPlayers || []).map((p) => {
+      const tag = p.connected === true ? '' : (p.connected === false ? '<i>离线</i>' : '<i>状态未知</i>');
+      return '<span class="room-spectator">' + esc(p.name || '') + tag + '</span>';
+    }).join('') || '<span class="room-empty">—</span>';
     const count = (n) => '<span class="room-count' + (!n ? ' is-zero' : '') + '">' + (n == null ? '—' : n) + '</span>';
     const spectate = x.mode === 'solo' ? '<span class="room-empty">—</span>' : '<span class="room-count' + (!x.spectators ? ' is-zero' : '') + '">' + (x.spectators != null ? x.spectators : 0) + (x.maxSpectators ? '/' + x.maxSpectators : '') + '</span>';
     const roundText = x.round > 0 ? 'R' + x.round : (x.started && x.round === 0 ? '准备中' : '—');

@@ -446,6 +446,10 @@ async function roomInfo(code, node) {
         accountId: s.accountId ? String(s.accountId) : null,
         seat: Number.isInteger(s.seat) ? s.seat + 1 : i + 1,
         ready: !!s.ready,
+        // 2026-10-31：这里**保持** `!== false`（缺字段=在线）。
+        //   试过改成 `=== true`，结果是节点未重启前 Redis 里没有 connected 字段，
+        //   83 个座位**全部显示离线**，比原来「全部显示在线」更误导 —— 立刻回滚。
+        //   等所有节点都重启过（lobbyState 会写真实值）之后，再统一改成 `=== true`。
         connected: s.connected !== false,
         host: !!doc.hostId && doc.hostId === s.playerId,
         guest: !s.accountId,
@@ -454,6 +458,9 @@ async function roomInfo(code, node) {
       }));
     const spectatorPlayers = (Array.isArray(doc.spectators) ? doc.spectators : [])
       .filter((s) => s && typeof s === 'object')
+      // 2026-10-31：**保持** `!== false`（缺字段=在线），理由同上面座位那段。
+      //   真正修的是 lobbyState 现在会存 connected（已分发到 30 个节点）；
+      //   等节点陆续重启、Redis 里都有真实值之后，这里和座位一起改成 `=== true` 才有意义。
       .map((s) => ({ name: String(s.name || ''), connected: s.connected !== false }));
     const round = doc.matchLive ? (Number(doc.liveRound) || 0) : (doc.match && Number.isFinite(Number(doc.match.round)) ? Number(doc.match.round) : null);
     const maxSpectators = Number.isInteger(doc.maxSpectators) ? doc.maxSpectators

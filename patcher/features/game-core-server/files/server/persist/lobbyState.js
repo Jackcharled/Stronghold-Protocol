@@ -89,7 +89,17 @@ export function roomDoc(room, matchRef, sessionOf) {
     matchLive: !!room.match, liveRound: room.liveRound | 0, livePhase: room.livePhase || null,
     maxSpectators: typeof room.spectatorLimit === 'function' ? room.spectatorLimit() : 0,
     seats: room.seats.map(seat),
-    spectators: room.spectators.map((s) => ({ playerId: s.playerId, name: s.name, ...(s.owner ? { owner: true } : {}) })),
+    // ★ 2026-10-31：必须存 `connected`。以前这里只存 playerId/name，于是 dashboard 拿到的
+    //   观战者永远没有连接状态 —— matchmaker 用 `s.connected !== false` 判在线，
+    //   `undefined !== false` 恒为 true，**所有观战者在控制台里都显示在线**，
+    //   哪怕他在游戏界面里已经是灰的（那里读的是 room.state 里的真实值）。
+    //   座位那边（`seat()`）本来就存了 connected，观战席漏了。
+    spectators: room.spectators.map((s) => ({
+      playerId: s.playerId,
+      name: s.name,
+      connected: s.connected !== false,
+      ...(s.owner ? { owner: true } : {}),
+    })),
     match,
   };
 }
