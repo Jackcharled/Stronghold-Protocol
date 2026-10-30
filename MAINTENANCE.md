@@ -1803,31 +1803,99 @@ location ^~ /__admin-ui/ {
 2. 直连 Node 端口试同一个路径（200 说明服务端没问题，问题在 nginx）
 3. 搜 `nginx.conf` 有没有对应的 `location`
 
-### 9.27 `SP_REDIS_URL` 断点持久化 —— 来源与配置（2026-10-30 核实）
+### 9.27 `SP_REDIS_URL` 断点持久化 —— **0.3.1 遗留代码，官方已移除（重要）**
 
-**结论：这是 sganggs 上游原生功能，不是本服加的，也不是跟 5–20 人房扩展一起加的。**
+> ⚠ **2026-10-30 二次核实推翻了本节原结论。** 原来写的是「sganggs 上游原生功能」——
+> **这是错的**。官方 0.3.3 完整包（`安装包/Stronghold-Protocol-master-sganggs.zip`）里
+> **完全没有**这套代码。详见下面「官方溯源」。
+>
+> **它现在能用，但属于「上游已删除、本服还在用」的遗留能力。升级时必须主动保留，
+> 否则房间恢复与断线重连会突然失效。**
 
-#### 来源核实
+#### 官方溯源（2026-10-30，用官方完整包逐文件核对）
 
-| 位置 | `server/persist/` |
+| 来源 | 版本 | `server/persist/` | `server/cluster/` |
+|---|---|---|---|
+| 官方完整包 `Stronghold-Protocol-master-sganggs.zip` | **0.3.3** | ❌ **没有** | ❌ **没有** |
+| `_ref-ann1/Stronghold-Protocol-master` | 0.3.1 | ✅ 有 | ✅ 有 |
+| `_ref/Stronghold-Protocol-master` | 0.3.0 | ✅ 有 | ✅ 有 |
+| 本服 `node-1` | 0.3.3 | ✅ **有**（0.3.1 遗留） | ❌ 没有 |
+
+在官方 0.3.3 包里精确搜索的结果：
+
+```
+"server/persist"   → 0 处
+"SP_REDIS"         → 0 处
+"valkey.js"        → 0 处
+```
+
+（搜 `checkpoint` 有 92 个匹配，但那是游戏语义里的「关卡检查点」，与持久化无关。）
+
+**结论**：作者在 0.3.2 之后把 `cluster/` 与 `persist/` 整套删掉了，连 `DEPLOY.md`
+里的「断点续玩」章节也一并移除。本服的 `server/persist/` 是 0.3.1 留下的残存代码。
+
+#### 为什么本服还能用
+
+本服的更新是 `update.js` 应用更新包（只增改、不清理已删文件），0.3.1 带的
+`server/persist/` 就一直留在磁盘上，`server/index.js` 里对它的调用也还在，
+所以 `SP_REDIS_URL` 至今有效。
+
+#### 用到的能力（**必须保住**）
+
+| 能力 | 状态 |
 |---|---|
-| sganggs 上游 **0.3.2** | ✅ 6 个文件齐全 |
-| sganggs 上游 **0.3.3** | ✅ 6 个文件齐全（与本服逐字节一致） |
-| 本服 | ✅ 6 个文件（只有 `lobbyState.js` 多 1.1KB，见下） |
+| **房间恢复**（重启后房号/房主/成员还在） | ✅ 需要 |
+| **断线重连**（座位、阵容、回合、经济原样回来） | ✅ 需要 |
+| 节点重启保住对局 | ❌ 做不到（见下） |
 
-最早出现：`733982fe 2026-10-20 chore: 同步 node-1 游戏本体`——
-跟着**整批游戏本体同步**进来的，不是某次单独的功能开发。
+#### 升级上游时的保护清单
 
-0.3.2 与 0.3.3 的 persist 文件**大小内容完全相同**，所以该功能比 0.3.2 更早就存在。
+**升级前必须确认以下几点，否则持久化会失效：**
+
+**① 保留整个目录**
+
+```
+node-1/server/persist/          ← 6 个文件，一个都不能少
+  index.js        2.7KB
+  lobbyState.js   16.6KB   ← 本服改过（+1.1KB：version 隔离 + 扩展人数字段）
+  node.js         7.8KB
+  persister.js    20.3KB
+  store.js        9.2KB
+  valkey.js       13.4KB
+```
+
+**② 保留三处调用代码**
+
+| 文件 | 位置 | 内容 |
+|---|---|---|
+| `server/index.js` | L47 | `import { createPersistence } from './persist/index.js';` |
+| `server/index.js` | L171 | `persistence = await createPersistence({ registry, lobby, log });` |
+| `server/lobby.js` | L1328 | `try { this.persistFlush?.('room-create'); } catch { /* ignore */ }` |
+
+外加 `server/match/snapshot.js:98` 的 `'onCheckpoint'` 字段登记（Match 字段分类表）。
+
+**③ 升级后验证**
+
+```bash
+# 启动日志里应该有这一行
+[persist] checkpoints on (every 10 s)
+
+# Redis 里应该有钥匙
+# sp:nN:lobby / sp:nN:lobby:rooms / sp:nN:lobby:sessions
+```
+
+**④ 如果上游某天真把功能加回来**
+
+关注官方是否重新出现 `server/persist/` 目录或 `SP_REDIS_URL` 变量。
+一旦出现，本服直接跟进即可（配置已经就位，不需要额外改造）。
 
 #### 本服唯一的改动：`lobbyState.js` +1.1KB
 
-来自这两个提交：
+来自：
 - `998fc0d2` 房间持久化补存 `version` 以恢复版本隔离
 - 5–20 人房扩展（房间存档字段）
 
-**其余 5 个文件（`index.js` / `node.js` / `persister.js` / `store.js` / `valkey.js`）
-与上游逐字节一致。**
+**其余 5 个文件与 `_ref-ann1`（0.3.1）逐字节一致。**
 
 #### 配置项
 
@@ -1838,16 +1906,18 @@ location ^~ /__admin-ui/ {
 | `SP_PERSIST_SAVE_MS` | 定时存档间隔，默认 10000 | 未设（默认 10 秒） |
 | `SP_REDIS_PASSWORD_FILE` | 从文件读密码，不必写进环境变量 | 未用 |
 
-#### 实际能保住什么
+#### 节点重启保住对局：做不到
 
-| 场景 | 能否保住 | 说明 |
-|---|---|---|
-| 房间（房号、房主、成员） | ✅ | `sp:nN:lobby:rooms` |
-| 会话 | ✅ | `sp:nN:lobby:sessions` |
-| **玩家断线重连** | ✅ | 座位、阵容、对局进度都在 |
-| **节点进程重启** | ❌ | 对局中断，提示「返回同盟」，房间座位保留 |
+`server/persist/persister.js` 的单机分支（`if (!this.cluster)`）直接 `abortRestoredMatch(room)` ——
+只保留房间、中断对局。`restoreLocal()` 虽然写了，但它调用的
 
-原因见 §9.26：单机分支 `abortRestoredMatch()` 强制中断，`restoreLocal()` 是未完成代码。
+```js
+this.lobby.startMatch(room, room.matchKey, room.matchKeys, { restore: {...} });
+```
+
+在 `lobby.js` 里是 `startMatch(room, key = null)` —— **第 3、4 个参数被静默丢弃**，
+`restoreMatch()` 从未被调用。实测日志报 `restored 1 match(es)` 但实际是新开了一局
+（种子/地图/回合/matchNo 全变）。详见 §9.26。
 
 #### 快速检查命令
 
@@ -1855,11 +1925,9 @@ location ^~ /__admin-ui/ {
 # Redis 是否在跑
 Get-NetTCPConnection -State Listen -LocalPort 6379
 
-# 有没有在写检查点（DBSIZE 应随时间增长/刷新）
-# 通过 node 直连：SCAN 0 COUNT 500，看 sp:n*:cp:* 的 savedAt
+# 有没有在写检查点
+#   node 直连：SCAN 0 COUNT 500，看 sp:n*:cp:* 的 savedAt
 ```
-
-**注意**：`/healthz` 的 `persistence` 字段可看写入/失败计数（存在时才返回）。
 
 ### 9.26 「节点重启保住对局」做不到 —— 实验记录与结论（2026-10-30）
 
