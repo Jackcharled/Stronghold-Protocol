@@ -2875,6 +2875,32 @@ git fetch  $url refs/heads/custom/production:refs/remotes/origin/custom/producti
 git rev-list --left-right --count origin/custom/production...HEAD   # 再确认一次 0  0
 ```
 
+#### ⚠ 判断「推送成功没有」不要看 `origin/custom/production`
+
+本仓库 `remote.origin.fetch` 只配了 `master`：
+
+```
++refs/heads/master:refs/remotes/origin/master
+```
+
+所以 `origin/custom/production` 这个本地跟踪引用**从来不会自动更新**——`git push` 明明成功了
+（输出里能看到 `a6d15a79..9f54921b  custom/production -> custom/production`），
+`git fetch origin custom/production` 也成功了，但 `git rev-parse origin/custom/production`
+仍然停在很久以前的旧提交。**拿它判推送结果是假警报**，2026-10-31 就被它误导过一次。
+
+唯一可信的判据是直接问远端：
+
+```powershell
+git ls-remote origin refs/heads/custom/production   # 输出必须等于 git rev-parse HEAD
+```
+
+`git rev-parse FETCH_HEAD` 只在刚 fetch 完的那一刻有效，也可靠，但不直观。
+想一劳永逸就把 refspec 补上（可选）：
+
+```powershell
+git config --add remote.origin.fetch '+refs/heads/custom/production:refs/remotes/origin/custom/production'
+```
+
 ## 十、安全与红线
 
 1. `.secrets/`、`matchmaker/public/admin.html` 不上传 GitHub（`admin.html` 已被上游 `.gitignore` 排除）；
