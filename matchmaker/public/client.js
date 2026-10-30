@@ -919,20 +919,7 @@ const JOIN_COOKIE = (() => {
         .then((d) => {
           if (d && d.node) {
             if (d.mode === 'solo') { showStyledToast(spec ? '独立模拟房间不支持观战（观战只对同盟房间开放）' : '独立模拟房间无法加入'); return; }
-            // 观战席上限不是固定 2：服务端按 max(2, 玩家数/2) 算（room.spectatorLimit，
-            // 20 人房就有 10 个席位）。find-room 已经把权威的 maxSpectators 带回来了，直接用它。
-            // ⚠ 2026-10-29 修：这里原来写死 `Number(d.spectators) >= 2`，
-            //   于是任何房间第 3 个人想观战都会被拦下，还弹出「观战席位已满（2/2）」——
-            //   玩家反馈「观战进不来，只能进 2 个」就是这个。而服务端实测第 3 个人能进（14 人房上限 7）。
-            if (spec) {
-              const cap = Number.isInteger(d.maxSpectators) ? d.maxSpectators
-                : (d.mode === 'coop' ? Math.max(2, Math.ceil((Number(d.humans) || 0) / 2)) : 0);
-              const used = Number(d.spectators) || 0;
-              if (used >= cap) {
-                showStyledToast(`观战席位已满（${used}/${cap}），请稍后再试`);
-                return;
-              }
-            }
+            if (spec && Number(d.spectators) >= 2) { showStyledToast('观战席位已满（2/2），请稍后再试'); return; }
             if (!spec && d.started) { showStyledToast('该同盟已开始对局，无法加入；可以点「观战」进入'); return; }
             if (!spec && d.full) { showStyledToast('该同盟人数已满，无法加入；可以点「观战」进入'); return; }
             const localGo = () => { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); };
@@ -2966,53 +2953,17 @@ const JOIN_COOKIE = (() => {
     let lastCode = null;
     let lastCheck = 0;
 
-    /** 大厅的「公告」按钮此刻是否真的可见（见 probe 里的说明）。 */
-    const lobbyNotice = () => {
-      // 标题页也有公告按钮（ensureTopButton allowLobby），而它不是一个合法的锚点：
-      // 恢复对局属于大厅。这里显式排掉，避免标题页靠这条判据混过去。
-      if (document.querySelector('.title-screen')) return null;
-      const n = document.getElementById('mm-notice-btn');
-      if (!n || !n.isConnected) return null;
-      // ensureTopButton 在非大厅界面会把它 display:none
-      if (n.style.display === 'none') return null;
-      if (typeof n.getClientRects === 'function' && n.getClientRects().length === 0) return null;
-      // 公告按钮必须真的挂在标题屏之外（双保险：即使 .title-screen 判断失效，
-      // 只要它被渲染在标题容器里，也不算大厅）
-      if (typeof n.closest === 'function' && n.closest('.title-screen')) return null;
-      return n;
-    };
-    /** 玩家刚主动退出对局（2 分钟内）：这段时间不提醒恢复（与自动恢复同一套闸）。 */
-    const recentlyLeft = () => {
-      try {
-        const now = Date.now();
-        const a = Number(sessionStorage.getItem('sp.matchExitAt') || 0);
-        const b2 = Number(localStorage.getItem('sp.matchExitAtShared') || 0);
-        return !!((a && now - a < 120000) || (b2 && now - b2 < 120000));
-      } catch { return false; }
-    };
-
     const probe = async () => {
       const role = window.__SP_ACCOUNT_ROLE || '';
       if (!window.__SP_ACCOUNT_TOKEN || !role || role === 'guest') { removeBtn(); return; }
       if (inRoom() || autoBusy()) { removeBtn(); return; }
-      // ★ 第一道：标题界面一律不显示（维护者 2026-10-26 / 2026-10-29 反复要求）。
-      //
-      // **必须在最前面判**，不能只靠下面的「公告按钮是否可见」—— 标题页**也有公告按钮**
-      // （ensureTopButton 的 allowLobby，且它在 .title-screen 里即使找不到 stat 也会保留
-      // 按钮，见 ensureTopButton 第 2088 行），只靠公告按钮判断会漏掉标题页。
-      if (document.querySelector('.title-screen')) { removeBtn(); return; }
-      // ★ 第二道：只在大厅显示（「其他界面均不要出现恢复对局按钮」）。
-      //
-      // 判据用「大厅的公告按钮此刻是否真的可见」：
-      //   · 对局中 / 结算 / 设置等界面 → ensureTopButton 会把公告按钮 display:none
-      //     并返回 null，拿不到它，这里就不会插按钮
-      //   · 房间等待室（还没开局）→ 同样没有公告按钮
-      //
-      // 这比「判断当前路由/屏幕类名」可靠：不管界面怎么改版，只要玩家不在大厅，
-      // 公告按钮就不在，恢复对局自然也不会冒出来。
-      if (!lobbyNotice()) { removeBtn(); return; }
       // 主动退出对局后的一段时间内不显示（与自动恢复同一套闸）
-      if (recentlyLeft()) { removeBtn(); return; }
+      try {
+        const now = Date.now();
+        const a = Number(sessionStorage.getItem('sp.matchExitAt') || 0);
+        const b2 = Number(localStorage.getItem('sp.matchExitAtShared') || 0);
+        if ((a && now - a < 120000) || (b2 && now - b2 < 120000)) { removeBtn(); return; }
+      } catch { /* ignore */ }
       if (Date.now() - lastCheck < 15000 && (lastCode || !existing())) return;   // 15 秒最多查一次
       lastCheck = Date.now();
       let code = null;
@@ -3026,23 +2977,22 @@ const JOIN_COOKIE = (() => {
       lastCode = code;
       if (!code) { removeBtn(); return; }
       if (existing()) return;
+      // 锚点：**只在联厅显示**（维护者明确要求：标题界面不要「恢复对局」）。
+      //   1) 大厅：公告按钮（恢复对局排在它左边）
+      //   2) 大厅：版本按钮 / SWEEP 文字按钮
+      const notice = document.getElementById('mm-notice-btn');
       // ★ 标题界面一律不显示「恢复对局」（维护者 2026-10-26 明确要求）。
-      // 判定用「当前是否停在标题屏」，而不是「有没有公告按钮」—— 标题页上也可能存在
-      // 公告按钮，用锚点判断会漏。标题页只需展示账号/开始游戏，恢复入口属于联厅。
       if (document.querySelector('.title-screen')) { removeBtn(); return; }
-      // ★ 锚点：**只在联厅显示**，而且只认「公告」按钮 —— 恢复对局排在它的**左边**
-      //   （维护者 2026-10-29 确认要这个位置）。
-      //
-      // 以前这里还有两个降级锚点（版本按钮 / S.W.E.E.P. 文字按钮），拿不到公告按钮时
-      // 还会造一个 position:fixed 的浮动按钮挂在 body 上 —— 于是玩家**在任何界面**
-      // （对局中、设置页、结算页…）都能看到右下角冒出来一个「恢复对局」，
-      // 位置完全不讲道理。维护者要求「其他界面均不要出现恢复对局按钮」，全部去掉。
-      //
-      // 现在的规则：**只在大厅、且能挨着「公告」按钮时显示**；拿不到就不显示。
-      // 按钮由 6 秒一轮的 probe 维护，大厅一渲染出来它就会补上，不会永久缺失。
-      const anchor = lobbyNotice();
-      if (!anchor || !anchor.parentElement || !anchor.isConnected) { removeBtn(); return; }
-      const btn = anchor.cloneNode(true);
+      // ★ MAINTENANCE.md §9.21 + §9.36：只认大厅「公告」按钮当锚点，拿不到就**不显示**。
+      //   §9.21 删掉过下面这段浮动按钮降级（mm-resume-fallback），它正是
+      //   「房间页 / 对局中 / 结算页也冒出恢复对局」的源头；那次修复后来被整份覆盖冲掉了，
+      //   2026-10-31 按 §9.36 的规矩（精确替换 + 校验命中数 + 字节差合理）重做。
+      //   判据用「公告按钮是否可见」：非大厅界面它会被 display:none 或移除，
+      //   比判断屏幕类名 / 路由更抗改版。
+      if (!notice || !notice.isConnected || notice.style.display === 'none') { removeBtn(); return; }
+      if (notice.getClientRects().length === 0) { removeBtn(); return; }
+      const anchor = notice;   // 锚点只认公告按钮，恢复对局永远排在它左边
+      const btn = (notice || anchor).cloneNode(true);
       btn.id = ID;
       btn.type = 'button';
       btn.disabled = false;
@@ -3050,7 +3000,7 @@ const JOIN_COOKIE = (() => {
       const dot = btn.querySelector('.mm-dot');
       if (dot) dot.remove();
       // 图标：返回箭头，和「公告」同一套描边
-      const icon = anchor.querySelector('svg');
+      const icon = (notice || anchor).querySelector('svg');
       if (icon) {
         const s = icon.cloneNode(true);
         const path = s.querySelector('path');
@@ -3296,8 +3246,19 @@ const JOIN_COOKIE = (() => {
       #mm-nodes .chip i{width:7px;height:7px;border-radius:50%;background:#4ed8af;box-shadow:0 0 6px #4ed8af}
       #mm-nodes[data-state=busy] .chip i{background:#e8b25a;box-shadow:0 0 6px #e8b25a}
       #mm-nodes[data-state=down] .chip i{background:#d9534f;box-shadow:0 0 6px #d9534f}
+
       #mm-nodes .chip b{font-weight:700;color:#e6fff7}
       #mm-nodes.match .chip i{background:#e8b25a;box-shadow:0 0 6px #e8b25a}
+      /* 对局中：管理员与普通玩家必须逐像素一致。
+         锁定盒高与内边距，图标固定 14px、圆点固定 7px 全部隐藏 ——
+         这样无论 topbar 分支有没有给它插过柱状图图标，最终盒子都一样大、位置一样。 */
+      #mm-nodes.match .chip{box-sizing:border-box;
+        height:var(--gtop-pill-h, calc(.32rem + 2px));min-height:var(--gtop-pill-h, calc(.32rem + 2px));max-height:var(--gtop-pill-h, calc(.32rem + 2px));
+        padding:0 .14rem 0 .11rem;gap:.05rem;display:inline-flex;align-items:center;line-height:1}
+      #mm-nodes.match .chip i{display:none!important;width:0!important;height:0!important;margin:0!important}
+      #mm-nodes.match .chip svg{display:block;flex:none;width:14px;height:14px;margin-right:6px}
+      #mm-nodes.match .chip svg.mm-chip-icon{margin-right:6px}
+      #mm-nodes.match #mm-nodes-text{display:inline-block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       /* 手机（1rem 被钳到 40px）上 .16 × --t 只有 6px，字几乎看不见；
          高度 .32rem 也只有 12.8px，和旁边动辄 30px 的按钮不成比例。
          这里给字号和高度都加一个像素下限：小屏上反而要略微变小、但不能小到看不清。
@@ -3553,6 +3514,38 @@ const JOIN_COOKIE = (() => {
               dot.style.removeProperty('height');
               dot.style.removeProperty('margin-right');
               dot.style.removeProperty('border-radius');
+              // ★ 对局中一律显示柱状图图标、隐藏圆点，与普通玩家看到的完全一致。
+              //   （维护者确认：有柱状图图标的才是标准外观；圆点是另一套，必须消掉。）
+              dot.style.setProperty('display', 'none', 'important');
+            }
+            // 确保图标存在：普通玩家的胶囊里是柱状图 svg，管理员也必须有**同一个**。
+            // 直接从 topbar 分支用的同一个来源（公告/统计按钮的 svg）克隆，避免手画走样。
+            if (chipEl && !chipEl.querySelector('svg.mm-chip-icon')) {
+              const src = document.querySelector('#mm-notice-btn svg')
+                || document.querySelector('button.title-stats svg')
+                || [...document.querySelectorAll('button svg')].find((s) => {
+                  const b = s.closest('button');
+                  return b && /公告|统计/.test((b.textContent || '').trim());
+                });
+              let svg = null;
+              if (src) {
+                svg = src.cloneNode(true);
+                svg.classList.add('mm-chip-icon');
+                svg.style.marginRight = '6px';
+              } else {
+                // 找不到来源时才退到内置柱状图，保证至少有图标且宽度一致
+                const NS = 'http://www.w3.org/2000/svg';
+                svg = document.createElementNS(NS, 'svg');
+                svg.setAttribute('viewBox', '0 0 24 24');
+                svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+                svg.classList.add('mm-chip-icon');
+                svg.style.cssText = 'margin-right:6px;flex:none';
+                const p1 = document.createElementNS(NS, 'path');
+                p1.setAttribute('fill', 'currentColor');
+                p1.setAttribute('d', 'M4 20h4V10H4v10zm6 0h4V4h-4v16zm6 0h4v-7h-4v7z');
+                svg.appendChild(p1);
+              }
+              chipEl.insertBefore(svg, chipEl.firstChild);
             }
           }
         }
@@ -3647,7 +3640,28 @@ const JOIN_COOKIE = (() => {
 
     chip.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (el.classList.contains('match') || !data) return;
+      // 对局中：这颗胶囊就是「游戏内管理员工具」的入口。
+      // 只对管理员有效 —— 服务端 welcome.adminTools 为真时 store.adminTools 才是 true，
+      // 普通玩家点它仍然什么都不发生（下面原有的 return 保持不变）。
+      if (el.classList.contains('match')) {
+        const st = window.__SP__ && window.__SP__.store && window.__SP__.store.get();
+        // ★ 判据用 adminId（身份门）而不是 adminTools（两道门都过）。
+        //   退出授权后 adminTools 会变 false，若继续用它判断，管理员连面板都打不开，
+        //   也就没有地方重新输码了 —— 2026-10-31 实测出来的死锁。
+        //   普通玩家 adminId 也是 false，所以权限没有放宽。
+        if (st && st.adminId === true) {
+          try {
+            // 把胶囊的屏幕位置一并传出：面板要开在它**正下方**，
+            // 而不是固定在屏幕角落（维护者要求「就地打开，不用去别处找」）。
+            const r = el.getBoundingClientRect();
+            window.dispatchEvent(new CustomEvent('sp-open-admin-tools', {
+              detail: { left: r.left, top: r.bottom + 8, width: r.width },
+            }));
+          } catch { /* ignore */ }
+        }
+        return;
+      }
+      if (!data) return;
       // 标题页只显示在线人数，不提供节点状态面板
       if (document.querySelector('.title-screen')) return;
       openStatusModal();
@@ -3693,6 +3707,16 @@ const JOIN_COOKIE = (() => {
       const setHtml = (node, html) => { if (node.innerHTML !== html) node.innerHTML = html; };
       if (inMatch) {
         if (!el.classList.contains('match')) el.classList.add('match');
+        // 管理员：这颗胶囊可以点开工具面板。外观保持不变（维护者要求），
+        // 只加 cursor:pointer 与 title 作为「可点」的唯一提示。
+        // 管理员：这颗胶囊可以点开工具面板。
+        // ★ 不设 title、不加任何可见标记 —— 维护者要求「管理员和普通玩家看到的完全一致」。
+        //   普通玩家点它没有任何反应（下面 click 里会判 adminTools），
+        //   但不能靠悬停提示、光标、颜色等任何东西暴露「这是管理入口」。
+        const isAdmin = !!(s && s.adminId === true);
+        if (isAdmin) { chip.style.cursor = 'pointer'; }
+        else { chip.style.removeProperty('cursor'); }
+        chip.removeAttribute('title');
         const n = nodeOf();
         const node = data && data.nodes.find((x) => x.n === n);
         const label = node ? node.name + ' · ' + (node.ok ? '正常' : '离线') : '当前节点';

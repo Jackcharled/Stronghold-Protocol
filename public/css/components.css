@@ -1060,7 +1060,12 @@
   .lobby-screen .topbar { grid-template-columns: minmax(0, 1fr) auto; gap: .1rem .2rem; }
   .lobby-screen .topbar__center { grid-column: 1 / -1; grid-row: 2; }
   .lobby-screen .topbar__center .micro { display: none; }
-  .lobby-screen .topbar__right { grid-column: 2; grid-row: 1; }
+  /* 窄屏下左侧那格必须能收缩，否则右侧组被挤出可视区、压在「开始模拟」上面（2026-10-31 实测） */
+  .lobby-screen .topbar__left { min-width: 0; }
+  .lobby-screen .topbar__right { grid-column: 2; grid-row: 1; justify-self: end; min-width: 0; }
+  /* 大厅里「恢复对局」不该挤在顶栏里抢位置：窄屏时换成独立一行贴底，不覆盖任何按钮 */
+  .lobby-screen .topbar__right > .verchip,
+  .lobby-screen .topbar__right > .verchip--urgent { max-width: 42vw; overflow: hidden; }
 }
 
 .section-label { display: flex; align-items: baseline; gap: .12rem; margin: 0 0 .14rem; font-size: calc(.2 * var(--t)); font-weight: 700; letter-spacing: .08em; }
@@ -1282,4 +1287,23 @@
   .verpick__name { font-size: calc(.28 * var(--t)); }
   .verpick__badge { font-size: calc(.2 * var(--t)); }
   .verpick__period, .verpick__note { font-size: calc(.21 * var(--t)); }
+}
+/* ═══ 大厅顶栏窄屏加固（2026-10-31 实测：恢复对局按钮压在「开始模拟」上）═══
+   .lobby-screen 顶栏只有 left / right 两个子元素，没有 center。
+   ≤1000px 时列定义是 minmax(0,1fr) auto，right 被要求待在 auto 那列，
+   它会紧贴 left 后面 —— 左侧工具组一多就被推下去、叠在主内容上。
+   这里让顶栏改成 flex + wrap：right 组永远靠右对齐，放不下就换行，
+   绝不与主内容重叠。 */
+@media (max-width: 1000px) {
+  .lobby-screen .topbar {
+    display: flex; flex-wrap: wrap; align-items: center;
+    justify-content: space-between; gap: .1rem .2rem;
+    height: auto; min-height: 1.1rem; padding-block: .12rem;
+  }
+  .lobby-screen .topbar__left { flex: 1 1 auto; min-width: 0; }
+  .lobby-screen .topbar__right {
+    flex: 0 0 auto; grid-column: auto; grid-row: auto;
+    justify-self: auto; margin-left: auto;
+  }
+  .lobby-screen .topbar__center { flex: 1 1 100%; grid-column: auto; grid-row: auto; }
 }

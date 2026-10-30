@@ -265,6 +265,13 @@ function fallbackRoom(r, lobby, now) {
         ready: false,
         left: false,
         skins: {},
+        // 本服：兜底重建也必须带上管理员标记，否则房间一旦走 fallback 恢复
+        // （日志「restored by fallback」），座位上的 admin 就丢了，开局后 ps.admin=false，
+        // 每个 g.test 都回 TEST_FORBIDDEN —— 2026-10-31 实测复现。
+        ...(s.admin === true ? { admin: true } : {}),
+        ...(typeof s.accountId === 'string' && s.accountId ? { accountId: s.accountId } : {}),
+        ...(typeof s.tag === 'string' && s.tag ? { tag: s.tag } : {}),
+        ...(s.guest === true ? { guest: true } : {}),
       };
     });
     const humans = typeof room.activeHumans === 'function' ? room.activeHumans() : [];

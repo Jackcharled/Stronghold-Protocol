@@ -538,28 +538,37 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
   // 打开面板；普通玩家这里连 onClick 都不会挂 —— 点了只是原本的延迟显示，没有任何反应。
   const adminTools = useStore((s) => s.adminTools === true);
   const [adminOpen, setAdminOpen] = useState(false);
+  // 面板锚点：从节点胶囊的实际屏幕位置来，面板开在它正下方。
+  const [adminAnchor, setAdminAnchor] = useState(null);
+  // 对局中那颗「节点状态」胶囊也开这个面板（mm/client.js 派发事件）：
+  // 那次点击发生在注入的 DOM 里，够不到 React 状态，所以用 window 事件转一手。
+  useEffect(() => {
+    const open = (e) => {
+      const d = e && e.detail;
+      setAdminAnchor(d && Number.isFinite(d.left) ? { left: d.left, top: d.top, width: d.width } : null);
+      setAdminOpen(true);
+    };
+    window.addEventListener('sp-open-admin-tools', open);
+    return () => window.removeEventListener('sp-open-admin-tools', open);
+  }, []);
   return html`<header class=${cx('gtop', pen && 'is-pen')}>
     <div class="gtop__left">
       <${Button} variant="danger" size="lg" square=${true} icon="exit" onClick=${onExit} aria-label=${t('离开')} title=${t('离开 / 暂离')} class="gtop__exit tapx" />
       <div class="gtop__meta">
         <div class="gtop__net">
-          <span class=${cx('gtop__pingbox', adminTools && 'is-admin')}
-            role=${adminTools ? 'button' : undefined}
-            tabindex=${adminTools ? '0' : undefined}
-            title=${adminTools ? t('管理员工具（点击开关）') : undefined}
-            onClick=${adminTools ? () => setAdminOpen((v) => !v) : undefined}
-            onKeyDown=${adminTools ? ((e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAdminOpen((v) => !v); } }) : undefined}>
+          <span class="gtop__pingbox">
             <${PingPill} ms=${conn?.ping} online=${conn?.status === 'online'} />
           </span>
           <${SpectatorPill} spectators=${spectators} myId=${myId} isHost=${isHost} onRemove=${onRemoveSpectator} />
         </div>
+
         ${pub?.difficulty ? html`<${DifficultyTag} difficulty=${pub.difficulty} size="sm" />` : null}
         ${pub?.test ? html`<${TestMark} class="gtop__test" />` : null}
         <${UnofficialMark} room=${room} compact=${true} class="gtop__mod" />
         ${ruleLine(room?.content?.rules) ? html`<span class="gtop__rules" data-testid="plugin-rules">${ruleLine(room?.content?.rules)}</span>` : null}
       </div>
     </div>
-    ${adminTools ? html`<${AdminTools} open=${adminOpen} onClose=${() => setAdminOpen(false)} />` : null}
+    ${adminTools && adminOpen ? html`<div class="admintools-host"><${AdminTools} open=${true} anchor=${adminAnchor} onClose=${() => setAdminOpen(false)} /></div>` : null}
 
     <div class="gtop__center">
       <span class="gtop__frame gtop__frame--l">

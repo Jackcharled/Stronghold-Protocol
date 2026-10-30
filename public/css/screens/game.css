@@ -117,6 +117,10 @@
 .gtop__rules { max-width: 3.4rem; font-size: calc(.11 * var(--t)); line-height: 1.4; color: var(--text-md); overflow-wrap: anywhere; }
 /* the latency pill and, beside it, the 观战席 capsule (ui/hud.js SpectatorPill: an eye + how many are watching; opens the roster) */
 .gtop__net { display: flex; align-items: center; gap: .08rem; }
+/* 延迟胶囊（.ping）与节点状态胶囊（#mm-nodes）必须站在同一条水平线上。
+   两者高度来源不同：.ping 是 min-height + 上下各 1px padding，节点胶囊是内容高，
+   加起来差 4~6px，视觉上就「一个高一个低」。这里给两者同一个盒高与盒模型。 */
+
 /* the ping pill as tall as its value at a big 文字大小 (§35.51: cut 1 px at 特大 on the phones), as in the room and the hub */
 .gtop__net .ping { height: auto; min-height: .32rem; padding-top: 1px; padding-bottom: 1px; }
 .specpill { --btn-bg: rgba(0, 0, 0, .5); --btn-bg-hover: rgba(0, 0, 0, .66); --btn-bd: var(--line); height: .32rem; min-width: 0; padding: 0 .12rem; gap: .05rem; border-radius: 99px; }
@@ -1273,15 +1277,41 @@
    入口：对局中点击左上角延迟胶囊。只有登录 owner/admin 账号时才渲染（server welcome.adminTools）。
    风格对齐游戏本体：深色玻璃卡片 + 金色描边，和测试房那个 ami 黄块面板区分开。 */
 .admintools {
-  position: fixed; left: 14px; top: 64px; z-index: 60;
-  width: min(330px, calc(100vw - 28px)); max-height: min(70vh, 520px);
+  /* 面板必须相对**视口**定位，不能相对 .gtop。
+     .gtop 是 display:grid，之前用 absolute + grid-area:1/1 让它以第一个网格单元为参照 ——
+     那个单元是 1fr，超宽屏上左边缘会飘到屏幕外（维护者截图里整个面板跑出屏幕）。
+     现在用 fixed，并给它自己的最小宽度保护。 */
+  position: fixed;
+  right: 16px;
+  top: 76px;
+  z-index: 60;
+  width: min(340px, calc(100vw - 32px));
+  max-height: min(62vh, 540px);
   display: flex; flex-direction: column; gap: 8px;
-  padding: 10px 10px 8px;
-  background: linear-gradient(180deg, rgba(10,16,18,.96), rgba(6,10,12,.97));
+  padding: 10px 12px 10px;
+  background: linear-gradient(180deg, rgba(10,16,18,.97), rgba(6,10,12,.98));
   border: 1px solid var(--gold-a20); border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,198,0,.06);
   color: var(--text-md); font-size: 12px;
+  overflow: hidden;
 }
+/* 包住面板的宿主：display:contents 会让子元素重新进入 .gtop 的网格，
+     所以这里用 absolute + 0 尺寸把面板托住，宿主自己不占任何网格轨道。 */
+/* 包住面板的宿主：必须是**零尺寸且完全脱离流**的盒子。
+   .admintools 自己虽然是 absolute，但宿主若参与布局（哪怕 0 宽但仍在 grid 里），
+   也会因为 grid 的自动轨道计算让 gtop__left 变宽/变窄 —— 于是「开没开面板」
+   节点状态胶囊的横坐标就不一样。下面把宿主钉死在 1/1 格、0 尺寸、不占轨道。 */
+.admintools-host {
+  /* 宿主只用来把面板从 .gtop 的 grid 里摘出来。
+     不能写 grid-area —— 写了就等于「参与网格定位」，超宽屏上会被推到屏幕外。
+     position:fixed + 零尺寸 + pointer-events:none，对布局零影响。 */
+  position: fixed; left: 0; top: 0; width: 0; height: 0;
+  overflow: visible; pointer-events: none;
+  z-index: 60;
+}
+.admintools-host > .admintools { pointer-events: auto; }
+.admintools-host > .admintools { pointer-events: auto; }
+
 .admintools__head { display: flex; align-items: center; gap: 8px; }
 .admintools__head b { color: var(--gold); font-size: 13px; letter-spacing: .04em; }
 .admintools__hint { color: var(--text-dim); font-size: 11px; }
@@ -1309,11 +1339,15 @@
   border: 1px solid #27393b; border-radius: 6px; color: var(--text-hi); }
 .admintools__funds button { flex: none; padding: 5px 10px; background: var(--gold-a20);
   border: 1px solid var(--gold); border-radius: 6px; color: var(--gold); cursor: pointer; font-weight: 600; }
-.admintools__log { list-style: none; margin: 0; padding: 6px 0 0; border-top: 1px solid #1b2a2c;
-  max-height: 88px; overflow-y: auto; font-size: 11px; }
-.admintools__log li { padding: 1px 0; color: var(--text-lo); }
+/* flex:none 是关键 —— 上面 .admintools__list 是 flex:1 1 auto 会吃满剩余高度，
+   日志区若不加 none 就会被压到接近 0，长中文只能露出一条缝（截图里那条红线）。 */
+.admintools__log { list-style: none; margin: 0; padding: 8px 0 0; border-top: 1px solid #1b2a2c;
+  flex: none; max-height: 168px; overflow-y: auto; font-size: 11.5px; }
+.admintools__log li { padding: 4px 0; color: var(--text-lo); line-height: 1.6;
+  white-space: normal; word-break: break-word; }
 .admintools__log li.is-ok { color: var(--mint-600); }
-.admintools__log li.is-bad { color: var(--red-premium); }
+.admintools__log li.is-bad { color: var(--red-premium); background: rgba(255,90,90,.08);
+  border-left: 2px solid var(--red-premium); padding-left: 6px; border-radius: 3px; }
 .admintools__note { margin: 0; color: var(--text-lo); font-size: 12px; line-height: 1.6; }
 .admintools__msg { color: var(--amber); font-size: 12px; }
 /* 二次确认开关：常驻一行；勾上后出现警示文字与「恢复确认」，避免静默免确认。 */
@@ -1324,5 +1358,123 @@
 .admintools__mini { margin-left: auto; padding: 2px 10px; font-size: 12px; cursor: pointer;
   background: transparent; color: var(--gold); border: 1px solid var(--gold-a20); border-radius: 6px; }
 .admintools__mini:hover { background: var(--gold-a20); }
-.admintools__pingbox.is-admin { cursor: pointer; border-radius: 8px; box-shadow: 0 0 0 1px var(--gold-a20); }
-.admintools__pingbox.is-admin:hover { box-shadow: 0 0 0 1px var(--gold); }
+
+
+/* 游戏内管理员工具的入口按钮（本服 2026-10-31）。
+   挂在 .gtop__meta 里难度标签前面：比延迟胶囊显眼 —— 胶囊上只有 "45ms"，
+   玩家（包括服主本人）根本不会想到去点它。金色描边与面板同色系。 */
+.gtop__admintool {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  height: 22px; padding: 0 8px; cursor: pointer;
+  background: rgba(255, 198, 0, .10); color: var(--gold);
+  border: 1px solid var(--gold-a20); border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; line-height: 1;
+  transition: background .12s, border-color .12s;
+}
+.gtop__admintool .icon { width: 12px; height: 12px; }
+.gtop__admintool:hover { background: var(--gold-a20); border-color: var(--gold); }
+.gtop__admintool:active { background: rgba(255, 198, 0, .28); }
+/* 小屏（对局 HUD 在手机上是精简的）：只留图标，省横向空间 */
+@media (max-width: 560px) { .gtop__admintool span { display: none; } .gtop__admintool { padding: 0 6px; } }
+/* 验证码授权区块（本服 2026-10-31）。owner/admin 登录游戏即已授权，
+   所以这块默认折叠成一行，点「换码」才展开输入框。 */
+.admintools__code { border-top: 1px solid #1b2a2c; padding-top: 6px; margin-top: 2px; }
+.admintools__codehead { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-lo); }
+.admintools__stick--on { color: var(--mint-400); font-weight: 600; }
+.admintools__stick--off { color: var(--text-dim); font-weight: 600; }
+.admintools__stick--id { color: var(--text-dim); font-size: 11px; }
+/* 延迟胶囊与节点状态胶囊必须严格等高：两处都读同一个变量，
+   谁都不许自己定高。.32rem 是延迟胶囊原本的高度，这里把它提出来共用。 */
+.gtop__net { --gtop-pill-h: .32rem; }
+.gtop__net > .ping,
+.gtop__net > #mm-nodes,
+.gtop__net > #mm-nodes > .chip {
+  box-sizing: border-box;
+  height: var(--gtop-pill-h);
+  min-height: var(--gtop-pill-h);
+  max-height: var(--gtop-pill-h);
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+/* .ping 必须与节点胶囊同高：padding 置零、高度锁到同一个变量，
+   否则它的 min-height:.32rem + 上下 1px padding 会和节点胶囊差 2px。 */
+.gtop__net > .ping { padding-top: 0; padding-bottom: 0; height: var(--gtop-pill-h); min-height: var(--gtop-pill-h); max-height: var(--gtop-pill-h); box-sizing: border-box; align-self: center; }
+.gtop__net > #mm-nodes > .chip { padding-top: 0; padding-bottom: 0; justify-content: center; }
+/* ═══ 对局顶栏：延迟胶囊 / 节点状态胶囊 必须严格等高同线（2026-10-31） ═══
+   历史遗留：.ping 有 min-height:.32rem + 上下 1px padding（两条规则互相覆盖），
+   节点胶囊是内容高（图标 14px 或圆点 7px）。两者差 10px 以上，肉眼明显。
+   这里用 !important 一次性压死所有来源，两种身份的胶囊读同一个高度。 */
+.gtop .gtop__net { --gtop-pill-h: .32rem; align-items: center; }
+.gtop .gtop__net > .ping,
+.gtop .gtop__net > #mm-nodes,
+.gtop .gtop__net > #mm-nodes > .chip {
+  box-sizing: border-box !important;
+  height: var(--gtop-pill-h) !important;
+  min-height: var(--gtop-pill-h) !important;
+  max-height: var(--gtop-pill-h) !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  align-self: center !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  vertical-align: middle !important;
+}
+/* ═══ 超宽屏（带鱼屏）下的胶囊对齐（2026-10-31）═══
+   带鱼屏上 1rem 由 100vw/19.2 推高，.32rem 可到 40px 以上；
+   .ping 里的数字与单位（ms）字号更大，容易把固定高度撑破，
+   而节点胶囊的字号是另一套 —— 两者基线随之错开。
+   这里不锁像素，改成「跟随内容、但两边用同一套行高与字号比例」。 */
+@media (min-aspect-ratio: 21/9) {
+  .gtop .gtop__net { align-items: center; }
+  .gtop .gtop__net > .ping,
+  .gtop .gtop__net > #mm-nodes,
+  .gtop .gtop__net > #mm-nodes > .chip {
+    height: auto !important;
+    min-height: var(--gtop-pill-h) !important;
+    max-height: none !important;
+    align-self: center !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    line-height: 1 !important;
+  }
+  /* 两边的字号统一到同一条基准，避免数字 vs 中文的基线差异 */
+  .gtop .gtop__net > .ping,
+  .gtop .gtop__net > #mm-nodes > .chip { font-size: calc(.16 * var(--t)) !important; }
+}
+/* ═══ 对局顶栏胶囊等高：最终裁决（2026-10-31，实测数据驱动）═══
+   实测带鱼屏 3440×1440：1rem = 179.17px，.32rem = 57.33px，
+   .ping 的实际高度就是 57.34px。节点胶囊（#mm-nodes，由 mm/client.js 注入）
+   若不跟着这个值，就会差几十像素。
+   这里不再用「内容撑高」，三个元素全部锁定到同一个 .32rem。 */
+.gtop .gtop__net > .ping,
+.gtop .gtop__net > #mm-nodes,
+.gtop .gtop__net > #mm-nodes > .chip {
+  box-sizing: border-box !important;
+  height: .32rem !important;
+  min-height: .32rem !important;
+  max-height: .32rem !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  align-self: center !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  line-height: 1 !important;
+}
+/* ═══ 胶囊视觉对齐微调（2026-10-31）═══
+   .ping 里是「27 ms」（数字+拉丁字母），.chip 里是中文「汐斯塔 · 正常」。
+   两者盒子实测完全等高（top/bottom 逐位相同），但**中文的视觉重心比数字高** ——
+   字形方块顶到行盒顶部，而数字上下留白多，看起来就像节点胶囊「偏上」。
+   这里给中文那侧一点上行补偿，让两边的视觉中心落到同一条线上。 */
+.gtop .gtop__net > #mm-nodes > .chip #mm-nodes-text,
+.gtop .gtop__net > #mm-nodes > .chip > span {
+  transform: translateY(.5px);
+}
+.gtop .gtop__net > #mm-nodes > .chip > svg {
+  transform: translateY(.5px);
+}

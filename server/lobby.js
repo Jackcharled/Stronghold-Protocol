@@ -2579,6 +2579,19 @@ export class Lobby {
         diy: own ? own.diy : null,
         // 干员皮肤 (docs/SKINS.md): the appearances the human wears, keyed by operator charId (bots always default)
         skins: own ? own.skins : null,
+        // 本服：管理员标记必须一起传下去 —— PlayerState 用 seat.admin 得出 ps.admin，
+        // Match.applyTestCommand 靠它放行游戏内管理员工具。这里曾经漏掉，
+        // 结果管理员一开局 ps.admin 就是 false，每个 g.test 都回 TEST_FORBIDDEN。
+        //
+        // ★ 不能只信 seat.admin：房间从存档兜底恢复（fallbackRoom）时，历史上丢过这个字段，
+        //   坏值还会被写回存档，于是「房间明明是我建的、前端也显示已授权，开场后却没权限」。
+        //   这里以**当前会话**为准重新算一遍：session 还在（人连着）就用它的 admin；
+        //   人不在（AI 托管/掉线）才退回座位上的旧值。
+        admin: (() => {
+          const sess = this.registry?.byId ? this.registry.byId(s.playerId) : null;
+          if (sess) return sess.admin === true;
+          return s.admin === true;
+        })(),
       };
     });
     // lastPublic / results: the latest m.public broadcast and the m.result frames (encoded), kept for the replay.

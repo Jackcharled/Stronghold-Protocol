@@ -94,6 +94,9 @@ export const initialState = Object.freeze({
   // 本服：welcome.adminTools —— 只有 adminToken 验签通过（owner/admin 账号）服务端才下发 true。
   // 它决定左上角延迟胶囊能否点开管理员工具；前端无法自行置真，改这里也没用（服务端仍会拒绝 g.test）。
   adminTools: false,
+  // 本服：两道门各自的真实状态（服务端下发，前端不猜）
+  adminId: false,      // 身份门：是 owner/admin 账号
+  adminCode: false,    // 验码门：这次连接带着有效的验码令牌
   match: emptyMatch(),
   ticker: [],
   emotes: [],

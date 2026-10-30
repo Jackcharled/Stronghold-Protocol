@@ -29,7 +29,8 @@ function watchSecret() {
 // 短时管理员能力令牌：游戏节点用同一 watch-secret 验签，无需读取账号数据库。
 function adminTokenFor(u) {
   if (!u || (u.role !== 'owner' && u.role !== 'admin')) return null;
-  const payload = Buffer.from(JSON.stringify({ v: 1, uid: u.id, role: u.role, exp: Date.now() + 12 * 3600_000 })).toString('base64url');
+  // typ 区分令牌用途：只有 typ='admin' 的才算验码令牌，accountToken（typ='user'）不能冒充
+  const payload = Buffer.from(JSON.stringify({ v: 1, typ: 'admin', uid: u.id, role: u.role, exp: Date.now() + 12 * 3600_000 })).toString('base64url');
   const sig = crypto.createHmac('sha256', watchSecret()).update(payload).digest('base64url');
   return payload + '.' + sig;
 }
@@ -39,6 +40,8 @@ function userTokenFor(u) {
   if (!u || !u.id) return null;
   const payload = Buffer.from(JSON.stringify({
     v: 1,
+    // typ='user'：登录身份令牌，不是验码令牌。verifyAdminToken 会拒绝它。
+    typ: 'user',
     uid: u.id,
     role: u.role || 'player',
     tag: u.tag || null,
@@ -1135,10 +1138,46 @@ async function handle(req, res, pathname) {
     await db().query('DELETE FROM admin_settings WHERE k = ?', [key]);   // 一次性
     await audit({ id: a.id, email: a.email }, 'tool-code-redeem', a.id, a.role, ipOf(req));
     // adminToken 有效期 4 小时（adminTokenFor 写死 12 小时，这里单独签一个短期的）
-    const payload = Buffer.from(JSON.stringify({ v: 1, uid: a.id, role: a.role, exp: Date.now() + 4 * 3600_000 })).toString('base64url');
+    // iat：签发时间。配合「吊销时间点」实现退出授权 —— 早于吊销点的令牌一律作废。
+    const payload = Buffer.from(JSON.stringify({ v: 1, typ: 'admin', uid: a.id, role: a.role, iat: Date.now(), exp: Date.now() + 4 * 3600_000 })).toString('base64url');
     const sig = crypto.createHmac('sha256', watchSecret()).update(payload).digest('base64url');
     return sendJson(res, 200, { ok: true, adminToken: payload + '.' + sig, hours: 4, role: a.role });
   }
+  // 吊销验码令牌（游戏内「退出授权」按钮调用）。
+  // 令牌是无状态 HMAC，服务端无法单独作废某一枚，所以记一个「吊销时间点」：
+  // 早于这个时刻签发的 admin 令牌一律失效（节点侧 verifyAdminToken 会比对 iat）。
+  // 存在 admin_settings 表里，键固定为 tool_revoke_at，所有节点共用。
+  if (method === 'POST' && pathname === '/api/admintool/revoke') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'login_required' });
+    if (u.role !== 'owner' && u.role !== 'admin') return sendJson(res, 403, { ok: false, error: 'not_admin' });
+    const at = Date.now();
+    await db().query('INSERT INTO admin_settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)', ['tool_revoke_at', String(at)]);
+    // 同时写文件：节点只读 .secrets 下的文件，不查数据库（见 server/adminAuth.js）
+    try {
+      const fsp = require('node:fs');
+      const pth = require('node:path');
+      const root = process.env.SP_ROOT || pth.resolve(__dirname, '..');
+      fsp.writeFileSync(pth.join(root, '.secrets', 'admin-revoke-at'), String(at), 'utf8');
+    } catch (e) { console.error('[revoke] 写文件失败', e && e.message); }
+    await audit({ id: u.id, email: u.email }, 'tool-code-revoke', u.id, u.role, ipOf(req));
+    return sendJson(res, 200, { ok: true, revokedAt: at });
+  }
+  // 验证码状态查询：后台生成码之后轮询它，用掉就立刻显示「已使用」并禁用。
+  // 服务端在 exchange 里已经 DELETE 了记录，这里只读一次判断还在不在。
+  if (method === 'GET' && pathname === '/api/admin2/tool-code-status') {
+    const u = await currentUser(req);
+    if (!u) return sendJson(res, 401, { ok: false, error: 'login_required' });
+    if (u.role !== 'owner' && u.role !== 'admin') return sendJson(res, 403, { ok: false, error: 'not_admin' });
+    const key = 'tool_code:' + String(u.email || '').toLowerCase();
+    const [rows] = await db().query('SELECT v FROM admin_settings WHERE k = ?', [key]);
+    if (!rows[0]) return sendJson(res, 200, { ok: true, used: true, remaining: 0 });
+    let rec = null;
+    try { rec = JSON.parse(rows[0].v); } catch { rec = null; }
+    const left = rec ? Math.max(0, Number(rec.exp) - Date.now()) : 0;
+    return sendJson(res, 200, { ok: true, used: false, remaining: left, expired: left <= 0 });
+  }
+
   if (method === 'POST' && pathname === '/api/admin2/login') {
     const body = await readBody(req, 8 * 1024);
     const email = String(body.email || '').trim().toLowerCase();
@@ -1542,10 +1581,43 @@ async function handle(req, res, pathname) {
       if (!(n >= 1 && n <= 30)) return sendJson(res, 400, { ok: false, error: 'bad_node' });
       try {
         const { execFile } = require('node:child_process');
-        await new Promise((resolve, reject) => execFile('pm2', ['restart', 'node-' + n, '--update-env'], { windowsHide: true }, (e) => e ? reject(e) : resolve()));
+        const fsx = require('node:fs');
+        const pathMod = require('node:path');
+        // pm2 不在 PATH 里时 execFile('pm2') 会 ENOENT —— 而 matchmaker 的 PATH 是空的
+        // （由 pm2 启动的进程没有继承用户 PATH），所以这里显式定位 pm2：
+        //   1) 「当前 node + pm2 的 bin 脚本」，完全不依赖 PATH；
+        //   2) 退回 %APPDATA%\npm\pm2.cmd；
+        //   3) 都找不到就把真实原因记进日志，绝不伪装成「没权限」。
+        const npmDirs = [
+          process.env.APPDATA && pathMod.join(process.env.APPDATA, 'npm'),
+        ].filter(Boolean);
+        const pm2BinJs = npmDirs
+          .map((d) => pathMod.join(d, 'node_modules', 'pm2', 'bin', 'pm2'))
+          .find((f) => { try { return fsx.existsSync(f); } catch { return false; } });
+        const pm2Cmd = npmDirs
+          .map((d) => pathMod.join(d, 'pm2.cmd'))
+          .find((f) => { try { return fsx.existsSync(f); } catch { return false; } });
+        let cmd, args;
+        if (pm2BinJs) {
+          cmd = process.execPath;
+          args = [pm2BinJs, 'restart', 'node-' + n, '--update-env'];
+        } else if (pm2Cmd) {
+          cmd = pm2Cmd;
+          args = ['restart', 'node-' + n, '--update-env'];
+        } else {
+          console.error('[admin2] restart-node: 找不到 pm2，PATH=' + String(process.env.PATH || ''));
+          return sendJson(res, 500, { ok: false, error: 'pm2_not_found' });
+        }
+        await new Promise((resolve, reject) => {
+          execFile(cmd, args, { windowsHide: true, env: { ...process.env, PM2_HOME: process.env.PM2_HOME || pathMod.join(process.env.APPDATA || '', 'pm2') } },
+            (e, so, se) => (e ? reject(Object.assign(e, { stderrOut: String(se || ''), cmdUsed: cmd })) : resolve()));
+        });
         await audit({ id: me3.admin_id, email: me3.email }, 'restart-node', n, 'node-' + n, ipOf(req));
         return sendJson(res, 200, { ok: true, node: n });
-      } catch (e) { return sendJson(res, 500, { ok: false, error: 'restart_failed' }); }
+      } catch (e) {
+        console.error('[admin2] restart-node failed:', e && ((e.cmdUsed || '') + ' ' + e.message + ' ' + (e.stderrOut || '')));
+        return sendJson(res, 500, { ok: false, error: 'restart_failed', detail: String((e && (e.stderrOut || (e.cmdUsed || '') + ' ' + e.message)) || '').slice(0, 300) });
+      }
     }
   }
   // ---------------- 服务器设置代理（转发本机 3080）----------------

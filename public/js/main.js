@@ -224,6 +224,8 @@ function onWelcome(msg) {
     testMode: msg.testMode === true,
     // 本服：管理员工具入口开关（服务端 net.js 用 adminToken 验签后下发；普通玩家永远拿不到这个键）
     adminTools: msg.adminTools === true,
+    adminId: msg.adminId === true,
+    adminCode: msg.adminCode === true,
     // the official versions the server enables (protocol §2; absent: the switch is off — versions.js)
     versions: sanitizeVersions(msg.versions),
   });

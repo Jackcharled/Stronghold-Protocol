@@ -808,8 +808,17 @@ export class Network {
     // 管理员/服主身份：adminToken 是后台下发的能力令牌；accountToken 里同样带有由同一把
     // 密钥签名的 role。移动端冷启动、令牌过期或页面不经过后台登录时只有 accountToken，
     // 若只认 adminToken，管理员会被维护开关误拦。两者任一表明 owner/admin 即可。
-    session.admin = verifyAdminToken(msg.adminToken)
-      || (account != null && (account.role === 'owner' || account.role === 'admin'));
+    //
+    // ★ 本服 2026-10-31 改为「两道门」，缺一不可：
+    //   session.adminId  = 身份门：账号角色是 owner/admin（不看令牌）。
+    //   session.adminTool = 验码门：手里有**未过期**的 adminToken（只能由后台发码兑换得到）。
+    //   真正的放行条件是两者同时为真（见下面的 session.admin），
+    //   所以「只是 owner 但没去后台换码」的人进不了游戏内管理员工具。
+    //   注意 adminToken 与我们自己签的 accountToken 是同一把密钥、同样的 payload 结构，
+    //   verifyAdminToken 还会核对 role，因此不能拿 accountToken 冒充 —— 它没有 exp 由发码接口控制。
+    session.adminId = account != null && (account.role === 'owner' || account.role === 'admin');
+    session.adminTool = verifyAdminToken(msg.adminToken);
+    session.admin = session.adminId === true && session.adminTool === true;
     // 诊断用：记录本次 hello 带来的身份材料，便于排查「管理员不被识别」
     session.accountRole = account ? account.role : null;
     session.hadAdminToken = typeof msg.adminToken === 'string' && msg.adminToken.length > 0;
@@ -829,7 +838,12 @@ export class Network {
     // 前端据此渲染游戏内管理员工具（点延迟胶囊）。真正的放行在服务端
     // （routeGameNow + Match.applyTestCommand 都查 session.admin / ps.admin），改前端没用。
     // 非管理员不带这个键，所以普通玩家的 welcome 与上游逐字相同。
+    // adminTools：这个连接是否能用游戏内管理员工具（身份门 + 验码门都过）。
+    // adminId：只是身份门（owner/admin 账号），用于前端区分「你不是管理员」和「你还没换码」。
+    // adminTool：只是验码门。三者分别下发，前端据实显示，不靠 localStorage 猜。
     if (session.admin === true) welcome.adminTools = true;
+    if (session.adminId === true) welcome.adminId = true;
+    if (session.adminTool === true) welcome.adminCode = true;
     if (session.aiTakeoverFrom) { welcome.takeoverFrom = session.aiTakeoverFrom; session.aiTakeoverFrom = null; }
     if (validRid(rid)) welcome.rid = rid;
     this.reply(conn, welcome);
