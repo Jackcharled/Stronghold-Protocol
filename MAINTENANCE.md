@@ -3230,6 +3230,17 @@ git rev-list --left-right --count origin/custom/production...HEAD   # 再确认�
    用 `http.extraHeader="Authorization: Bearer ..."` 反而会走到凭据提示，
    报 `could not read Username`。
 
+> ⚠ **千万别加 `-c http.postBuffer=...`**（2026-10-31 又踩一次）。
+> 同一个时刻，`ls-remote` 2.2 秒就通、说明网络是好的，但带 `postBuffer=524288000`
+> 的 `push` 依然 `Failed to connect after 21020 ms`；去掉这个参数、只留
+> `-c http.version=HTTP/1.1 -c credential.helper=` 后**立刻推成功**。
+> 那个参数本来是给「大提交卡住」准备的，在这条链路上反而让连接建不起来。
+> 最小可用的推送命令行就是：
+>
+> ```powershell
+> git -c http.version=HTTP/1.1 -c credential.helper= push $url HEAD:custom/production
+> ```
+
 > 判断「连不连得上」不要用 `Test-NetConnection`：它只测 TCP 握手，
 > 那天它对 `ghfast.top:443` 报 `True`，但 TLS/HTTP 层根本走不通。
 > 真判据是 `git ls-remote <url> HEAD` 能不能在几秒内返回。
