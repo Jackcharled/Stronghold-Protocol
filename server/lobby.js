@@ -276,12 +276,17 @@ export const LOBBY_DEFAULTS = Object.freeze({
   maxRoomsPerAddr: 16,    // rooms created from one client network that may exist at once (0 = unlimited)
   maxMatchesPerAddr: 8,   // matches started from one client network that may run at once (0 = unlimited)
   maxBotsPerAddr: 0,      // 同一 IP 跨房间累计的 AI 队友上限（0 = 不限）
-  // ★ 2026-10-31 维护者要求开启：挂机 4 分钟移出房间。
-  //   原来默认 0（关闭），只有对局中的两条消极游戏规则在跑，而且那边还漏接了回调。
-  //   4 分钟 ≈ 两回合，足够覆盖「去接杯水」，又不至于让整屋子人等一个人。
-  //   判定对象是「房间里坐着、没点准备、真实连接着、且 4 分钟没有任何消息」的真人；
-  //   已点准备的、AI、断线的都不算（断线有单独的 15 分钟重连窗口）。
-  idleKickMs: 4 * 60_000,
+  // ★★ 2026-10-31 维护者最终决定：**关闭按时间判定的挂机踢人**（默认 0）。
+  //
+  //   历史：今天先是开了 4 分钟（维护者要求「挂机 4 分钟也踢」），
+  //   后来又要求「在房间中不应该出现挂机踢人」，最终明确定为：
+  //   **只要「操作挂机检测」，不要「时间挂机检测」。**
+  //
+  //   现在唯一生效的消极判定是 server/match/match/intents.js 的 `_trackActivity`：
+  //   对局中连续 2 回合「只花钱不部署」或「什么都不做」→ 踢出，且要求 ≥2 个真人。
+  //
+  //   设为正数可以恢复「坐在房间里 N 分钟不动就踢」（同时要恢复构造函数里的 idleTimer）。
+  idleKickMs: 0,
   resyncMinGapMs: 1000,   // heavy resyncs (match state / result replay) per session at most this often on repeated hellos
   soloReconnectWindowMs: null, // a dropped solo run stays resumable this long (null = data singleReconnectTime, 24 h)
   versionVoteMs: 60_000,  // an open version vote is cancelled after this long (header "Official versions") [ASSUMED]
@@ -743,14 +748,25 @@ export class Lobby {
     this.graceTimers = new Map();
     /** @type {Map<string, NodeJS.Timeout>} deferred (coalesced) resyncs by playerId */
     this.resyncTimers = new Map();
-    /** 挂机检测定时器（idleKickMs > 0 时启用） */
+    /** 挂机检测定时器（**已停用**，见下面说明） */
     this.idleTimer = null;
-    if (this.opts.idleKickMs > 0) {
-      this.idleTimer = setInterval(() => {
-        try { this.sweepIdle(); } catch (e) { this.log.warn('[lobby] idle sweep failed', e); }
-      }, 20_000);
-      this.idleTimer.unref?.();
-    }
+    // ★★ 2026-10-31（维护者要求：**去掉按时间判定的挂机踢人，只保留「操作挂机检测」**）
+    //
+    //   停用的是「按时间」那条：在房间里坐着超过 idleKickMs 没有任何消息 → 踢出。
+    //   它会在房主等人、去趟厕所、切出去看攻略的时候把人踢掉 ——
+    //   而等待阶段没有任何人因此受损（没有对手、没有计时）。
+    //
+    //   **保留**的「操作挂机检测」在 server/match/match/intents.js 的 `_trackActivity`：
+    //   对局中连续 2 回合「只花钱不部署」或「什么都不做」才判定，且要求 ≥2 个真人。
+    //   那条走 `MatchIntents.onIdleKick` → `lobby.kickIdle(...)`，与这里无关，不受影响。
+    //
+    //   要恢复：把下面这段取消注释，并把 idleKickMs 设成正数。
+    // if (this.opts.idleKickMs > 0) {
+    //   this.idleTimer = setInterval(() => {
+    //     try { this.sweepIdle(); } catch (e) { this.log.warn('[lobby] idle sweep failed', e); }
+    //   }, 20_000);
+    //   this.idleTimer.unref?.();
+    // }
     /** 15 分钟房间扫描定时器 */
     this.roomTimer = setInterval(() => {
       try { this.sweepOldRooms(); } catch (e) { this.log.warn('[lobby] room sweep failed', e); }
@@ -1231,19 +1247,39 @@ export class Lobby {
   }
 
   // ---------------------------------------------------------------------------------------------------
-  // 挂机踢人
+  // 挂机踢人（**已停用按时间那条**，见 LOBBY_DEFAULTS.idleKickMs 的注释）
   // ---------------------------------------------------------------------------------------------------
 
-  /** 每 20 秒扫一次：房间里坐着但长时间没有任何消息的真人，移出房间（房主走了会自动移交）。 */
+  /**
+   * 【已停用】按时间判定的挂机踢人。
+   *
+   * ★★ 2026-10-31 维护者最终决定：**只要「操作挂机检测」，不要「时间挂机检测」。**
+   *   这个方法如果被调用，现在直接返回 —— 不会踢任何人。
+   *
+   *   为什么停用：它会按「多久没发消息」踢人，而房间等待阶段挂机是正常行为
+   *   （等朋友、去趟厕所、切出去看攻略），没有任何人因此受损。
+   *   维护者实测被踢过一次之后明确要求取消。
+   *
+   *   **仍然生效的消极判定**在 `server/match/match/intents.js` 的 `_trackActivity`：
+   *   对局中连续 2 回合「只花钱不部署」或「什么都不做」→ 踢出，
+   *   且要求 ≥2 个真人（单人局不判定）。它走 `MatchIntents.onIdleKick`
+   *   → `lobby.kickIdle(...)`，是完全独立的一条路径，不受这里影响。
+   *
+   *   要恢复：把 idleKickMs 设成正数、恢复构造函数里的 idleTimer，并去掉下面的 return。
+   * @returns {void}
+   */
   sweepIdle() {
+    return;   // ← 已停用（见上）
+    /* 原来的实现保留在下面，供将来恢复时参考：
     const idleMs = this.opts.idleKickMs;
     if (!idleMs || idleMs <= 0) return;
     const now = this.now();
     for (const room of [...this.rooms.values()]) {
       if (room.disposed) continue;
+      if (!room.match) continue;
       for (const seat of room.seats) {
         if (!seat || seat.isBot || seat.left) continue;
-        if (seat.ready) continue; // 已准备就绪：不算挂机
+        if (seat.ready) continue;
         const session = this.registry.byId(seat.playerId);
         if (!session || !session.connected) continue;
         const last = session.lastActiveAt || now;
@@ -1251,6 +1287,7 @@ export class Lobby {
         this.kickIdle(room, seat.playerId, session);
       }
     }
+    */
   }
 
   /**
