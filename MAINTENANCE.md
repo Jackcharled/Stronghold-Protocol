@@ -1821,6 +1821,25 @@ if (ps.playerId !== this.hostId) return fail(ERR.NOT_HOST);   // ← 上游 host
 
 **生效方式**：`server/` 改动 → **必须重启节点**（刷新页面不够）。
 
+##### 9.34c-3 其他玩家看不到任何「管理员在用工具」的痕迹（2026-10-31）
+
+维护者要求：管理员用工具时，**其他玩家那边不能有任何提示**，只有管理员自己看得到。
+
+三层保证，都已有测试守着（`test/test-mode.test.js`）：
+
+| 层面 | 为什么看不见 |
+|---|---|
+| **审计日志** `testLog` / `testActions` / `test` / `testTimers` | 只由 `views.js` 在 `this.test === true`（**测试房间**）时写进 `m.public`。管理员工具跑的是**普通房间**（`test=false`），这整块根本不会输出 |
+| **推送消息** | `testCommands.js` 里**一次都没有** `broadcast` / `tickerText` / `sendTo` —— 管理员执行命令不产生任何聊天栏、飘字、提示 |
+| **客户端界面** | `ui/testConsole.js`（测试控制台）、`screens/result.js`、`screens/settle.js`、`ui/hud.js`、`ui/matchChrome.js` 里所有「测试对局」标记，都要求 `pub.test === true`，普通房间不成立 |
+
+> ⚠ **公开游戏数据是例外，但那不是「提示」**：
+> `m.public` 里本来就有 `lp` / `shopLevel` / `boardCount` / `bonds` / `skins`，
+> 管理员改等级、加棋子、改 LP 之后，队友的界面上**能看到数字变了**。
+> 这些是上游设计里对队友公开的对局信息，隐藏它们反而会让队友看到不一致的状态。
+> 管理员改的是**自己那一队**（`_applyTest` 全走 `ps.*`），房主和队友的**私有**数据
+> （资金 `funds`、手牌）不受影响 —— 有测试断言这一点。
+
 ---
 
 ### 9.34d 防消极游戏（2026-10-31）

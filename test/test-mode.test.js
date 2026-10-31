@@ -352,6 +352,57 @@ test('an admin still needs the match to be controllable: a normal match without 
   }
 });
 
+test('an admin\'s use of the tools leaks nothing to the other players (2026-10-31: 只有管理员能看到)', (t) => {
+  // 维护者要求：管理员用工具时，**其他玩家那里不能有任何提示**，只有管理员自己看得到。
+  //
+  // 这里守两件事：
+  //   ① 普通房间里（test=false，管理员工具跑的就是这种房间）m.public 绝不能出现
+  //      test / testActions / testLog / testTimers —— 它们是广播给所有人的。
+  //   ② 命令改的是执行者自己那一队，房主和队友的**私人**数据（资金、手牌）不受影响。
+  //      公开数据（等级、棋子数、LP、盟约）按上游本来就是对队友可见的，那是游戏信息，不是「提示」。
+  const h = fixture(t, { mode: 'coop', humans: 2, test: false });
+  const guest = h.ps('p_1');
+  guest.admin = true;
+
+  const view = () => JSON.parse(JSON.stringify(h.m.publicView()));
+  const hostFunds = () => h.ps('p_0').funds;
+  const hostHand = () => h.ps('p_0').hand.filter(Boolean).length;
+  const hostFunds0 = hostFunds(), hostHand0 = hostHand();
+
+  // 执行几条最「显眼」的命令
+  ok(h.cmd('funds', { amount: 5000 }, 'p_1'));
+  ok(h.cmd('chess', { id: 'chess_char_3_19_a' }, 'p_1'));
+  ok(h.cmd('lp', { value: 3 }, 'p_1'));
+
+  const v = view();
+  // ① 广播出去的那份 m.public 里没有任何 test 痕迹
+  for (const k of ['test', 'testActions', 'testLog', 'testTimers']) {
+    assert.equal(v[k], undefined, `普通房间的 m.public 不能带 ${k}`);
+  }
+  assert.doesNotMatch(JSON.stringify(v), /"test(Actions|Log|Timers)?"/, 'm.public 序列化后也不该出现这些键');
+  // ② 房主的私有数据没被动过
+  assert.equal(hostFunds(), hostFunds0, '房主的资金不受影响');
+  assert.equal(hostHand(), hostHand0, '房主的手牌不受影响');
+  // 命令确实生效在 guest 自己身上
+  assert.equal(guest.funds, 5000);
+  assert.equal(guest.lp, 3);
+});
+
+test('even in a TEST room the audit log stays out of other players\' view unless the match is a test match', (t) => {
+  // 测试模式房间（test=true）里 testLog 是设计上就公开的（upstream DESIGN §34.8，房主调试用）。
+  // 这里固定住边界：**普通房间不公开**，测试房间才公开 —— 管理员工具走的是前者。
+  const normal = fixture(t, { test: false });
+  normal.ps('p_0').admin = true;
+  ok(normal.cmd('funds', { amount: 10 }));
+  assert.equal(normal.m.publicView().testLog, undefined);
+  assert.equal(normal.m.publicView().testActions, undefined);
+
+  const testRoom = fixture(t);
+  ok(testRoom.cmd('funds', { amount: 10 }));
+  assert.equal(testRoom.m.publicView().test, true);
+  assert.ok(Array.isArray(testRoom.m.publicView().testLog), '测试房间才带 audit log');
+});
+
 test('funds, chess, item and token grants use the host seat and actual acquisition primitives', (t) => {
   const h = fixture(t);
   ok(h.cmd('funds', { amount: 99999 })); assert.equal(h.p.funds, 99999);
