@@ -1982,6 +1982,23 @@ curl http://127.0.0.1:3090/__admin-ui/room-tags.css
 > **单人（不足 2 个真人）不判定**；
 > **~~挂机 4 分钟也踢~~ → 已取消（2026-10-31 晚）：只要「操作挂机检测」，不要「时间挂机检测」。**
 
+#### ★ 先说最重要的一课：这套机制原本就有，但**从来没生效过**
+
+`MatchIntents._trackActivity()` 里早就写了两条规则，`server/lobby.js` 也写了 `kickIdle()`。
+但创建 Match 时**没传 `onIdleKick` 回调**，于是：
+
+```js
+this.onIdleKick?.(ps.playerId, 'idle');   // 可选链吞掉，永远不执行
+```
+
+结果：**只弹一个 toast，人照样留在局里**。而且这个 bug 静默了不知道多久 ——
+没有报错、没有日志，界面还"正常提示"了，只有去读 `ps.admin` / 查代码才发现。
+
+> **教训：写「回调式」扩展点时，一定要检查调用方是否真的接线。**
+> `?.` 会把漏接线变成静默失败。
+> `patcher/new/server/lobby.js:1480` 里本来有这行接线，升级时漏合并到了
+> `server/lobby.js` —— 这也是「补丁完整性」检查之外，需要人工复检的一类漂移。
+
 #### ★★ 时间挂机检测已停用（2026-10-31 最终决定）
 
 维护者原话：**「你把时间挂机检测取消吧，我只要操作挂机检测的。」**
@@ -2033,46 +2050,6 @@ curl http://127.0.0.1:3090/__admin-ui/room-tags.css
 正确写法：自己用 `registry.create(name)` 造真实 session，并加一条前提自检
 `assert.equal(reg.byId(guest.playerId), guest)`。
 
-#### ★ 先说最重要的一课：这套机制原本就有，但**从来没生效过**
-
-`MatchIntents._trackActivity()` 里早就写了两条规则，`server/lobby.js` 也写了 `kickIdle()`。
-但创建 Match 时**没传 `onIdleKick` 回调**，于是：
-
-```js
-this.onIdleKick?.(ps.playerId, 'idle');   // 可选链吞掉，永远不执行
-```
-
-结果：**只弹一个 toast，人照样留在局里**。而且这个 bug 静默了不知道多久 ——
-没有报错、没有日志，界面还"正常提示"了，只有去读 `ps.admin` / 查代码才发现。
-
-> **教训：写「回调式」扩展点时，一定要检查调用方是否真的接线。**
-> `?.` 会把漏接线变成静默失败。
-> `patcher/new/server/lobby.js:1480` 里本来有这行接线，升级时漏合并到了
-> `server/lobby.js` —— 这也是「补丁完整性」检查之外，需要人工复检的一类漂移。
-
-#### 现在的完整规则
-
-**对局中**（`_trackActivity`，只在第 1–4 回合判定）：
-
-| 规则 | 条件 | 动作 |
-|---|---|---|
-| 一 | 连续 2 回合**花钱**（买/刷新/升级）却**一次没部署** | 踢出 |
-| 二 | 连续 2 回合**既不购买也不部署** | 踢出 |
-
-不判定的情况（**全都必须满足才判**）：
-
-- **真人数量 < 2** —— 单人局（一真人 + 任意 AI 都算单人）
-- 第 4 回合之后（中后期踢人会让整局失衡）
-- AI 座位
-- 已经被踢过的（`ps._idleKicked` 标记）
-
-**房间里**（`sweepIdle` + `idleKickMs`，**已停用，默认 0**）：
-
-- 见上面「时间挂机检测已停用」一节。坐着多久都不会因为「时间」被踢。
-- 历史行为（恢复后才有）：坐着、**没点准备**、连接着、超过阈值没有任何消息 → 移出；
-  已点准备的 / AI / 断线的**不算**（断线另有 15 分钟重连窗口）；
-  `session.lastActiveAt` 在 `onMessage()` 开头刷新，所以**任何操作都算活跃**。
-
 #### 两个容易写错的细节
 
 1. **不能用 `this.loneHuman` 判单人。** 它是**建局时**的一次性快照。
@@ -2093,7 +2070,7 @@ this.onIdleKick?.(ps.playerId, 'idle');   // 可选链吞掉，永远不执行
 | 文件 | 职责 |
 |---|---|
 | `server/match/match/intents.js` | `_trackActivity`（两条规则）、`_humanCount()`、`ps._idleKicked` |
-| `server/lobby.js` | `kickIdle()`、`sweepIdle()`、`idleKickMs`、`onIdleKick` 接线、`room.idleKicked` 与 `join()` 的拦截 |
+| `server/lobby.js` | `kickIdle()`、`sweepIdle()`（**已停用**）、`idleKickMs`（**0**）、`onIdleKick` 接线、`room.idleKicked` 与 `join()` 的拦截 |
 | `shared/constants.js` | `ERR.IDLE_KICKED` + 文案 |
 | `server/match/Match.js` | `_testRate` / `testLog` / `testTimers` 的初始化（原来只在建局有管理员座位时建，对局中兑换授权码会崩，已在 `applyTestCommand` 里按需补齐） |
 
@@ -2102,7 +2079,9 @@ this.onIdleKick?.(ps.playerId, 'idle');   // 可选链吞掉，永远不执行
 ```powershell
 cd repo-sync
 node --test test/match/idle-guard.test.js       # 10 项：两条规则/单人豁免/退到1人/不重复踢/AI
-node --test test/match/idle-no-rejoin.test.js   # 5 项：按账号拦/换 playerId 拦不住/别人不受影响/换房能进
+node --test test/match/idle-no-rejoin.test.js   # 9 项：按账号拦/换 playerId 拦不住/别人不受影响/换房能进
+                                                #       + 时间挂机已停用（2 项）/ idleKickMs=0
+                                                #       + 操作挂机检测仍在（2 项）
 ```
 
 > ⚠ 测试环境 `data/create-room.json` 是 `{"enabled":false}`（建房维护开关），
