@@ -21,6 +21,8 @@
 
 const COOKIE = 'sp_sticky';
 const MAX_AGE = 7 * 24 * 3600; // 秒。比一次对局长得多，但远短于 sp_route 的 30 天。
+/** 对局中多久续期一次（毫秒）。 */
+const REFRESH_MS = 30_000;
 
 /** 当前页面落在这台节点上。
  *
@@ -62,15 +64,29 @@ function clearSticky() {
 /**
  * 订阅 store，按「是否在打对局」维护 sp_sticky。
  *
+ * 除了状态变化，**对局中每 30 秒还会续期一次**：万一玩家长时间挂机、
+ * 或者浏览器把 cookie 当「会话 cookie」清掉了，这个 cookie 会在刷新前悄悄消失，
+ * 而那一下就足以让人被 nginx 改派走、掉出对局（实测确认：sp_sticky 丢失 =
+ * 刷新即掉线，除非 URL 带 ?room=）。续期的代价只是每分钟一次 document.cookie 写入。
+ *
  * @param {{ subscribe: (fn: Function) => Function, get: () => any }} store
  * @param {{ selectRoute: (s: any) => string }} router
+ * @param {{ setInterval?: Function, clearInterval?: Function, refreshMs?: number }} [timers]
  * @returns {() => void} 取消订阅
  */
-export function startStickyNode(store, router) {
+export function startStickyNode(store, router, timers = {}) {
+  const setI = timers.setInterval || ((fn, ms) => globalThis.setInterval(fn, ms));
+  const clearI = timers.clearInterval || ((h) => globalThis.clearInterval(h));
+  const refreshMs = Number.isFinite(timers.refreshMs) && timers.refreshMs > 0 ? timers.refreshMs : REFRESH_MS;
   let lastInMatch = null;
+  let timer = null;
+
+  const stopTimer = () => {
+    if (timer != null) { clearI(timer); timer = null; }
+  };
 
   const sync = (s) => {
-    let inMatch = false;
+    let inMatch;
     try { inMatch = router.selectRoute(s) === 'game'; } catch { inMatch = false; }
     if (inMatch === lastInMatch) return;
     lastInMatch = inMatch;
@@ -78,14 +94,24 @@ export function startStickyNode(store, router) {
       const node = currentNode();
       // 拿不到节点号就别写 —— 写一个错的进去比不写更糟（会把人钉在错误的节点上）。
       if (node) writeSticky(node);
+      // 对局期间定期续期，避免 cookie 在刷新前过期/被清掉。
+      stopTimer();
+      if (typeof setI === 'function') {
+        timer = setI(() => {
+          const n = currentNode();
+          if (n) writeSticky(n);
+        }, refreshMs);
+      }
     } else {
+      stopTimer();
       clearSticky();
     }
   };
 
   // 先按当前状态对齐一次：页面刚打开时如果不在对局，清掉上次的残留。
   sync(store.get());
-  return store.subscribe(sync);
+  const unsubscribe = store.subscribe(sync);
+  return () => { stopTimer(); unsubscribe(); };
 }
 
 /** 仅供测试：把 cookie 的读写拆出来，避免测试真的去动 document.cookie。 */

@@ -46,6 +46,23 @@ function withDocument(cookie, fn) {
   try { return fn(); } finally { if (prev === undefined) delete g.document; else g.document = prev; }
 }
 
+/**
+ * Fake timers, so a test never arms a real setInterval (which would keep the
+ * node:test process alive forever). `tick()` fires the refresh callback by hand.
+ */
+function fakeTimers() {
+  const t = { fn: null, armed: 0, cleared: 0 };
+  return {
+    timers: {
+      setInterval: (fn) => { t.fn = fn; t.armed += 1; return t.armed; },
+      clearInterval: () => { t.fn = null; t.cleared += 1; },
+      refreshMs: 1000,
+    },
+    tick: () => { if (t.fn) t.fn(); },
+    get armed() { return t.fn !== null; },
+    state: t,
+  };
+}
 /** A router whose route the test drives directly. */
 const routerOf = () => {
   let route = 'title';
@@ -57,7 +74,7 @@ test('entering a match writes sp_sticky with the node from the sp_node cookie', 
   withDocument(cookie, () => {
     const store = fakeStore({});
     const router = routerOf();
-    startStickyNode(store, router);
+    startStickyNode(store, router, fakeTimers().timers);
     assert.equal(cookie.jar.sp_sticky, undefined, 'title screen: nothing written');
     router.set('game');
     store.set({});
@@ -70,7 +87,7 @@ test('leaving the match clears sp_sticky immediately', () => {
   withDocument(cookie, () => {
     const store = fakeStore({});
     const router = routerOf();
-    startStickyNode(store, router);
+    startStickyNode(store, router, fakeTimers().timers);
     router.set('game');
     store.set({});
     assert.equal(cookie.jar.sp_sticky, '6');
@@ -87,7 +104,7 @@ test('a stale sp_sticky from the previous session is cleared on load', () => {
   withDocument(cookie, () => {
     const store = fakeStore({});
     const router = routerOf();
-    startStickyNode(store, router);
+    startStickyNode(store, router, fakeTimers().timers);
     assert.equal(cookie.jar.sp_sticky, undefined);
   });
 });
@@ -97,7 +114,7 @@ test('no sp_node cookie (nginx never answered) → no write, rather than a wrong
   withDocument(cookie, () => {
     const store = fakeStore({});
     const router = routerOf();
-    startStickyNode(store, router);
+    startStickyNode(store, router, fakeTimers().timers);
     router.set('game');
     store.set({});
     assert.equal(cookie.jar.sp_sticky, undefined, 'guessing a node is worse than not pinning');
@@ -110,7 +127,7 @@ test('an out-of-range sp_node is rejected', () => {
     withDocument(cookie, () => {
       const store = fakeStore({});
       const router = routerOf();
-      startStickyNode(store, router);
+      startStickyNode(store, router, fakeTimers().timers);
       router.set('game');
       store.set({});
       assert.equal(cookie.jar.sp_sticky, undefined, `sp_node=${bad} must not be pinned`);
@@ -130,7 +147,7 @@ test('repeated store notifications inside one match do not rewrite the cookie', 
   try {
     const store = fakeStore({});
     const router = routerOf();
-    startStickyNode(store, router);
+    startStickyNode(store, router, fakeTimers().timers);
     router.set('game');
     store.set({});
     const afterFirst = writes;
@@ -148,15 +165,68 @@ test('the returned disposer unsubscribes', () => {
   withDocument(cookie, () => {
     const store = fakeStore({});
     const router = routerOf();
-    const stop = startStickyNode(store, router);
+    const stop = startStickyNode(store, router, fakeTimers().timers);
     assert.equal(store.size(), 1);
     stop();
     assert.equal(store.size(), 0);
   });
 });
 
-test('cookie attribute sanity: 7 days, Path=/, SameSite=Lax', () => {
-  const cookie = fakeCookie({ sp_node: '4' });
+test('in a match the cookie is refreshed periodically (survives a long match)', () => {
+  const jar = { sp_node: '8' };
+  let writes = 0;
+  const g = globalThis;
+  const prev = g.document;
+  g.document = {
+    get cookie() { return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; '); },
+    set cookie(v) { writes += 1; },
+  };
+  // A fake interval we drive by hand.
+  let tick = null;
+  const setI = (fn) => { tick = fn; return 1; };
+  const clearI = () => { tick = null; };
+  try {
+    const store = fakeStore({});
+    const router = routerOf();
+    startStickyNode(store, router, { setInterval: setI, clearInterval: clearI, refreshMs: 1000 });
+    router.set('game');
+    store.set({});
+    const afterEnter = writes;
+    assert.ok(tick, 'a refresh timer must be armed in a match');
+    tick(); tick();
+    assert.equal(writes, afterEnter + 2, 'each tick rewrites the cookie');
+    // Leaving the match must stop the timer, so no writes happen afterwards.
+    router.set('lobby');
+    store.set({});
+    assert.equal(tick, null, 'the timer must be cleared when the match ends');
+    const afterLeave = writes;
+    assert.equal(writes, afterLeave);
+  } finally {
+    if (prev === undefined) delete g.document; else g.document = prev;
+  }
+});
+
+test('the disposer also clears the refresh timer', () => {
+  const jar = { sp_node: '9' };
+  const g = globalThis;
+  const prev = g.document;
+  g.document = { get cookie() { return `sp_node=${jar.sp_node}`; }, set cookie(_v) { /* ignore */ } };
+  let tick = null;
+  try {
+    const store = fakeStore({});
+    const router = routerOf();
+    const stop = startStickyNode(store, router, { setInterval: (fn) => { tick = fn; return 1; }, clearInterval: () => { tick = null; } });
+    router.set('game');
+    store.set({});
+    assert.ok(tick);
+    stop();
+    assert.equal(tick, null, 'disposing must stop the timer too');
+    assert.equal(store.size(), 0);
+  } finally {
+    if (prev === undefined) delete g.document; else g.document = prev;
+  }
+});
+test('cookie attribute sanity: 7 days, Path=/, SameSite=Lax', () => {  const cookie = fakeCookie({ sp_node: '4' });
   let raw = '';
   const g = globalThis;
   const prev = g.document;
@@ -164,7 +234,7 @@ test('cookie attribute sanity: 7 days, Path=/, SameSite=Lax', () => {
   try {
     const store = fakeStore({});
     const router = routerOf();
-    startStickyNode(store, router);
+    startStickyNode(store, router, fakeTimers().timers);
     router.set('game');
     store.set({});
   } finally {
