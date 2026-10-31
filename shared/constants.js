@@ -153,6 +153,9 @@ export const ERR = Object.freeze({
   IDENTITY_PENDING: 'IDENTITY_PENDING',
   SERVER_FULL: 'SERVER_FULL',     // the online cap (SP_MAX_ONLINE) has no seat for a new player
   ROOM_STARTED: 'ROOM_STARTED',
+  // 2026-10-31 防消极游戏：这个账号在本房间被判定挂机/消极被移出，本局不许自己加回来。
+  // 由房主或管理员重新邀请才放行（room.join 会认 seat 上的踢出记录）。
+  IDLE_KICKED: 'IDLE_KICKED',
   // a fixed alliance key (--room-code): one room at a time can hold it
   ROOM_CODE_TAKEN: 'ROOM_CODE_TAKEN',
   NOT_HOST: 'NOT_HOST',
@@ -214,6 +217,7 @@ export const ERR_TEXT = {
   SESSION_IN_USE: N_('此对局仍在其他窗口中，或当前浏览器无法安全恢复。请关闭原窗口后重试。'),
   BAD_MSG: N_('无效的请求'), RATE: N_('操作过于频繁'), NOT_IN_ROOM: N_('你不在房间中'), ROOM_NOT_FOUND: N_('未找到该同盟密钥对应的房间'),
   ROOM_FULL: N_('房间已满'), SERVER_FULL: N_('服务器已满'), ROOM_STARTED: N_('模拟已开始'), NOT_HOST: N_('只有房主可以操作'), NOT_READY: N_('仍有玩家未就绪'),
+  IDLE_KICKED: N_('你因消极游戏被移出本局，本局不能自己加回来'),
   ROOM_CODE_TAKEN: N_('固定同盟密钥已被另一个房间占用，请先关闭那个房间'),
   WRONG_PHASE: N_('当前阶段无法进行该操作'), NO_FUNDS: N_('资金不足'), HAND_FULL: N_('整备区已满'), BOARD_FULL: N_('已达到部署上限'),
   BAD_TILE: N_('无法部署在该位置'), BAD_TARGET: N_('无效的目标'), SOLD_OUT: N_('已售出'), MAX_LEVEL: N_('调度中心已达最高等级'),

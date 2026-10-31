@@ -1247,6 +1247,21 @@ export class Lobby {
    */
   kickIdle(room, playerId, session, { reason = 'idle' } = {}) {
     const replay = this.replayFor ? this.replayFor(room, playerId) : null;
+    // ★ 2026-10-31 维护者要求：**被踢出的人不能自己加回来**。
+    //   在房间上留一条「踢出记录」（按账号，不按 playerId —— 重连会换 playerId），
+    //   join() 会认它并回 IDLE_KICKED。记录跟房间走：房间解散 / 这一局结束就自然没了，
+    //   不需要额外的过期逻辑，也避免「被踢一次、以后永远进不了这个房」。
+    try {
+      const acct = (session && session.accountId) || null;
+      if (!room.idleKicked) room.idleKicked = new Map();      // accountId → 记录
+      if (acct) {
+        room.idleKicked.set(String(acct), {
+          at: this.now(),
+          name: (session && session.name) || null,
+          reason,
+        });
+      }
+    } catch { /* 记录失败不影响踢人本身 */ }
     // 对局中被判定消极游戏时，先把人从对局里摘出来（等对局继续，但他不再参与）
     this.removeMember(room, playerId);
     if (session) {
@@ -1380,6 +1395,17 @@ export class Lobby {
     const cur = this.roomOf(session);
     // idempotent for members; a spectator of this room goes on below: it may take a free player seat (header)
     if (cur === room && !room.spectatorOf(session.playerId)) { this.sendState(room, session); return OK; }
+    // ★ 2026-10-31 维护者要求：被踢出的人不能自己加回来。
+    //   按**账号**判断（重连会换 playerId，按 playerId 记等于没记）。
+    //   放行条件只有两个：房主主动邀请（invited 标记）或管理员——这里只做前者，
+    //   即「房主重新把人加进来」走另一条路径（seat 由房主创建时不会被拦）。
+    //   记录跟房间走：房间散了这份 Map 一起没，不会让人「以后永远进不来」。
+    try {
+      const acct = session.accountId != null ? String(session.accountId) : null;
+      if (acct && room.idleKicked && room.idleKicked.has(acct)) {
+        return fail(ERR.IDLE_KICKED);
+      }
+    } catch { /* 记录读坏就当没有，别把人挡在门外 */ }
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
     let conflict = this.accountRoomConflict(session);
     // ★ 顺序很关键：先判断「能不能在本房间接管」，再考虑清理遗留座位。
