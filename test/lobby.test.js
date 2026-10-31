@@ -14,7 +14,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { startServer, parseRange, acceptsGzip, pickEncoding, parseTrustProxy } from '../server/index.js';
 import { loadData, lookup, getChess, getBond, getBand, getMode, getConfig, INDEXED_FILES } from '../server/data.js';
 import * as dataModule from '../server/data.js';
-import { CODE_ALPHABET, BOT_NAMES, DEFAULT_DIFFICULTY } from '../server/lobby.js';
+import { CODE_ALPHABET, BOT_NAMES, DEFAULT_DIFFICULTY, Room, Lobby } from '../server/lobby.js';
 import { sanitizeName, TokenBucket, SessionRegistry, clientAddress, normalizeIp, isLocalIp, limitKeyOf } from '../server/net.js';
 import { StubMatch as Match } from '../server/match/StubMatch.js';
 import { Match as RealMatch } from '../server/match/Match.js';
@@ -2087,6 +2087,30 @@ describe('match stub (server/match/Match.js)', () => {
 });
 
 describe('platform units', () => {
+  test('seat.admin badge is about IDENTITY (adminId), not the tools.game permission (2026-10-31)', () => {
+    // 后台房间列表的「玩家 / 管理员」标签读 room.state seats[].admin（dashboard/public/app.js）。
+    // 徽章表达「这个账号是不是管理员」，**不该**要求 tools.game 权限：
+    // 权限管的是「能不能用游戏内管理员工具」，和身份是两件事。
+    // 曾经写成 adminId && gameTool —— 一个 admin 没勾 tools.game，徽章就被降级成「玩家」。
+    const ROOM = new Room('ABCD', 'coop', 'NORMAL', Date.now());
+    ROOM.dataFor = () => ({ chess: new Map() });
+    const fake = { dataFor: () => ({ chess: new Map() }) };
+    const seatOf = (over) => Lobby.prototype.humanSeat.call(fake, 0, {
+      playerId: 'p1', name: 'A', accountId: '1', connected: true, ...over,
+    }, ROOM);
+    // 管理员/服主：有没有 tools.game 都是「管理员」
+    assert.equal(seatOf({ adminId: true, gameTool: false }).admin, true, '没勾 tools.game 的管理员仍是管理员');
+    assert.equal(seatOf({ adminId: true, gameTool: true }).admin, true);
+    // 普通玩家：即使（不可能地）带上 gameTool 也不是管理员
+    assert.equal(seatOf({ adminId: false, gameTool: false }).admin, false, '普通玩家 admin=false');
+    assert.equal(seatOf({ adminId: false, gameTool: true }).admin, false, '没有身份就不是管理员');
+    // 下发给客户端的 room.state 里，false 会被省略（`...(s.admin === true ? { admin: true } : {})`），
+    // 所以后台读到 undefined 就是「玩家」。这里把那条过滤也固定住。
+    const wire = (s) => (s.admin === true ? { admin: true } : {});
+    assert.deepEqual(wire(seatOf({ adminId: true, gameTool: false })), { admin: true }, '没权限的管理员照样下发 admin:true');
+    assert.deepEqual(wire(seatOf({ adminId: false, gameTool: false })), {}, '普通玩家不下发 admin 键');
+  });
+
   test('loadData: reads *.json by basename, deep-freezes, tolerates missing/broken files', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-data-'));
     try {

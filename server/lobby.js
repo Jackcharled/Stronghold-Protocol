@@ -899,14 +899,16 @@ export class Lobby {
     }
     // ★ 2026-10-31：座位上的「管理员」标记同步成最新值。
     //
-    //   两件事必须分清（维护者反馈「控制台把我显示成玩家了」引出）：
-    //     seat.admin      = **身份**（owner/admin 账号）+ 权限门 —— 控制台据此显示
-    //                       「管理员」徽章。它不该要求「兑换过验证码」：
-    //                       一个 owner 还没去后台换码，他仍然是管理员，徽章就该是管理员。
-    //     ps.admin (Match) = **能不能改这局数据** —— g.test 放行用它，要求三道门全过。
-    //   以前两者都直接读 session.admin（三道门），于是「没换码的 owner」在控制台
-    //   显示成「玩家」，而且对局中换了码、刷新也不更新。
-    const wantBadge = session.adminId === true && session.gameTool === true;
+    //   两件事必须分清（维护者两次反馈引出：先是「控制台把我显示成玩家了」，
+    //   后来是「没有游戏工具权限也该显示管理员徽章」）：
+    //     seat.admin      = **身份**（账号是 owner/admin）—— 控制台据此显示「管理员」徽章。
+    //                       它**不该**要求 tools.game 权限，也不该要求兑换过验证码：
+    //                       权限是「能不能用工具」，身份是「是不是管理员」，两码事。
+    //     ps.admin (Match) = **能不能改这局数据** —— g.test 放行用它，要求三道门全过
+    //                       （adminId + gameTool + 验证码）。
+    //   以前 seat.admin 用过 session.admin（三道门），也用过 adminId && gameTool，
+    //   两次都把「没换码的 owner」/「没勾 tools.game 的 admin」显示成了「玩家」。
+    const wantBadge = session.adminId === true;
     const wantTool = session.admin === true;
     const seat0 = room.seatOf(session.playerId);
     if (seat0 && seat0.admin !== wantBadge) seat0.admin = wantBadge;
@@ -3326,11 +3328,18 @@ export class Lobby {
       // 游客标记：游客只能游玩/旁观，不能当选房主（migrateHost 用它排除游客）。
       guest: session.guest === true || !session.accountId,
       // 后台/服主标记：只用于控制台把「玩家」显示成「管理员」，不参与任何规则判定。
-      // ★ 2026-10-31：判据是「身份 + 权限」（adminId && gameTool），**不是** session.admin。
-      //   session.admin 还要求验过授权码 —— 用它会让「没换码的 owner」在控制台显示成「玩家」，
-      //   而徽章表达的是「这个账号是不是管理员」，不是「他现在能不能改数据」。
-      //   能不能改数据由 Match 的 ps.admin（三道门全过）决定，那是另一回事。
-      admin: session.adminId === true && session.gameTool === true,
+      // ★ 2026-10-31（维护者纠正）：**只看 adminId**，即「这个账号是不是管理员/服主」。
+      //
+      //   这里曾经写成 `adminId && gameTool`，把两件不同的事混成了一件：
+      //     · adminId  —— 身份：账号角色是 owner/admin（**徽章就是表达这个**）
+      //     · gameTool —— 能力：有没有 tools.game 权限（能不能用游戏内管理员工具）
+      //   后果：一个 admin 账号没被授予 tools.game，徽章就被降级成「玩家」，
+      //   看上去「我不是管理员了」—— 维护者实测遇到的就是这个。
+      //   权限是权限，身份是身份，徽章只说身份。
+      //
+      //   「能不能改数据」由 Match 的 ps.admin 决定（三道门全过：adminId + gameTool + 验证码），
+      //   那是另一回事，和徽章无关。
+      admin: session.adminId === true,
       loadout: session.loadout || null,
       ops: session.ops || null,
       notOwned: session.notOwned || null,
