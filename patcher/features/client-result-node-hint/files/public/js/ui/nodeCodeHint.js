@@ -81,8 +81,13 @@ export async function checkNodeAcceptsNew(fetchFn, o = {}) {
  * 不在旧代码节点上就什么也不渲染（返回 null）。
  *
  * 只在结算页出现：这时对局已经结束，刷新不会打断任何人。
+ *
+ * @param {{ className?: string }} [props]
+ *   className 用于**同盟结算页**（settle.js 的 TeamPage）：那一页整块是
+ *   `.settle__stage{position:absolute; 19.2rem×10.8rem}` 里一堆 absolute 定位的元素，
+ *   普通流内元素会被它们盖住 / 撑乱版面，所以那边需要自己传一个绝对定位的 class。
  */
-export function NodeCodeHint() {
+export function NodeCodeHint({ className = '' } = {}) {
   const [staleNode, setStaleNode] = useState(false);
   useEffect(() => {
     // 只在浏览器里跑；测试环境没有 fetch 时静默跳过。
@@ -95,7 +100,7 @@ export function NodeCodeHint() {
     return () => { alive = false; };
   }, []);
   if (!staleNode) return null;
-  return html`<p class="result__nodehint t-dim" data-testid="result-node-hint">
+  return html`<p class=${`result__nodehint t-dim${className ? ` ${className}` : ''}`} data-testid="result-node-hint">
     ${t('这台服务器还在使用旧版本。本局已结束，刷新页面即可换到新版本（不会影响你的账号和对局记录）。')}
   </p>`;
 }

@@ -361,6 +361,32 @@ span.settle__nexticon .icon { width: .34rem; height: .34rem; }
 .steam__barbg { top: 9.15rem; }
 .steam__barbg .sprite { height: 1.65rem; }
 .steam__outcome { position: absolute; left: .42rem; top: 9.24rem; display: flex; flex-direction: column; align-items: flex-start; gap: .04rem; }
+/* ★ 2026-10-31：「这台服务器还在使用旧版本」的提示（ui/nodeCodeHint.js）。
+   TeamPage 整块是 .settle__stage{position:absolute; 19.2rem×10.8rem} 里一堆 absolute 元素，
+   普通流内元素会被盖住 / 撑乱版面，所以这里必须自己绝对定位。
+   位置选在**顶栏下方的空白横条**（公告条下方、立绘上方），
+   不压底部那排「模拟完成 / 同盟通过回合 / 数据详情 / 返回同盟」。
+   用 !important 压掉 .result__nodehint 自带的 max-width:60%（那是给单人结算页排版用的）。 */
+.settle .result__nodehint.steam__nodehint {
+  position: absolute;
+  left: 50%;
+  top: .22rem;
+  transform: translateX(-50%);
+  width: auto;
+  max-width: 13rem !important;
+  margin: 0;
+  padding: .06rem .14rem;
+  border-radius: .06rem;
+  background: rgba(10, 20, 18, .82);
+  border: 1px solid rgba(232, 184, 74, .38);
+  color: #e8d9a8;
+  font-size: calc(.13 * var(--t));
+  line-height: 1.5;
+  text-align: center;
+  white-space: normal;
+  z-index: 3;
+  pointer-events: none;
+}
 .steam__tags { display: flex; align-items: center; gap: .1rem; }
 /* the 测试 mark of a 「测试」 match (0.3.1), beside the mode pill on both pages */
 .settle__test { display: inline-flex; align-items: center; gap: .06rem; color: #e8b84a; font-size: calc(.15 * var(--t)); white-space: nowrap; }
