@@ -9,6 +9,8 @@ import { html, Button, Icon, useTicker } from './components.js';
 import { net, CLIENT_ERR_TEXT } from '../net.js';
 import { useStore, shallowEqual } from '../store.js';
 import { useDocClass } from './device.js';
+import { useState, useEffect } from '../../vendor/hooks.module.js';
+import { checkNodeAcceptsNew } from './nodeCodeHint.js';
 import { t } from '../../../shared/i18n.js';
 
 /** Whether the banner shows for this connection state (mirrors the early returns below). */
@@ -32,7 +34,34 @@ export function ConnectionBanner() {
         || !!sessionStorage.getItem('sp_admin_watch_code') || !!localStorage.getItem('sp_admin_watch_code');
     } catch { return false; }
   })();
-  const stale = buildStale && !adminWatch;
+  // ★ 2026-10-31：除了「本节点的 build 变了」（buildGuard），再加一条「**本节点跑的是旧代码**」。
+  //   两者是不同的东西：
+  //     · buildStale —— 这一页加载之后，同一节点的 /healthz.build 变了（节点重启换版）
+  //     · oldNode    —— nginx 明确说这台节点不接新玩家了（X-SP-Accepts-New: 0），
+  //                    也就是它还在跑旧代码，刷新能换到新节点上。
+  //   维护者在 node-7（旧代码、build 一直没变）上等不到任何提示，就是缺了这一条：
+  //   那台节点没重启过，buildGuard 永远不会说「有新版本」。
+  //   探测频率与 buildGuard 一致（60s），并且只在「不在对局里」时才提示刷新，
+  //   避免打断正在打的人（对局中的提示仍由 buildStale 负责，它知道等对局结束）。
+  const [oldNode, setOldNode] = useState(false);
+  useEffect(() => {
+    if (adminWatch) return undefined;
+    let alive = true;
+    const f = globalThis.fetch;
+    if (typeof f !== 'function') return undefined;
+    const probe = () => {
+      checkNodeAcceptsNew((u, o) => f(u, o)).then((ok) => {
+        if (!alive) return;
+        // counts as "old code" only when the header says so explicitly (null = 判断不了，不动)
+        if (ok === false) setOldNode(true);
+        else if (ok === true) setOldNode(false);
+      }).catch(() => { /* ignore */ });
+    };
+    probe();
+    const t = setInterval(probe, 60_000);
+    return () => { alive = false; clearInterval(t); };
+  }, [adminWatch]);
+  const stale = !adminWatch && (buildStale || oldNode);
   useTicker(conn.status === 'reconnecting' ? 500 : 0);
   useDocClass('sp-conn', bannerVisible(conn, entered, restoring, stale));
   if (!entered) return null;
