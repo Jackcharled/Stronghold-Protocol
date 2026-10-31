@@ -1861,6 +1861,45 @@ if (ps.playerId !== this.hostId) return fail(ERR.NOT_HOST);   // ← 上游 host
 测试：`test/lobby.test.js` 的「seat.admin badge is about IDENTITY」，
 反向验证过 —— 把判据退回 `adminId && gameTool` 会 FAIL。
 
+##### ★★ 9.34c-1c 「身份待遇」全部只看 `adminId`（2026-10-31，维护者：「这些功能都不需三道门」）
+
+维护者发现**管理员建的房间居然在 15 分钟倒计时**（截图里「后同盟将自动销毁」）。
+根因和上面一模一样：`room.adminCreated` / `room.noExpire` 用的是 `session.admin`（三道门），
+他还没兑换 6 位验证码 → `adminCreated = false` → 房间失去免销毁资格。
+
+**判据总表**（以后动任何 admin 相关分支，先对这张表）：
+
+| 分支 | 属于 | 判据 | 位置 |
+|---|---|---|---|
+| `seat.admin`（后台徽章、控制台标签） | 身份 | `adminId` | `Lobby.humanSeat` / `onHello` |
+| **管理员房免销毁** `room.adminCreated` / `noExpire` | 身份 | `adminId` | `create` / `syncNoExpire` |
+| **免销毁生效** `adminOwnerOnline()` | 身份 | `adminId` + 在线 | 同上（调用点 `forever`） |
+| 维护开关豁免：建房 | 身份 | `adminId` | `create` |
+| 维护开关豁免：匹配队友 | 身份 | `adminId` | `room.matchmaking` |
+| 维护开关豁免：开始游戏 | 身份 | `adminId` | `room.start` |
+| 限流豁免：同网段建房数 | 身份 | `adminId` | `create` |
+| 限流豁免：同网段 AI 数 | 身份 | `adminId` | `room.addBot` |
+| 限流豁免：同网段对局数 | 身份 | `adminId` | `room.start` |
+| 限流豁免：版本提议频率 | 身份 | `adminId` | `room.proposeVersion` |
+| **`g.test` 放行**（改对局数据） | 能力 | 三道门 | `routeGameNow` + `Match.applyTestCommand` |
+| **工具面板能不能打开** `welcome.adminTools` | 能力 | 三道门 | `net.js` |
+| **重负载限流**（`HEAVY_TYPES`） | 能力 | 三道门 | `net.js:692` |
+
+> **一句话判据**：这条规则保护的是**别人的对局数据**吗？
+> 是 → 三道门（`session.admin` / `ps.admin`）。
+> 不是（只是这个管理员自己建房、开匹配、建房间、免销毁、绕限流）→ 只看身份 `adminId`。
+
+**为什么维护开关和限流也算身份待遇**：它们的注释本来就写着「便于维护期间自测」，
+而维护者本人就是管理员。要求他先换码才能自测，等于把维护工具锁在了维护场景之外。
+
+测试：`test/test-mode.test.js` 的「管理员的「待遇」只看身份，不要求兑换验证码」——
+构造一个 `adminId=true, adminTool=false`（三道门不成立）的 owner，断言
+`adminCreated === true`、`noExpire === true`、`adminOwnerOnline === true`。
+反向验证：把判据退回 `session.admin` 会 FAIL（`管理员建的房 = 管理员房` 断言失败）。
+
+**生效方式**：`server/` 改动 → **必须重启节点**。
+
+
 > ⚠ **旧令牌没有 `gameTool` 字段，一律按 `false` 处理。**
 > 所以改过权限或升级过节点之后，管理员必须**退出账号重新登录一次**，
 > 否则 `gameTool` 一直是 false，工具面板打不开。徽章不受影响（只看 `adminId`）。

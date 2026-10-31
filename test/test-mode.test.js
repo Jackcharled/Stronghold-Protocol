@@ -1127,3 +1127,60 @@ for (const botRehearsal of [0, 1]) test(`sliced bot prep and a server-run battle
   assert.equal(copy.phase, m.phase);
   assert.equal(copy.errorCount, 0);
 });
+
+
+// ---------------------------------------------------------------------------------------------------
+// 2026-10-31 维护者要求：「这些功能都不需三道门」——
+// 管理员房免销毁、维护开关放行、限流豁免，都属于**身份待遇**，只看身份（adminId），
+// 不该要求他先兑换 6 位验证码（session.admin 是三道门：身份 + tools.game + 验证码）。
+// ---------------------------------------------------------------------------------------------------
+
+test('管理员的「待遇」只看身份，不要求兑换验证码（2026-10-31）', async () => {
+  const { Lobby: L } = await import('../server/lobby.js');
+  const { SessionRegistry: SR } = await import('../server/net.js');
+  const registry = new SR();
+  const lobby = new L({
+    registry,
+    content: { cs: 'ab'.repeat(32) },
+    log: { info() {}, warn() {}, error() {}, debug() {} },
+    options: { testMode: 'off' },
+  });
+  const mk = (name) => {
+    const s = registry.create(name);
+    s.connected = true;
+    s.messages = [];
+    s.ws = { readyState: 1, bufferedAmount: 0, send: (txt) => s.messages.push(JSON.parse(txt)) };
+    return s;
+  };
+  try {
+    // ① 管理员房免销毁：adminId 有、验证码没换（session.admin = false）
+    const owner = mk('owner');
+    owner.adminId = true;
+    owner.gameTool = true;
+    owner.adminTool = false;          // ← 没兑换验证码
+    owner.admin = false;              // ← 三道门不成立
+    owner.accountId = '1'; owner.guest = false;
+    const r1 = lobby.create(owner, { mode: 'coop', difficulty: 'NORMAL' });
+    assert.equal(r1.ok, true, JSON.stringify(r1));
+    const room1 = lobby.roomOf(owner);
+    assert.equal(room1.adminCreated, true, '管理员建的房 = 管理员房');
+    assert.equal(room1.noExpire, true, '管理员房不自动销毁（不要求验证码）');
+    assert.equal(lobby.adminOwnerOnline(room1), true, '房主在线 → 免销毁生效');
+
+    // ② 普通玩家建房：照常倒计时
+    //    ⚠ 本机 data/create-room.json 可能是 {"enabled":false}（维护开关关着），
+    //    那样普通玩家会被 CREATE_DISABLED 挡住 —— 这顺带验证了「管理员豁免维护开关」：
+    //    上面 r1 在同一个 lobby 里成功了，说明管理员的放行确实生效。
+    const plain = mk('plain');
+    plain.adminId = false;
+    plain.accountId = '2'; plain.guest = false;
+    const r2 = lobby.create(plain, { mode: 'coop', difficulty: 'NORMAL' });
+    if (r2.error === 'CREATE_DISABLED') return;   // 维护开关关着：普通玩家被挡（正确行为）
+    assert.equal(r2.ok, true, JSON.stringify(r2));
+    const room2 = lobby.roomOf(plain);
+    assert.equal(room2.adminCreated, false, '普通玩家的房不是管理员房');
+    assert.equal(room2.noExpire, false, '普通房间照常倒计时');
+  } finally {
+    lobby.shutdown();
+  }
+});

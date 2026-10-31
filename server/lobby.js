@@ -1018,7 +1018,11 @@ export class Lobby {
     // 房主座位还在，但人没连着：不算在线
     if (host && host.connected !== true) return false;
     const session = this.registry?.byId ? this.registry.byId(room.hostId) : null;
-    return !!(session && session.admin === true && session.connected === true);
+    // ★ 2026-10-31：只看身份（session.adminId），不看验证码。
+    //   这个方法只服务于「管理员房免销毁」（调用点 964 的 forever），
+    //   和 room.adminCreated 是同一件事，判据必须一致 —— 否则会出现
+    //   「房间被标成管理员房、但仍在倒计时」这种自相矛盾的状态。
+    return !!(session && session.adminId === true && session.connected === true);
   }
 
   /** 匹配队友 2 分钟没凑满：按当前人数直接开局，并通知匹配器移出队列。 */
@@ -1302,8 +1306,9 @@ export class Lobby {
     if (experimental != null && !isExperimental(experimental)) return fail(ERR.BAD_MSG, 'invalid experimental options');
     if (mode === 'solo') experimental = null;
     // 后台维护开关：关闭「创建房间」时，同盟房与独立模拟一律拒绝（页面侧按钮同时置灰并给出提示）。
-    // 管理员/服主（session.admin）无视维护开关，便于维护期间自测；服务端仍是最终判据。
-    if (!session.admin && !maintenanceGate().create) return fail(ERR.CREATE_DISABLED);
+    // 管理员/服主无视维护开关，便于维护期间自测；服务端仍是最终判据。
+    // ★ 2026-10-31：只看身份（adminId），不要求兑换验证码 —— 这是身份待遇，不是「改数据」。
+    if (session.adminId !== true && !maintenanceGate().create) return fail(ERR.CREATE_DISABLED);
     // 本服：游客不能建房，先给出明确原因，避免只拿到 BAD_MSG。
     if (session.guest || !session.accountId) {
       return fail(ERR.BAD_MSG, mode === 'solo'
@@ -1336,7 +1341,7 @@ export class Lobby {
     // The room being left disappears with this create when the creator is its only human (a spectator is none).
     const leaving = !!cur && cur.activeHumans().length === 1 && !cur.spectatorOf(session.playerId);
     // 同网段建房数上限：管理员/服主豁免（维护期自测会反复建房）
-    if (key && this.opts.maxRoomsPerAddr > 0 && session.admin !== true) {
+    if (key && this.opts.maxRoomsPerAddr > 0 && session.adminId !== true) {
       if (this.countRooms((r) => r.ownerKey === key) - (leaving && cur.ownerKey === key ? 1 : 0) >= this.opts.maxRoomsPerAddr) {
         this.limitWarn(`room limit (${this.opts.maxRoomsPerAddr}) reached for ${session.addr}`);
         return fail(ERR.RATE, 'too many rooms from your network');
@@ -1379,7 +1384,15 @@ export class Lobby {
     room.test = test === true;
     // 管理员建房：不自动过期，并在控制台标记。
     // noExpire 只在房主本身是管理员/服主时成立，房主换人会由 migrateHost 重新判定。
-    room.adminCreated = session.admin === true;
+    //
+    // ★ 2026-10-31（维护者反馈「管理员建的房间怎么也倒计时」）：
+    //   原来判据是 `session.admin === true` —— 那是**三道门全过**（身份 + tools.game + 验证码）。
+    //   后果：一个 owner 建了房，只要没去后台兑换 6 位验证码，房间就照样 15 分钟倒计时。
+    //   但「管理员房免销毁」是**身份层面**的待遇（维护者本人在管理服务器），
+    //   不该要求他每 4 小时去换一次码才保住自己的房间。
+    //   → 改成只看身份 `session.adminId`，与 seat.admin（后台那个「管理员」徽章）同一口径。
+    //   ⚠ 与「能不能改对局数据」（ps.admin，三道门）无关，那是另一件事。
+    room.adminCreated = session.adminId === true;
     room.noExpire = room.adminCreated;
     // 「不限时」 only on a solo room of a version whose solo is timed (header). Anywhere else the key is ignored, so a
     // stray true cannot change a default or co-op create.
@@ -2041,7 +2054,7 @@ export class Lobby {
     if (room.versionVote) return fail(ERR.VERSION_VOTE);
     const now = this.now();
     // 版本提议频率/冷却：管理员/服主豁免（同一人自测时来回切换版本会被 300ms / 5s 卡住）
-    if (session.admin !== true
+    if (session.adminId !== true
       && (now - room.versionProposeAt < this.opts.versionProposeGapMs || now < room.versionRetryAt)) return fail(ERR.RATE);
     const humans = room.activeHumans();
     if (humans.some((s) => !s.connected)) return fail(ERR.NOT_READY);
@@ -2194,7 +2207,7 @@ export class Lobby {
     // 同一个网络地址能挂的 AI 队友总数（跨房间累计），防止用一堆机器人占满 CPU。
     // 管理员/服主豁免这次限流：维护期自测（尤其 5–20 人房）需要一次加很多 AI，
     // 被「操作过于频繁」挡住就没法测试（玩家就是管理员本人）。
-    if (this.opts.maxBotsPerAddr > 0 && session.admin !== true) {
+    if (this.opts.maxBotsPerAddr > 0 && session.adminId !== true) {
       const key = session.limitKey;
       if (key && this.countBots(key) >= this.opts.maxBotsPerAddr) {
         this.limitWarn(`AI teammate limit (${this.opts.maxBotsPerAddr}) reached for ${session.addr}`);
@@ -2258,8 +2271,8 @@ export class Lobby {
     const on = !!(msg && msg.on);
     if (on === room.matchmaking) return OK;
     // 后台维护开关：关闭「匹配队友」时不能进入匹配队列（取消匹配不受影响，免得房间卡在队列里）。
-    // 管理员/服主无视该开关。
-    if (on && !session.admin && !maintenanceGate().match) return fail(ERR.MATCH_DISABLED);
+    // 管理员/服主无视该开关（只看身份 adminId，不要求验证码；同 create 处）。
+    if (on && session.adminId !== true && !maintenanceGate().match) return fail(ERR.MATCH_DISABLED);
     if (on) {
       const humans = room.activeHumans();
       if (humans.some((s) => s.playerId !== room.hostId && (!s.connected || !s.ready))) {
@@ -2292,8 +2305,8 @@ export class Lobby {
     if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
     if (room.match) return fail(ERR.ROOM_STARTED);
     // 后台维护开关：关闭「开始游戏」时，已建好的房间也不能开局（房主先看到提示，页面侧同时会把按钮置灰）。
-    // 管理员/服主无视该开关。
-    if (!session.admin && !maintenanceGate().start) return fail(ERR.START_DISABLED);
+    // 管理员/服主无视该开关（只看身份 adminId，不要求验证码；同 create 处）。
+    if (session.adminId !== true && !maintenanceGate().start) return fail(ERR.START_DISABLED);
     if (room.versionVote) return fail(ERR.VERSION_VOTE);
     const humans = room.activeHumans();
     if (room.content?.trusted && humans.some(s => s.consentCs !== room.content.cs)) return fail(ERR.PLUGIN_CONSENT);
@@ -2309,7 +2322,7 @@ export class Lobby {
     }
     const key = session.limitKey || null;
     // 同网段同时对局数上限：管理员/服主豁免（维护期要能同时开多局自测）
-    if (key && this.opts.maxMatchesPerAddr > 0 && session.admin !== true
+    if (key && this.opts.maxMatchesPerAddr > 0 && session.adminId !== true
       && this.countRooms((r) => !!r.match && r.matchKey === key) >= this.opts.maxMatchesPerAddr) {
       this.limitWarn(`match limit (${this.opts.maxMatchesPerAddr}) reached for ${session.addr}`);
       return fail(ERR.RATE, 'too many running matches from your network');
@@ -3455,7 +3468,9 @@ export class Lobby {
     // 房间会紧接着被 disposeRoom('empty') 处理，此时改动只会产生误导性的日志。
     if (!room.hostId) return;
     const session = this.registry.byId(room.hostId);
-    const isAdmin = !!(session && session.admin === true);
+    // ★ 2026-10-31：只看身份（与 create 里同一口径，见那里的注释）。
+    //   房主是 owner/admin 账号 → 房间免销毁，不要求他兑换过验证码。
+    const isAdmin = !!(session && session.adminId === true);
     const before = room.noExpire === true;
     room.adminCreated = isAdmin;
     room.noExpire = isAdmin;
