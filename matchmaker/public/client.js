@@ -3638,40 +3638,18 @@ const JOIN_COOKIE = (() => {
       document.body.appendChild(veil);
     };
 
-    // 能不能打开「游戏内管理员工具」——2026-10-31 维护者定的规则：
-    //   **只有在自己参与的对局里才能打开**；观战、隐身观战一律不能。
-    //
-    // 判据本体在 /js/ui/adminGate.js（ui/hud.js 监听事件时也调它），这里只做一层
-    // 「注入脚本够不到 React 状态」的适配。★ 此处是**同步**判断：需要立刻知道结果，
-    // 所以用同步的 XMLHttpRequest 拉一次源文件是不行的 —— 改为把同样的规则再写一遍，
-    // 并靠 test/ui/adminGate.test.js 保证两边语义一致（见该测试的注释）。
-    //   · 必须已经是管理员（adminId）
-    //   · 必须已经在自己的对局里（match.public 存在）
-    //   · 不能是观战者：room.spectators 里有我（普通观战 + 隐身观战都在这里）
-    //   · 必须自己坐在 seats 里（没席位 = 在看别人打）
-    function canOpenAdminTools(st) {
-      if (!st || st.adminId !== true) return false;
-      const s = window.__SP__ && window.__SP__.store ? window.__SP__.store.get() : null;
-      if (!s || !s.match || !s.match.public) return false;
-      const room = s.room;
-      const myId = s.me && s.me.playerId;
-      if (!room || myId == null) return false;
-      if ((room.spectators || []).some((x) => x && x.playerId === myId)) return false;
-      return (room.seats || []).some((x) => x && x.playerId === myId);
-    }
-
     chip.addEventListener('click', (e) => {
       e.stopPropagation();
-      // 对局中：这颗胶囊是「游戏内管理员工具」的入口。
-      // 只对「正在自己参与的对局里」的管理员有效（见 canOpenAdminTools）。
-      // 普通玩家、观战者、隐身观战者点它仍然什么都不发生（下面原有的 return 保持不变）。
+      // 对局中：这颗胶囊就是「游戏内管理员工具」的入口。
+      // 只对管理员有效 —— 服务端 welcome.adminTools 为真时 store.adminTools 才是 true，
+      // 普通玩家点它仍然什么都不发生（下面原有的 return 保持不变）。
       if (el.classList.contains('match')) {
         const st = window.__SP__ && window.__SP__.store && window.__SP__.store.get();
         // ★ 判据用 adminId（身份门）而不是 adminTools（两道门都过）。
         //   退出授权后 adminTools 会变 false，若继续用它判断，管理员连面板都打不开，
         //   也就没有地方重新输码了 —— 2026-10-31 实测出来的死锁。
         //   普通玩家 adminId 也是 false，所以权限没有放宽。
-        if (canOpenAdminTools(st)) {
+        if (st && st.adminId === true) {
           try {
             // 把胶囊的屏幕位置一并传出：面板要开在它**正下方**，
             // 而不是固定在屏幕角落（维护者要求「就地打开，不用去别处找」）。

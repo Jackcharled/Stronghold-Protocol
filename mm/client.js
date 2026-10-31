@@ -3563,8 +3563,16 @@ const JOIN_COOKIE = (() => {
       setIf2('right', 'auto');
       setIf2('top', 'auto');
       setIf2('transform', 'none');
-      setIf2('margin', '0 0 0 10px');
+      // ★ 间距只由一处负责，避免叠加导致的 2px 跳动：
+      //   如果容器（下面算出的 host）用的是 flex + gap，就把节点状态的 margin-left 清零，
+      //   间距交给 gap；否则保留 10px margin（老界面不是 flex 时 gap 不生效）。
+      //   2026-10-31 实测：margin-left:10px 叠加 gap:10px 之后，
+      //   观战胶囊插进来/撤走会让 left 在 165 与 167 之间跳 2px，肉眼可见。
       setIf2('display', 'inline-flex');
+      // 位置稳定性：节点状态胶囊不参与 flex 伸缩，宽度固定由内容决定。
+      // 前面（延迟胶囊）宽度会变（数字位数），后面（观战胶囊）可能消失 ——
+      // 都不应该让它左右跑。
+      setIf2('flex', '0 0 auto');
       if (el.classList.contains('topbar')) el.classList.remove('topbar');
       // 把“延迟 + 角标”强制排成一行（与选择模拟协议界面一致）
       let host = ping.parentElement;
@@ -3577,17 +3585,44 @@ const JOIN_COOKIE = (() => {
           host.style.alignItems = 'center';
           host.style.gap = '10px';
         }
-        // 期望顺序：ping → 本节点状态（大厅里 Q群在右侧工具组，不参与这里）
+        // 容器已经是 flex+gap 了，节点状态自己不再加外边距（否则 10+10，且会随兄弟变化）。
+        setIf2('margin', '0');
+        // ★ 2026-10-31 修「有观战按钮时节点状态胶囊会位移」（维护者反馈）。
+        //
+        //   现象：房间里出现观战者时，左上角多出「👁 1」胶囊，节点状态胶囊被推右 34px
+        //        （实测 left 199 → 233）；观战数归零它又弹回来。
+        //
+        //   原因：游戏本体的观战胶囊（React 的 SpectatorPill）渲染在「延迟胶囊」后面，
+        //        我们也把节点状态插在延迟后面，谁后插谁就往后站 —— 两者互相挤。
+        //
+        //   修法：**观战胶囊永远排在节点状态之后**。
+        //        每次 place() 时，如果发现延迟胶囊后面紧跟着观战胶囊（.specpill），
+        //        就把它挪到节点状态之后。这样节点状态的位置只由「延迟胶囊宽度」决定，
+        //        与观战者数量无关。
+        //        DOM 只在顺序不对时才动，避免周期性重排（那会表现为「一跳一跳」）。
+        const specPill = () => {
+          const p = ping.parentElement;
+          if (!p) return null;
+          return p.querySelector(':scope > .specpill');
+        };
         const qq = document.getElementById('mm-qq-lobby');
         const inTools = qq && qq.parentElement && qq.parentElement.classList.contains('topbar__tools');
         const wantPrev = inTools ? ping : ((qq && qq.parentElement === host && qq.isConnected) ? qq : ping);
-        // 只有「位置确实不对」时才动 DOM，且只动一次，避免周期性重排造成的跳动
         if (el.parentElement !== host) host.appendChild(el);
         if (el.previousElementSibling !== wantPrev) {
           wantPrev.insertAdjacentElement('afterend', el);
         }
-      } else if (ping.nextElementSibling !== el && ping.parentElement) {
-        ping.insertAdjacentElement('afterend', el);
+        // 把观战胶囊挪到节点状态之后（只在不正确时动）。
+        const sp = specPill();
+        if (sp && sp !== el.nextElementSibling && sp.previousElementSibling === el.previousElementSibling) {
+          el.insertAdjacentElement('afterend', sp);
+        }
+      } else {
+        // 没有可用的 flex 容器（老界面）：退回自己留 10px 间距，避免贴死在延迟胶囊上。
+        setIf2('margin', '0 0 0 10px');
+        if (ping.nextElementSibling !== el && ping.parentElement) {
+          ping.insertAdjacentElement('afterend', el);
+        }
       }
     };
     const attach = () => {
