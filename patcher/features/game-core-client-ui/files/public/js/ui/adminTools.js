@@ -140,6 +140,9 @@ export function AdminTools({ open, onClose, anchor = null }) {
   useStore((s) => s.adminTools === true);
   // 身份门：是 owner/admin 账号（不看有没有验证码）。面板的「能不能打开」用它判断。
   const adminId = useStore((s) => s.adminId === true);
+  // 权限门（2026-10-31）：这个管理员账号有没有 tools.game 权限。owner 恒真。
+  // 没有权限的 admin 连取码框都不该看到 —— 见下面 `if (!adminId || !gameTool)`。
+  const gameTool = useStore((s) => s.gameTool === true);
   // 验码门：✱ 2026-10-31 维护者重新明确规则 ✱
   //   「打开第一次先输入授权码，超过 4 小时过期了就需要重新输入」
   //   ——所以光有身份不够，必须**兑换过验证码**，而且必须在有效期内。
@@ -314,14 +317,16 @@ export function AdminTools({ open, onClose, anchor = null }) {
     return `right:${right}px;top:${top}px;left:auto;bottom:auto;`;
   })();
 
-  if (!adminId) {
-    // 不是管理员：**返回 null，连面板外壳都不渲染**。
+  if (!adminId || !gameTool) {
+    // ① 不是管理员，或 ①b 管理员但没被授予 tools.game 权限：
+    //    都**返回 null，连面板外壳都不渲染**。
+    //    维护者 2026-10-31：「管理员如果没有权限也不能打开授权界面和管理员工具界面」——
+    //    连取码框都不给看，因为展示它本身就是在透露「这里有管理员工具」。
     // 以前这里返回一个「本账号不是管理员」的提示面板 —— 那等于告诉普通玩家
-    // 「这里有个管理员工具」，属于信息泄露。维护者 2026-10-31 明确要求：
-    // 普通玩家不应该能打开管理员工具界面（连提示都不该看到）。
-    // 真正的拦截在更外层：hud.js 用 adminId 决定要不要创建本组件，
-    // mm/client.js 用 adminId 决定点击要不要派发事件 —— 这里是第三层兜底。
-    // ★ 判据仍是 adminId（身份门），不是 adminTools（两道门都过）：
+    // 「这里有个管理员工具」，属于信息泄露。
+    // 真正的拦截在更外层：hud.js / adminGate.js / mm/client.js 都会先判
+    // adminId && gameTool；这里是最后一层兜底（防止有人直接渲染本组件）。
+    // ★ 判据用 adminId + gameTool（身份+权限），**不是** adminTools（三道门全过）：
     //   用 adminTools 会让「管理员退出授权后」看不到取码框 —— 死锁。
     return null;
   }

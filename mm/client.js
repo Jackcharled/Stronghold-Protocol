@@ -3686,6 +3686,9 @@ const JOIN_COOKIE = (() => {
     //   · 必须自己坐在 seats 里（没席位 = 在看别人打）
     function canOpenAdminTools(st) {
       if (!st || st.adminId !== true) return false;
+      // ①b 权限门（2026-10-31 维护者要求）：没被授予 tools.game 的管理员，
+      //    连「输入授权码的界面」都不该出现。这个值由服务端判定后随 welcome 下发。
+      if (st.gameTool !== true) return false;
       const s = window.__SP__ && window.__SP__.store ? window.__SP__.store.get() : null;
       if (!s || !s.match || !s.match.public) return false;
       const room = s.room;

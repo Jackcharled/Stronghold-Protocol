@@ -817,6 +817,12 @@ export class Network {
     //   注意 adminToken 与我们自己签的 accountToken 是同一把密钥、同样的 payload 结构，
     //   verifyAdminToken 还会核对 role，因此不能拿 accountToken 冒充 —— 它没有 exp 由发码接口控制。
     session.adminId = account != null && (account.role === 'owner' || account.role === 'admin');
+    // ★ 2026-10-31 第三道门：**权限门**。
+    //   维护者要求：管理员如果没被授予 tools.game 权限，连「输入授权码的界面」和
+    //   「管理员工具界面」都不能打开 —— 打开界面本身就是越权展示。
+    //   权限在 matchmaker 侧查库判定，随 userToken 的 gameTool 字段下发到这里；
+    //   owner 恒为 true。旧令牌没有这个字段 → false（保守，重新登录即可恢复）。
+    session.gameTool = account != null && account.gameTool === true;
     // ★ 2026-10-31：验码门还要核对「这枚令牌是不是本人换来的」。
     //   以前只调 verifyAdminToken(msg.adminToken) —— 它只证明「这枚令牌是真的、没过期、没被吊销」，
     //   不证明**是谁**换的。实测：普通玩家把别人的 owner 令牌塞进 hello，
@@ -826,7 +832,11 @@ export class Network {
     const sameUser = adminTokInfo != null && account != null
       && Number(adminTokInfo.uid) > 0 && Number(adminTokInfo.uid) === Number(account.uid);
     session.adminTool = sameUser && verifyAdminToken(msg.adminToken);
-    session.admin = session.adminId === true && session.adminTool === true;
+    // ★ 2026-10-31：没有 tools.game 权限的 admin，即使手里攥着有效令牌也不算验码通过。
+    //   否则前端会显示「验码已生效」，但功能点下去全被拒 —— 状态自相矛盾。
+    //   权限被收回时，验码门跟着一起关（令牌留着无害，重新授权后自动恢复）。
+    if (session.gameTool !== true) session.adminTool = false;
+    session.admin = session.adminId === true && session.gameTool === true && session.adminTool === true;
     // 诊断用：记录本次 hello 带来的身份材料，便于排查「管理员不被识别」
     session.accountRole = account ? account.role : null;
     session.hadAdminToken = typeof msg.adminToken === 'string' && msg.adminToken.length > 0;
@@ -846,12 +856,16 @@ export class Network {
     // 前端据此渲染游戏内管理员工具（点延迟胶囊）。真正的放行在服务端
     // （routeGameNow + Match.applyTestCommand 都查 session.admin / ps.admin），改前端没用。
     // 非管理员不带这个键，所以普通玩家的 welcome 与上游逐字相同。
-    // adminTools：这个连接是否能用游戏内管理员工具（身份门 + 验码门都过）。
+    // adminTools：这个连接是否能用游戏内管理员工具（身份门 + 权限门 + 验码门都过）。
     // adminId：只是身份门（owner/admin 账号），用于前端区分「你不是管理员」和「你还没换码」。
-    // adminTool：只是验码门。三者分别下发，前端据实显示，不靠 localStorage 猜。
+    // adminTool：只是验码门。
+    // ★ gameTool（2026-10-31 新增）：权限门 —— 这个账号有没有 tools.game 权限。
+    //   前端必须同时看 adminId && gameTool 才允许**渲染任何**管理员工具界面
+    //   （包括取码框）。普通 admin 没被授予权限时，连界面都不该出现。
     if (session.admin === true) welcome.adminTools = true;
     if (session.adminId === true) welcome.adminId = true;
     if (session.adminTool === true) welcome.adminCode = true;
+    if (session.gameTool === true) welcome.gameTool = true;
     if (session.aiTakeoverFrom) { welcome.takeoverFrom = session.aiTakeoverFrom; session.aiTakeoverFrom = null; }
     if (validRid(rid)) welcome.rid = rid;
     this.reply(conn, welcome);

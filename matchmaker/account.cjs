@@ -54,8 +54,17 @@ function adminToolTtlMs() {
 }
 
 // 登录账号的短期签名身份：游戏节点验签后只信 uid/tag，不再依赖可伪造的四位 tag。
-function userTokenFor(u) {
+//
+// ★ 2026-10-31：新增 perms 字段（只带和「游戏内管理员工具」相关的那一个：tools.game）。
+//   为什么要把权限塞进令牌：游戏节点（server/net.js）只验签、不查库，
+//   它没法知道这个 admin 到底有没有 tools.game。前端要据此决定
+//   「连取码界面都不给看」——没有权限的 admin 打开工具界面本身就是越权展示。
+//   只带一个布尔量（gameTool: true/false），不把整张权限表塞进令牌。
+//   owner 恒为 true（最高管理员不受权限表限制，和 adminHasPerm 的口径一致）。
+function userTokenFor(u, perms) {
   if (!u || !u.id) return null;
+  const isOwner = u.role === 'owner';
+  const gameTool = isOwner ? true : !!(perms && perms.toolsGame === true);
   const payload = Buffer.from(JSON.stringify({
     v: 1,
     // typ='user'：登录身份令牌，不是验码令牌。verifyAdminToken 会拒绝它。
@@ -63,10 +72,19 @@ function userTokenFor(u) {
     uid: u.id,
     role: u.role || 'player',
     tag: u.tag || null,
+    gameTool,
     exp: Date.now() + 7 * 24 * 3600_000,
   })).toString('base64url');
   const sig = crypto.createHmac('sha256', watchSecret()).update(payload).digest('base64url');
   return payload + '.' + sig;
+}
+
+// 这个账号能不能用「游戏内管理员工具」。owner 恒可真；普通 admin 看权限表。
+async function gameToolAllowed(u) {
+  if (!u) return false;
+  if (u.role === 'owner') return true;
+  if (u.role !== 'admin') return false;
+  try { return await adminHasPerm(u.id, 'tools.game'); } catch { return false; }
 }
 
 // 数据库连接只从环境变量 / .secrets/secrets.json 读取；代码里不写死账号、口令、库名
@@ -629,7 +647,11 @@ async function handle(req, res, pathname) {
     //   维护者定的规则是：第一次打开必须先输授权码，4 小时后过期要重新输。
     //   所以 adminToken 只能由 /api/admintool/exchange 发（那边签 4 小时）。
     //   身份仍照常下发（user.role），前端靠它决定"要不要显示取码框"。
-    return u ? sendJson(res, 200, { ok: true, user: u, userToken: userTokenFor(u) }) : sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    if (!u) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    // gameTool 一并下发：前端据此决定「要不要显示管理员工具入口 / 取码界面」。
+    // 没有 tools.game 权限的 admin 连界面都不该看到（维护者 2026-10-31 要求）。
+    const gameTool = await gameToolAllowed(u);
+    return sendJson(res, 200, { ok: true, user: u, gameTool, userToken: userTokenFor(u, { toolsGame: gameTool }) });
   }
 
   // 跨节点恢复：只告诉当前登录账号它自己所在的房间，不暴露全服房间目录。
@@ -805,7 +827,8 @@ async function handle(req, res, pathname) {
       await db().query('DELETE FROM email_codes WHERE email = ?', [email]);
       const sid = await createSession(r.insertId, req, res);
       const created = { id: r.insertId, email, nickname: null, tag, role: 'player', name: null, displayName: null };
-      return sendJson(res, 200, { ok: true, token: sid, userToken: userTokenFor(created), user: created });
+      // 新注册一律是 player，不可能有 tools.game —— 不必查库。
+      return sendJson(res, 200, { ok: true, token: sid, userToken: userTokenFor(created, { toolsGame: false }), user: created });
     } catch (e) {
       if (e && e.code === 'ER_DUP_ENTRY') return sendJson(res, 409, { ok: false, error: 'email_taken' });
       return sendJson(res, 500, { ok: false, error: 'server_error' });
@@ -858,7 +881,9 @@ async function handle(req, res, pathname) {
     const display = nickname + '#' + tag;
     const next = { ...u, nickname, tag, name: display, displayName: display, titleName: display };
     // ★ 2026-10-31：改名也不再补发 adminToken（原样保留手头那枚 4 小时的兑换令牌即可）。
-    return sendJson(res, 200, { ok: true, userToken: userTokenFor(next), user: next });
+    //   但 userToken 要重签（tag 变了），权限也要一并带上。
+    const gameToolN = await gameToolAllowed(next);
+    return sendJson(res, 200, { ok: true, gameTool: gameToolN, userToken: userTokenFor(next, { toolsGame: gameToolN }), user: next });
   }
   // （这里原有一段重复的 /api/auth/set-name 分支，永远不可达——上面的同名路由已先行 return。
   //   它写的是 name = nickname（不带 #代码），与实际生效的逻辑相反，容易误导，已删除。）
@@ -921,7 +946,9 @@ async function handle(req, res, pathname) {
     const display = displayOf(u);
     // ★ 2026-10-31：登录**不再下发 adminToken**，理由同 /api/auth/me（见那处注释）。
     //   管理员要用游戏内工具，必须到后台生成验证码再兑换 —— 这是验码门存在的意义。
-    return sendJson(res, 200, { ok: true, token: sid, userToken: userTokenFor(u), user: { id: u.id, email: u.email, nickname: u.nickname, tag: u.tag, role: u.role || 'player', name: display, displayName: display, titleName: u.nickname ? u.nickname + '#' + u.tag : null } });
+    //   gameTool 照常下发（含进 userToken），前端据此决定「要不要显示入口」。
+    const gameToolL = await gameToolAllowed(u);
+    return sendJson(res, 200, { ok: true, token: sid, gameTool: gameToolL, userToken: userTokenFor(u, { toolsGame: gameToolL }), user: { id: u.id, email: u.email, nickname: u.nickname, tag: u.tag, role: u.role || 'player', name: display, displayName: display, titleName: u.nickname ? u.nickname + '#' + u.tag : null } });
   }
 
   if (method === 'POST' && pathname === '/api/auth/logout') {

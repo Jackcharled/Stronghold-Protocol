@@ -544,6 +544,8 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
   // 否则退出授权后连面板都打不开，就没地方重新输码了（2026-10-31 的死锁）。
   useStore((s) => s.adminTools === true);
   const adminId = useStore((s) => s.adminId === true);
+  // 权限门（2026-10-31）：没被授予 tools.game 的 admin 不创建面板。
+  const gameTool = useStore((s) => s.gameTool === true);
   const [adminOpen, setAdminOpen] = useState(false);
   // 面板锚点：从节点胶囊的实际屏幕位置来，面板开在它正下方。
   const [adminAnchor, setAdminAnchor] = useState(null);
@@ -585,11 +587,12 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
         ${ruleLine(room?.content?.rules) ? html`<span class="gtop__rules" data-testid="plugin-rules">${ruleLine(room?.content?.rules)}</span>` : null}
       </div>
     </div>
-    ${/* 判据用 adminId（身份门）而不是 adminTools（两道门都过）：
+    ${/* 判据用 adminId && gameTool（身份门 + 权限门），**不是** adminTools（三道门全过）：
            ① 普通玩家 adminId=false → 连子元素都不创建，DOM 里没有任何管理员痕迹；
-           ② 管理员退出授权后 adminId 仍为 true → 能打开面板去重新输码（否则死锁）。
-           能不能用功能，由 AdminTools 内部的两道门把关。 */
-        adminId && adminOpen ? html`<div class="admintools-host"><${AdminTools} open=${true} anchor=${adminAnchor} onClose=${() => setAdminOpen(false)} /></div>` : null}
+           ② 管理员没有 tools.game 权限 → 同样什么都不创建（2026-10-31 维护者要求）；
+           ③ 管理员退出授权后两道门仍为 true → 能打开面板去重新输码（否则死锁）。
+           能不能用功能，由 AdminTools 内部的验码门把关。 */
+        adminId && gameTool && adminOpen ? html`<div class="admintools-host"><${AdminTools} open=${true} anchor=${adminAnchor} onClose=${() => setAdminOpen(false)} /></div>` : null}
 
     <div class="gtop__center">
       <span class="gtop__frame gtop__frame--l">

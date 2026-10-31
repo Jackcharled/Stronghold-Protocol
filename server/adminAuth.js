@@ -46,7 +46,12 @@ export function readUserToken(token) {
   const uid = Number(data.uid);
   if (!Number.isSafeInteger(uid) || uid <= 0) return null;
   const tag = typeof data.tag === 'string' && /^[0-9]{4}$/.test(data.tag) ? data.tag : null;
-  return { uid, role: data.role, tag };
+  // ★ 2026-10-31：gameTool = 这个账号有没有「游戏内管理员工具」权限。
+  //   owner 恒为 true（最高管理员不受权限表限制，与 matchmaker 的 adminHasPerm 口径一致）。
+  //   旧版令牌没有这个字段：按 false 处理 —— admin 必须重新登录才会带上，
+  //   期间只是看不到入口（保守一侧），不会误放开。
+  const gameTool = data.role === 'owner' ? true : data.gameTool === true;
+  return { uid, role: data.role, tag, gameTool };
 }
 
 // ── 吊销支持（2026-10-31）───────────────────────────────────────────────

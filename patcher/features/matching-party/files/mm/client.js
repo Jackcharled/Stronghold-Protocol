@@ -3563,8 +3563,16 @@ const JOIN_COOKIE = (() => {
       setIf2('right', 'auto');
       setIf2('top', 'auto');
       setIf2('transform', 'none');
-      setIf2('margin', '0 0 0 10px');
+      // ★ 间距只由一处负责，避免叠加导致的 2px 跳动：
+      //   如果容器（下面算出的 host）用的是 flex + gap，就把节点状态的 margin-left 清零，
+      //   间距交给 gap；否则保留 10px margin（老界面不是 flex 时 gap 不生效）。
+      //   2026-10-31 实测：margin-left:10px 叠加 gap:10px 之后，
+      //   观战胶囊插进来/撤走会让 left 在 165 与 167 之间跳 2px，肉眼可见。
       setIf2('display', 'inline-flex');
+      // 位置稳定性：节点状态胶囊不参与 flex 伸缩，宽度固定由内容决定。
+      // 前面（延迟胶囊）宽度会变（数字位数），后面（观战胶囊）可能消失 ——
+      // 都不应该让它左右跑。
+      setIf2('flex', '0 0 auto');
       if (el.classList.contains('topbar')) el.classList.remove('topbar');
       // 把“延迟 + 角标”强制排成一行（与选择模拟协议界面一致）
       let host = ping.parentElement;
@@ -3577,17 +3585,44 @@ const JOIN_COOKIE = (() => {
           host.style.alignItems = 'center';
           host.style.gap = '10px';
         }
-        // 期望顺序：ping → 本节点状态（大厅里 Q群在右侧工具组，不参与这里）
+        // 容器已经是 flex+gap 了，节点状态自己不再加外边距（否则 10+10，且会随兄弟变化）。
+        setIf2('margin', '0');
+        // ★ 2026-10-31 修「有观战按钮时节点状态胶囊会位移」（维护者反馈）。
+        //
+        //   现象：房间里出现观战者时，左上角多出「👁 1」胶囊，节点状态胶囊被推右 34px
+        //        （实测 left 199 → 233）；观战数归零它又弹回来。
+        //
+        //   原因：游戏本体的观战胶囊（React 的 SpectatorPill）渲染在「延迟胶囊」后面，
+        //        我们也把节点状态插在延迟后面，谁后插谁就往后站 —— 两者互相挤。
+        //
+        //   修法：**观战胶囊永远排在节点状态之后**。
+        //        每次 place() 时，如果发现延迟胶囊后面紧跟着观战胶囊（.specpill），
+        //        就把它挪到节点状态之后。这样节点状态的位置只由「延迟胶囊宽度」决定，
+        //        与观战者数量无关。
+        //        DOM 只在顺序不对时才动，避免周期性重排（那会表现为「一跳一跳」）。
+        const specPill = () => {
+          const p = ping.parentElement;
+          if (!p) return null;
+          return p.querySelector(':scope > .specpill');
+        };
         const qq = document.getElementById('mm-qq-lobby');
         const inTools = qq && qq.parentElement && qq.parentElement.classList.contains('topbar__tools');
         const wantPrev = inTools ? ping : ((qq && qq.parentElement === host && qq.isConnected) ? qq : ping);
-        // 只有「位置确实不对」时才动 DOM，且只动一次，避免周期性重排造成的跳动
         if (el.parentElement !== host) host.appendChild(el);
         if (el.previousElementSibling !== wantPrev) {
           wantPrev.insertAdjacentElement('afterend', el);
         }
-      } else if (ping.nextElementSibling !== el && ping.parentElement) {
-        ping.insertAdjacentElement('afterend', el);
+        // 把观战胶囊挪到节点状态之后（只在不正确时动）。
+        const sp = specPill();
+        if (sp && sp !== el.nextElementSibling && sp.previousElementSibling === el.previousElementSibling) {
+          el.insertAdjacentElement('afterend', sp);
+        }
+      } else {
+        // 没有可用的 flex 容器（老界面）：退回自己留 10px 间距，避免贴死在延迟胶囊上。
+        setIf2('margin', '0 0 0 10px');
+        if (ping.nextElementSibling !== el && ping.parentElement) {
+          ping.insertAdjacentElement('afterend', el);
+        }
       }
     };
     const attach = () => {
@@ -3638,18 +3673,43 @@ const JOIN_COOKIE = (() => {
       document.body.appendChild(veil);
     };
 
+    // 能不能打开「游戏内管理员工具」——2026-10-31 维护者定的规则：
+    //   **只有在自己参与的对局里才能打开**；观战、隐身观战一律不能。
+    //
+    // 判据本体在 /js/ui/adminGate.js（ui/hud.js 监听事件时也调它），这里只做一层
+    // 「注入脚本够不到 React 状态」的适配。★ 此处是**同步**判断：需要立刻知道结果，
+    // 所以用同步的 XMLHttpRequest 拉一次源文件是不行的 —— 改为把同样的规则再写一遍，
+    // 并靠 test/ui/adminGate.test.js 保证两边语义一致（见该测试的注释）。
+    //   · 必须已经是管理员（adminId）
+    //   · 必须已经在自己的对局里（match.public 存在）
+    //   · 不能是观战者：room.spectators 里有我（普通观战 + 隐身观战都在这里）
+    //   · 必须自己坐在 seats 里（没席位 = 在看别人打）
+    function canOpenAdminTools(st) {
+      if (!st || st.adminId !== true) return false;
+      // ①b 权限门（2026-10-31 维护者要求）：没被授予 tools.game 的管理员，
+      //    连「输入授权码的界面」都不该出现。这个值由服务端判定后随 welcome 下发。
+      if (st.gameTool !== true) return false;
+      const s = window.__SP__ && window.__SP__.store ? window.__SP__.store.get() : null;
+      if (!s || !s.match || !s.match.public) return false;
+      const room = s.room;
+      const myId = s.me && s.me.playerId;
+      if (!room || myId == null) return false;
+      if ((room.spectators || []).some((x) => x && x.playerId === myId)) return false;
+      return (room.seats || []).some((x) => x && x.playerId === myId);
+    }
+
     chip.addEventListener('click', (e) => {
       e.stopPropagation();
-      // 对局中：这颗胶囊就是「游戏内管理员工具」的入口。
-      // 只对管理员有效 —— 服务端 welcome.adminTools 为真时 store.adminTools 才是 true，
-      // 普通玩家点它仍然什么都不发生（下面原有的 return 保持不变）。
+      // 对局中：这颗胶囊是「游戏内管理员工具」的入口。
+      // 只对「正在自己参与的对局里」的管理员有效（见 canOpenAdminTools）。
+      // 普通玩家、观战者、隐身观战者点它仍然什么都不发生（下面原有的 return 保持不变）。
       if (el.classList.contains('match')) {
         const st = window.__SP__ && window.__SP__.store && window.__SP__.store.get();
         // ★ 判据用 adminId（身份门）而不是 adminTools（两道门都过）。
         //   退出授权后 adminTools 会变 false，若继续用它判断，管理员连面板都打不开，
         //   也就没有地方重新输码了 —— 2026-10-31 实测出来的死锁。
         //   普通玩家 adminId 也是 false，所以权限没有放宽。
-        if (st && st.adminId === true) {
+        if (canOpenAdminTools(st)) {
           try {
             // 把胶囊的屏幕位置一并传出：面板要开在它**正下方**，
             // 而不是固定在屏幕角落（维护者要求「就地打开，不用去别处找」）。

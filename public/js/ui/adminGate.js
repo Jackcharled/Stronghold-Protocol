@@ -23,6 +23,13 @@ export function canOpenAdminTools(s) {
   // ① 身份门：必须是管理员账号（owner/admin）。普通玩家 adminId 也是 false。
   if (!s || s.adminId !== true) return false;
 
+  // ①b 权限门（2026-10-31 维护者要求）：
+  //   管理员**如果没被授予 tools.game 权限**，连「输入授权码的界面」和「工具界面」
+  //   都不能打开 —— 打开界面本身就是越权展示。
+  //   这个值由服务端判定（owner 恒真，普通 admin 查权限表）后随 welcome 下发，
+  //   前端只照做，不猜。
+  if (s.gameTool !== true) return false;
+
   // ② 必须在「有对局」的状态：大厅、房间等待室里没有对局可改。
   if (!s.match || !s.match.public) return false;
 
