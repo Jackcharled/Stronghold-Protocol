@@ -1203,26 +1203,49 @@ async function handle(req, res, pathname) {
     }
     if (limited('toolcode:' + (ipOf(req) || '?'), 20, 3600_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
     const code = String(crypto.randomInt(100000, 1000000));
+    // ★ 码按「生成者自己的邮箱」存一条：key 里已经带了身份，
+    //   再加上 val.uid 做第二道保险（兑换时会比对）。同一个人重复生成会覆盖旧码
+    //   （ON DUPLICATE KEY UPDATE），所以每人同时只有一个有效码 —— 这符合
+    //   「每个管理员生成的码只对他自己有效」的语义。
     const key = 'tool_code:' + String(u.email || '').toLowerCase();
-    // 复用 admin_settings 的 k/v 表：只存哈希 + 过期时间，不新增表
     const val = JSON.stringify({ h: hashCode(key, code), exp: Date.now() + 10 * 60_000, uid: u.id });
     await db().query('INSERT INTO admin_settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)', [key, val]);
     await audit({ id: u.id, email: u.email }, 'tool-code-issue', u.id, u.role, ipOf(req));
-    return sendJson(res, 200, { ok: true, code, minutes: 10, hours: 4, note: '在游戏内点左上角延迟胶囊，输入这个码' });
+    return sendJson(res, 200, { ok: true, code, minutes: 10, hours: 4, note: '在游戏内点左上角「节点状态」胶囊，输入这个码；只有你自己的账号能用' });
   }
   if (method === 'POST' && pathname === '/api/admintool/exchange') {
     // ⚠ 路径不能挂在 /api/admin/ 下：那个前缀在本文件上方有「仅本机 IP」+「Bearer 鉴权」两道旧守卫，
     //    游戏页从公网访问会被直接 403/401。
     if (limited('toolex:' + (ipOf(req) || '?'), 30, 3600_000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests' });
     const body = await readBody(req, 8 * 1024);
-    const email = String(body.email || '').trim().toLowerCase();
     const code = String(body.code || '').trim();
+    // ★★★ 2026-10-31 安全修复：身份**只能取自登录会话，绝不采信请求体里的 email** ★★★
+    //
+    //   以前这里用的是 `body.email`。那意味着：任何登录用户（哪怕普通玩家）
+    //   只要在请求里把 email 写成某个管理员的邮箱、并且知道那 6 位码，
+    //   就能兑换出那个管理员的令牌 —— 码和人的绑定形同虚设。
+    //   维护者的要求是「每个管理员生成的码只对这个管理员有效，其他人不能用」，
+    //   所以这里必须先有登录态，再用**会话里的账号**去查码。
+    const me = await currentUser(req);
+    if (!me) return sendJson(res, 401, { ok: false, error: 'login_required' });
+    const email = String(me.email || '').trim().toLowerCase();
     if (!email || !/^[0-9]{6}$/.test(code)) return sendJson(res, 400, { ok: false, error: 'invalid' });
+    // 请求体里如果硬塞了别的 email，直接拒绝（帮助排查，也避免「静默忽略」带来的困惑）
+    const bodyEmail = String(body.email || '').trim().toLowerCase();
+    if (bodyEmail && bodyEmail !== email) {
+      return sendJson(res, 403, { ok: false, error: 'not_your_code' });
+    }
     const key = 'tool_code:' + email;
     const [rows] = await db().query('SELECT v FROM admin_settings WHERE k = ?', [key]);
     const rec = rows[0] ? JSON.parse(rows[0].v) : null;
     if (!rec || Number(rec.exp) < Date.now()) return sendJson(res, 400, { ok: false, error: 'code_expired' });
     if (rec.h !== hashCode(key, code)) return sendJson(res, 400, { ok: false, error: 'code_wrong' });
+    // ★ 码的归属再核一次：生成时记了 uid，这里必须与当前登录账号一致。
+    //   key 已经是「tool_code:<本人的邮箱>」，uid 这层是第二道保险 ——
+    //   万一以后有人改了 key 的构造方式，也不会把码发给别人。
+    if (rec.uid != null && Number(rec.uid) !== Number(me.id)) {
+      return sendJson(res, 403, { ok: false, error: 'not_your_code' });
+    }
     // 角色仍以账号表为准：验证码只证明「后台已登录并发过码」，不替代角色判定
     const [acc] = await db().query('SELECT id, email, nickname, tag, role, disabled, deleted_at FROM accounts WHERE email = ?', [email]);
     const a = acc[0];

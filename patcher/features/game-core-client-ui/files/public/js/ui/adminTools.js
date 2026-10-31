@@ -216,19 +216,24 @@ export function AdminTools({ open, onClose, anchor = null }) {
   async function verify() {
     const c = String(code || '').trim();
     if (!/^[0-9]{6}$/.test(c)) { setCodeMsg(t('请输入 6 位数字')); return; }
-    const email = window.__SP_ACCOUNT_EMAIL || '';
-    if (!email) { setCodeMsg(t('请先登录账号')); return; }
+    // ★ 2026-10-31：**不再把 email 发给服务端**。
+    //   兑换的身份由服务端从登录会话取（cookie），前端传什么都不算数 ——
+    //   否则谁都能把 email 改成别人的，去用别人的码。
+    //   这里只做一次「有没有登录」的前置提示，真正的判定在服务端。
+    if (!window.__SP_ACCOUNT_TOKEN) { setCodeMsg(t('请先登录账号')); return; }
     setCodeMsg(t('验证中…'));
     try {
       const r = await fetch('/mm/api/admintool/exchange', {
         method: 'POST', credentials: 'same-origin', cache: 'no-store',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, code: c }),
+        body: JSON.stringify({ code: c }),
       });
       const j = await r.json().catch(() => null);
       if (!j || !j.ok || !j.adminToken) {
         setCodeMsg(j?.error === 'code_wrong' ? t('验证码不对')
           : j?.error === 'code_expired' ? t('验证码已过期，请到后台重新生成')
+          : j?.error === 'not_your_code' ? t('这个验证码不是你的，请用自己后台生成的码')
+          : j?.error === 'login_required' ? t('请先登录账号')
           : j?.error === 'not_admin' ? t('这个账号不是管理员')
           : t('验证失败'));
         return;
