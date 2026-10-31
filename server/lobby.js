@@ -885,7 +885,18 @@ export class Lobby {
       return;
     }
     session.notice = null;
-    session.pendingResult = null;
+    // ★ 2026-10-31：**这里不能无条件清掉 pendingResult**。
+    //   原来这一行把「等玩家回来时补发的结算帧」直接抹了：
+    //   对局结束时玩家断线（座位还在、connected=false）→ onMatchEnd 把结果塞进
+    //   session.pendingResult → 他重连时房间还在 → 走到这里被清成 null →
+    //   等房间消散再重连，结果早没了。玩家看到的就是「打完没结算、还停在暂停态」。
+    //   现在：房间还在、但手里有等待补发的结算 → 立刻补发（他已经连上了）。
+    if (session.pendingResult) {
+      try {
+        for (const frame of session.pendingResult) if (frame) sendRaw(session.ws, frame);
+      } catch { /* 发不出去就留着，下次重连再试 */ }
+      session.pendingResult = null;
+    }
     // ★ 2026-10-31：座位上的「管理员」标记同步成最新值。
     //
     //   两件事必须分清（维护者反馈「控制台把我显示成玩家了」引出）：
@@ -2776,6 +2787,29 @@ export class Lobby {
       s.ready = false;
       if (!s.connected) this.startGrace(room, s);
     }
+    // ★ 2026-10-31：**对局结束时已经断线的人，要把结果留给他**。
+    //
+    //   实测（玩家 希儿芙乐艾 / 房间 YKKB / node-1）：
+    //     17:28 掉线 → 17:31 对局结束 → 17:33 房间因空解散 → 玩家重连后什么都没收到。
+    //   原因：`m.result` 走 matchSend → sendToPlayer → sendSession，
+    //   而 sendSession 第 377 行是 `if (!session.connected) return false;` —— 断线时**直接丢弃**。
+    //   房间结束时断线的人还占着座位（只是 connected=false），所以 onHello 会走
+    //   「房间还在」那条分支，把 session.pendingResult 清成 null（第 888 行），
+    //   于是等房间消散、他终于重连时，那份结果早就没了。
+    //   表现就是维护者看到的：客户端停在「暂停中」，点继续报「当前阶段无法进行该操作」。
+    //
+    //   修法：结算帧先生成好（room.replay 本来就是给这个用的），
+    //   凡是「还躺在座位上但没连上」的人，直接把属于他的那份塞进 session.pendingResult，
+    //   等他下一次 hello 时 onHello 的 `!room` 分支会补发。
+    try {
+      for (const s of [...room.seats, ...room.spectators]) {
+        if (!s || s.isBot || s.left || s.connected) continue;
+        const sess = this.registry?.byId ? this.registry.byId(s.playerId) : null;
+        if (!sess) continue;
+        const frames = this.replayFor(room, s.playerId);
+        if (frames && frames.length) sess.pendingResult = frames;
+      }
+    } catch (e) { this.log?.warn?.('[lobby] 结算补发准备失败', e); }
     for (const s of room.spectators) if (!s.connected) this.startGrace(room, s);
     const host = room.hostId ? room.seatOf(room.hostId) : null;
     if (!host || host.isBot || host.left) this.migrateHost(room);
