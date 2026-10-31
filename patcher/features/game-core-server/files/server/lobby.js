@@ -276,7 +276,12 @@ export const LOBBY_DEFAULTS = Object.freeze({
   maxRoomsPerAddr: 16,    // rooms created from one client network that may exist at once (0 = unlimited)
   maxMatchesPerAddr: 8,   // matches started from one client network that may run at once (0 = unlimited)
   maxBotsPerAddr: 0,      // 同一 IP 跨房间累计的 AI 队友上限（0 = 不限）
-  idleKickMs: 0,          // 挂机多久后移出房间（0 = 关闭；240000 ≈ 两回合）
+  // ★ 2026-10-31 维护者要求开启：挂机 4 分钟移出房间。
+  //   原来默认 0（关闭），只有对局中的两条消极游戏规则在跑，而且那边还漏接了回调。
+  //   4 分钟 ≈ 两回合，足够覆盖「去接杯水」，又不至于让整屋子人等一个人。
+  //   判定对象是「房间里坐着、没点准备、真实连接着、且 4 分钟没有任何消息」的真人；
+  //   已点准备的、AI、断线的都不算（断线有单独的 15 分钟重连窗口）。
+  idleKickMs: 4 * 60_000,
   resyncMinGapMs: 1000,   // heavy resyncs (match state / result replay) per session at most this often on repeated hellos
   soloReconnectWindowMs: null, // a dropped solo run stays resumable this long (null = data singleReconnectTime, 24 h)
   versionVoteMs: 60_000,  // an open version vote is cancelled after this long (header "Official versions") [ASSUMED]
@@ -1231,20 +1236,34 @@ export class Lobby {
     }
   }
 
-  /** 把一个挂机的真人移出房间：先提示，再按「被移出」关房；断线中的玩家等回来时看到提示。 */
-  kickIdle(room, playerId, session) {
+  /**
+   * 把一个挂机的真人移出房间：先提示，再按「被移出」关房；断线中的玩家等回来时看到提示。
+   *
+   * ★ 2026-10-31：这个函数现在有两个调用方 ——
+   *   · sweepIdle（房间等待中，超过 idleKickMs 没有任何操作）
+   *   · MatchIntents 的 onIdleKick（对局中，连续 2 回合消极游戏）
+   *   第二种情况下 session 可能已经断了（AI 托管中），所以这里必须容错：
+   *   session 为空时照样把人从房间里摘掉，只是没法给他发提示。
+   */
+  kickIdle(room, playerId, session, { reason = 'idle' } = {}) {
     const replay = this.replayFor ? this.replayFor(room, playerId) : null;
+    // 对局中被判定消极游戏时，先把人从对局里摘出来（等对局继续，但他不再参与）
     this.removeMember(room, playerId);
-    if (session.roomCode === room.code) session.roomCode = null;
-    session.lastActiveAt = this.now();
-    if (session.connected) {
-      sendSession(session, { t: 'm.toast', kind: 'warn', text: '长时间未操作，你已被自动移出同盟' });
+    if (session) {
+      if (session.roomCode === room.code) session.roomCode = null;
+      session.lastActiveAt = this.now();
+    }
+    const text = reason === 'idle' && room.match
+      ? '检测到消极游戏，你已被移出同盟'
+      : '长时间未操作，你已被自动移出同盟';
+    if (session && session.connected) {
+      sendSession(session, { t: 'm.toast', kind: 'warn', text });
       sendSession(session, { t: 'room.closed', reason: 'kicked' });
-    } else {
+    } else if (session) {
       session.notice = 'kicked';
       session.pendingResult = replay;
     }
-    this.log.info(`[lobby] ${room.code} ${session.name || playerId} removed for idling`);
+    this.log.info(`[lobby] ${room.code} ${(session && session.name) || playerId} removed (${reason})`);
   }
   // ---------------------------------------------------------------------------------------------------
   // room.* handlers
@@ -2665,6 +2684,14 @@ export class Lobby {
         send: (playerId, msg, encoded) => (ctx.live ? this.matchSend(room, ctx, playerId, msg, encoded) : false),
         broadcast: (msg, encoded) => { if (ctx.live) this.matchBroadcast(room, ctx, msg, encoded); },
         onEnd: (summary) => this.onMatchEnd(room, ctx, summary),
+        // ★ 2026-10-31：**接上防消极踢人**。以前这里没有这个键，于是
+        //   MatchIntents 里的 `this.onIdleKick?.(...)` 永远不执行 ——
+        //   两条消极游戏规则只弹一个 toast，人照样留在局里，等于没生效（维护者实测确认）。
+        //   （patcher/new/server/lobby.js 里本来有这个接线，升级时漏合并到了当前文件。）
+        onIdleKick: (playerId, reason) => {
+          try { this.kickIdle(room, playerId, this.registry.byId(playerId), { reason }); }
+          catch (e) { this.log?.warn?.('[lobby] onIdleKick failed', e); }
+        },
       };
       // a room with gameplay plugins plays in its content set's match host, a room of another official version in that
       // version's; every other room here, as always

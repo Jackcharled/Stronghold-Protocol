@@ -14,8 +14,12 @@ export class MatchIntents {
   /** 消极游戏检测：连续 2 回合花钱（买/刷新/升级）但一次都没部署干员 → 踢出。 */
   _trackActivity(ps, msg) {
     if (!ps || ps.isBot) return;
+    // 已经被判定消极游戏、踢出去了：不再重复判定（否则每回合都弹一次提示）
+    if (ps._idleKicked) return;
     const round = Number(this.round) || 0;
-    // 只在第 4 回合前判定（含第 4 回合）
+    // 只在第 4 回合前判定（含第 4 回合）。
+    // 第 4 回合之后不再踢人：那时局面已经展开，中途踢人会让整局失衡，
+    // 而且前期没被判定的人基本已经在正常玩了。
     if (round > 4) { if (ps._act) { ps._act.strikes = 0; ps._act.idleStrikes = 0; } return; }
     let st = ps._act;
     if (!st || st.round !== round) {
@@ -23,17 +27,21 @@ export class MatchIntents {
       if (st && st.spend > 0 && st.place === 0) {
         st.strikes = (st.strikes || 0) + 1;
         if (st.strikes >= 2) {
+          ps._idleKicked = true;
           try { this.toast?.(ps, 'warn', '检测到连续 2 回合购买/刷新但未部署干员，你已被移出同盟（消极游戏）'); } catch { /* ignore */ }
           try { this.onIdleKick?.(ps.playerId, 'idle'); } catch { /* ignore */ }
         }
       } else if (st) {
         st.strikes = 0;
       }
-      // 规则二：连续 3 回合既不购买也不部署（只点准备）→ 消极游戏
+      // 规则二：连续 2 回合既不购买也不部署（只点准备）→ 消极游戏
+      // （注释以前写「连续 3 回合」但代码是 2 —— 以代码为准，这里把注释改成一致的 2：
+      //   前期两回合什么都不做，基本可以确定是挂机，等三回合只会多拖一局。）
       if (st) {
         if (st.spend === 0 && st.place === 0) {
           st.idleStrikes = (st.idleStrikes || 0) + 1;
           if (st.idleStrikes >= 2) {
+            ps._idleKicked = true;
             try { this.toast?.(ps, 'warn', '检测到连续 2 回合未购买、未部署干员，你已被移出同盟（消极游戏）'); } catch { /* ignore */ }
             try { this.onIdleKick?.(ps.playerId, 'idle'); } catch { /* ignore */ }
             st.idleStrikes = 0;
