@@ -881,6 +881,23 @@ export class Lobby {
     }
     session.notice = null;
     session.pendingResult = null;
+    // ★ 2026-10-31：座位上的「管理员」标记同步成最新值。
+    //
+    //   两件事必须分清（维护者反馈「控制台把我显示成玩家了」引出）：
+    //     seat.admin      = **身份**（owner/admin 账号）+ 权限门 —— 控制台据此显示
+    //                       「管理员」徽章。它不该要求「兑换过验证码」：
+    //                       一个 owner 还没去后台换码，他仍然是管理员，徽章就该是管理员。
+    //     ps.admin (Match) = **能不能改这局数据** —— g.test 放行用它，要求三道门全过。
+    //   以前两者都直接读 session.admin（三道门），于是「没换码的 owner」在控制台
+    //   显示成「玩家」，而且对局中换了码、刷新也不更新。
+    const wantBadge = session.adminId === true && session.gameTool === true;
+    const wantTool = session.admin === true;
+    const seat0 = room.seatOf(session.playerId);
+    if (seat0 && seat0.admin !== wantBadge) seat0.admin = wantBadge;
+    if (room.match && room.match.players?.get) {
+      const ps = room.match.players.get(session.playerId);
+      if (ps && ps.admin !== wantTool) ps.admin = wantTool;
+    }
     // a player seat, or a spectator seat (header): both carry `connected` / `name`
     const seat = room.seatOf(session.playerId) || room.watcherOf(session.playerId);
     this.clearGrace(session.playerId);
@@ -3222,8 +3239,11 @@ export class Lobby {
       // 游客标记：游客只能游玩/旁观，不能当选房主（migrateHost 用它排除游客）。
       guest: session.guest === true || !session.accountId,
       // 后台/服主标记：只用于控制台把「玩家」显示成「管理员」，不参与任何规则判定。
-      // 判定与服务端的 session.admin 完全一致（adminToken 或账号角色）。
-      admin: session.admin === true,
+      // ★ 2026-10-31：判据是「身份 + 权限」（adminId && gameTool），**不是** session.admin。
+      //   session.admin 还要求验过授权码 —— 用它会让「没换码的 owner」在控制台显示成「玩家」，
+      //   而徽章表达的是「这个账号是不是管理员」，不是「他现在能不能改数据」。
+      //   能不能改数据由 Match 的 ps.admin（三道门全过）决定，那是另一回事。
+      admin: session.adminId === true && session.gameTool === true,
       loadout: session.loadout || null,
       ops: session.ops || null,
       notOwned: session.notOwned || null,

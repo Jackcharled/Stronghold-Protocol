@@ -15,7 +15,7 @@
 // ui/hud.js 监听）。★ 不是延迟胶囊：PingPill 只是个延迟显示，没有点击事件。
 import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { html, Icon } from './components.js';
-import { useStore } from '../store.js';
+import { store, useStore } from '../store.js';
 import { data, useData } from '../data.js';
 import { net } from '../net.js';
 import { toast } from './toasts.js';
@@ -248,9 +248,20 @@ export function AdminTools({ open, onClose, anchor = null }) {
         setCodeAuthed(true);
         setCodeLeftMin(Math.max(1, Math.ceil(ttlMs / 60000)));
       } catch { /* ignore */ }
-      setCodeMsg(t('验证成功，正在重连…'));
+      // ★ 2026-10-31：**不再刷新页面**（维护者：刷新很影响体验）。
+      //   只要在**同一条连接上重发一次 hello**，服务端就会重新校验令牌、
+      //   并通过 welcome 把 adminCode / adminTools 推下来 —— 界面自动就切到功能面板。
+      //   （rehandshake 就是干这个的：net.js 注释写明「服务端接受同一连接上的重复 hello」
+      //   并重新同步身份。）
+      setCodeMsg(t('验证成功'));
       try { net.rehandshake?.(); } catch { /* 老版本没有 */ }
-      setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 700);
+      // 兜底：真的没连上（离线/重连中）时，等它连上会自动带令牌握手，不必刷新。
+      // 但如果 3 秒后服务端还是没认，起码给个明确的提示，别让人对着「验证成功」发呆。
+      setTimeout(() => {
+        let ok;
+        try { ok = store.get().adminCode === true; } catch { ok = false; }
+        if (!ok) setCodeMsg(t('验证成功，但服务端还没确认。请确认已连接后关掉面板重开。'));
+      }, 3000);
     } catch { setCodeMsg(t('网络错误')); }
   }
 
@@ -274,9 +285,14 @@ export function AdminTools({ open, onClose, anchor = null }) {
           try { localStorage.removeItem('sp.adminCodeExp'); } catch { /* ignore */ }
           try { sessionStorage.removeItem(ADMIN_TOKEN_KEY); } catch { /* ignore */ }
           try { window.__SP_ADMIN_TOKEN = ''; } catch { /* ignore */ }
+          // ★ 2026-10-31：退出授权也**不再刷新页面**。
+          //   重发 hello 后服务端会拿「没有令牌」重算 → welcome.adminCode/adminTools 变 false，
+          //   界面自己就退回取码框。刷新只是为了「让状态生效」，而重握手已经能做到。
           try { net.rehandshake?.(); } catch { /* ignore */ }
-          setCodeAuthed(false); setCodeLeftMin(0); setShowCode(false);
-          setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 500);
+          setCodeAuthed(false); setCodeLeftMin(0);
+          // 退出后直接把取码框展开：不刷新页面时，用户不用再点一次「验证码授权」才看到输入框。
+          setShowCode(true);
+          setCodeMsg(t('已退出授权'));
         }} title=${t('已吊销全部验码令牌，下次要重新输码')}>${t('退出授权')}</button>
     </div>
     ${(autoOpen || showCode) ? html`

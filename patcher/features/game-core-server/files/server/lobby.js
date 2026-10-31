@@ -881,6 +881,23 @@ export class Lobby {
     }
     session.notice = null;
     session.pendingResult = null;
+    // ★ 2026-10-31：座位上的「管理员」标记同步成最新值。
+    //
+    //   两件事必须分清（维护者反馈「控制台把我显示成玩家了」引出）：
+    //     seat.admin      = **身份**（owner/admin 账号）+ 权限门 —— 控制台据此显示
+    //                       「管理员」徽章。它不该要求「兑换过验证码」：
+    //                       一个 owner 还没去后台换码，他仍然是管理员，徽章就该是管理员。
+    //     ps.admin (Match) = **能不能改这局数据** —— g.test 放行用它，要求三道门全过。
+    //   以前两者都直接读 session.admin（三道门），于是「没换码的 owner」在控制台
+    //   显示成「玩家」，而且对局中换了码、刷新也不更新。
+    const wantBadge = session.adminId === true && session.gameTool === true;
+    const wantTool = session.admin === true;
+    const seat0 = room.seatOf(session.playerId);
+    if (seat0 && seat0.admin !== wantBadge) seat0.admin = wantBadge;
+    if (room.match && room.match.players?.get) {
+      const ps = room.match.players.get(session.playerId);
+      if (ps && ps.admin !== wantTool) ps.admin = wantTool;
+    }
     // a player seat, or a spectator seat (header): both carry `connected` / `name`
     const seat = room.seatOf(session.playerId) || room.watcherOf(session.playerId);
     this.clearGrace(session.playerId);
@@ -1124,7 +1141,14 @@ export class Lobby {
     session.resumeWindowMs = room && room.match && room.mode === 'solo' ? this.soloResumeWindowMs(room) : null;
     if (!room) return;
     const player = room.seatOf(session.playerId);
-    const seat = player || room.spectatorOf(session.playerId);
+    // roomOf() 认三种身份：座位、普通观战、隐身观战（hiddenSpectators）。这里必须同样认全，
+    // 否则隐身观战者的 socket 一断，seat 就是 null，下面 seat.connected = false 直接抛
+    // TypeError（[net] onDisconnect crashed）。后果不是「少记一个字段」：net.js 里
+    // session.connected 已经置 false 了，而 onDisconnect 余下的 startGrace / broadcastState /
+    // lastHumanLeftAt 全部没跑 —— 房间状态和真实情况脱节，刷新后回不到自己的座位。
+    // 线上 2026-10-26 ~ 10-30 共 12 个节点 31 次（日志 `onDisconnect crashed`）。
+    const seat = player || room.watcherOf(session.playerId);
+    if (!seat) return; // 已不在这个房间（被踢/已移除），没有任何要标记的席位
     seat.connected = false;
     // the page may come back as a new one (a reload): it loads and checks the room's content again (header "Gameplay
     // plugins") — and a room.contentReady of the page that went, still on the room's queue, no longer counts (seatGen)
@@ -2572,6 +2596,19 @@ export class Lobby {
         diy: own ? own.diy : null,
         // 干员皮肤 (docs/SKINS.md): the appearances the human wears, keyed by operator charId (bots always default)
         skins: own ? own.skins : null,
+        // 本服：管理员标记必须一起传下去 —— PlayerState 用 seat.admin 得出 ps.admin，
+        // Match.applyTestCommand 靠它放行游戏内管理员工具。这里曾经漏掉，
+        // 结果管理员一开局 ps.admin 就是 false，每个 g.test 都回 TEST_FORBIDDEN。
+        //
+        // ★ 不能只信 seat.admin：房间从存档兜底恢复（fallbackRoom）时，历史上丢过这个字段，
+        //   坏值还会被写回存档，于是「房间明明是我建的、前端也显示已授权，开场后却没权限」。
+        //   这里以**当前会话**为准重新算一遍：session 还在（人连着）就用它的 admin；
+        //   人不在（AI 托管/掉线）才退回座位上的旧值。
+        admin: (() => {
+          const sess = this.registry?.byId ? this.registry.byId(s.playerId) : null;
+          if (sess) return sess.admin === true;
+          return s.admin === true;
+        })(),
       };
     });
     // lastPublic / results: the latest m.public broadcast and the m.result frames (encoded), kept for the replay.
@@ -2855,8 +2892,11 @@ export class Lobby {
     const room = this.roomOf(session);
     if (!room) return fail(ERR.NOT_IN_ROOM);
     if (msg.t === 'g.test') {
-      if (!this.testEnabled) return fail(ERR.TEST_DISABLED);
-      if (room.test !== true) return fail(ERR.TEST_FORBIDDEN);
+      // 本服：管理员（session.admin，由 net.js 验 adminToken 得出）在**正常房间**里也能用测试指令，
+      // 对应「游戏内管理员工具」。普通玩家仍走原来的两道门，判定来源只有服务端这一个。
+      const isAdmin = session.admin === true;
+      if (!this.testEnabled && !isAdmin) return fail(ERR.TEST_DISABLED);
+      if (room.test !== true && !isAdmin) return fail(ERR.TEST_FORBIDDEN);
     }
     if (!room.match) return fail(ERR.WRONG_PHASE, 'no running match');
     if (msg.t === 'g.leave') {
@@ -3199,8 +3239,11 @@ export class Lobby {
       // 游客标记：游客只能游玩/旁观，不能当选房主（migrateHost 用它排除游客）。
       guest: session.guest === true || !session.accountId,
       // 后台/服主标记：只用于控制台把「玩家」显示成「管理员」，不参与任何规则判定。
-      // 判定与服务端的 session.admin 完全一致（adminToken 或账号角色）。
-      admin: session.admin === true,
+      // ★ 2026-10-31：判据是「身份 + 权限」（adminId && gameTool），**不是** session.admin。
+      //   session.admin 还要求验过授权码 —— 用它会让「没换码的 owner」在控制台显示成「玩家」，
+      //   而徽章表达的是「这个账号是不是管理员」，不是「他现在能不能改数据」。
+      //   能不能改数据由 Match 的 ps.admin（三道门全过）决定，那是另一回事。
+      admin: session.adminId === true && session.gameTool === true,
       loadout: session.loadout || null,
       ops: session.ops || null,
       notOwned: session.notOwned || null,
@@ -3339,7 +3382,7 @@ export class Lobby {
     const t = setTimeout(() => {
       this.graceTimers.delete(playerId);
       if (room.disposed || room.match) return;
-      const s = room.seatOf(playerId) || room.spectatorOf(playerId);
+      const s = room.seatOf(playerId) || room.watcherOf(playerId);
       if (!s || s.connected) return;
       const session = this.registry.byId(playerId);
       if (session && session.roomCode === room.code) {

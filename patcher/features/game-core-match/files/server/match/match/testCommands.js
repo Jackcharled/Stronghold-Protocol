@@ -60,6 +60,19 @@ export class MatchTestCommands {
     // 放行条件只有一个来源 —— 座位上的 admin 标记，它由 lobby 从已校验的 session.admin 写入。
     if (this.test !== true && !(ps && ps.admin === true)) return fail(ERR.TEST_FORBIDDEN);
     if (!ps) return fail(ERR.NOT_HOST);
+    // ★ 2026-10-31：按需补一次计量状态。
+    //   Match.js 只在**建局那一刻**存在管理员座位时才初始化 _testRate / _testLog / testTimers。
+    //   但维护者的场景是「开局之后才兑换授权码」：建局时没有管理员座位 → 这些字段全没建，
+    //   之后 ps.admin 变成 true，一调命令就在 _testRateAllows 里
+    //   `Cannot read properties of undefined (reading 'get')` 崩掉（实测 node-12 报错）。
+    //   这里兜一次：谁先把 ps.admin 变成 true，就给谁补上。
+    if (this._testRate === undefined) {
+      this.testTimers = this.testTimers === true;
+      this.testActions = Number(this.testActions) || 0;
+      this.testLog = Array.isArray(this.testLog) ? this.testLog : [];
+      this._testRate = new Map();
+      this._testSeq = Number(this._testSeq) || 0;
+    }
     // [ASSUMED] Every seat shares one bucket per command, including a guest or a spectator.
     // The stamp happens before the refusal audit so those attempts consume a slot.
     const cmd = isTestCommand(msg?.cmd) ? msg.cmd : 'invalid';
