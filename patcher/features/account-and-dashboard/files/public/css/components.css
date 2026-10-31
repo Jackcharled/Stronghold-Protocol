@@ -974,7 +974,13 @@
 .conn-banner {
   position: fixed;
   left: 50%;
-  bottom: .24rem;
+  /* ★ 2026-10-31：从「大厅在底部、对局在顶部」统一成**一律顶部**（维护者要求：
+     提示服务器更新/需要刷新的横幅要固定在同一个位置，不要换个界面就换地方）。
+     选顶部而不是底部，是因为对局底部被「战斗视图切换器 + 商店栏」占着，
+     大厅底部也可能压到页脚；顶部在任何界面都留着一块空的横条。
+     原来的 bottom: .24rem 已删除。 */
+  top: calc(1.34rem + var(--sa-t, 0px));
+  bottom: auto;
   transform: translateX(-50%);
   z-index: var(--z-conn);
   display: flex;
@@ -998,8 +1004,16 @@
    (toasts below the banner while it shows). */
 /* (classes set by js: html.sp-in-match — the match screen is mounted; html.sp-conn — the banner shows. No :has(): Firefox
    ESR 115 / Safari < 15.4 lack it) */
+/* 横幅本身现在**所有界面都在顶部同一位置**（见 .conn-banner 的 top），
+   所以这里不再需要给 .sp-in-match 单独改位置 —— 只保留 toast 的避让规则：
+   横幅在的时候，toast 要往下让，别叠在一起。
+   ★ 大厅也要让：大厅的 toast 默认在 top: .22rem，横幅在 1.34rem，本来不重叠；
+     但横幅是「服务器已更新」这种常驻条，toast 长文本换行后会往下长出好几行，
+     所以统一把「横幅可见时」的 toast 压到横幅下面。 */
 .sp-in-match .toast-host { top: calc(1.34rem + var(--sa-t, 0px)); }
-.sp-in-match .conn-banner { top: calc(1.34rem + var(--sa-t, 0px)); bottom: auto; }
+/* 横幅可见时（.sp-conn）：大厅和对局都把 toast 压到横幅下面，避免叠在一起。
+   大厅原本是 .22rem、横幅在 1.34rem 本来不冲突，但常驻横幅 + 多行 toast 会撞上。 */
+.sp-conn .toast-host { top: calc(1.34rem + var(--sa-t, 0px)); }
 .sp-in-match.sp-conn .toast-host { top: calc(2.0rem + var(--sa-t, 0px)); }
 .conn-banner .icon { width: .22rem; height: .22rem; color: var(--orange-hi); }
 .conn-banner__sub { color: var(--text-lo); font-family: var(--font-num); font-size: calc(.15 * var(--t)); }
@@ -1060,7 +1074,12 @@
   .lobby-screen .topbar { grid-template-columns: minmax(0, 1fr) auto; gap: .1rem .2rem; }
   .lobby-screen .topbar__center { grid-column: 1 / -1; grid-row: 2; }
   .lobby-screen .topbar__center .micro { display: none; }
-  .lobby-screen .topbar__right { grid-column: 2; grid-row: 1; }
+  /* 窄屏下左侧那格必须能收缩，否则右侧组被挤出可视区、压在「开始模拟」上面（2026-10-31 实测） */
+  .lobby-screen .topbar__left { min-width: 0; }
+  .lobby-screen .topbar__right { grid-column: 2; grid-row: 1; justify-self: end; min-width: 0; }
+  /* 大厅里「恢复对局」不该挤在顶栏里抢位置：窄屏时换成独立一行贴底，不覆盖任何按钮 */
+  .lobby-screen .topbar__right > .verchip,
+  .lobby-screen .topbar__right > .verchip--urgent { max-width: 42vw; overflow: hidden; }
 }
 
 .section-label { display: flex; align-items: baseline; gap: .12rem; margin: 0 0 .14rem; font-size: calc(.2 * var(--t)); font-weight: 700; letter-spacing: .08em; }
@@ -1282,4 +1301,23 @@
   .verpick__name { font-size: calc(.28 * var(--t)); }
   .verpick__badge { font-size: calc(.2 * var(--t)); }
   .verpick__period, .verpick__note { font-size: calc(.21 * var(--t)); }
+}
+/* ═══ 大厅顶栏窄屏加固（2026-10-31 实测：恢复对局按钮压在「开始模拟」上）═══
+   .lobby-screen 顶栏只有 left / right 两个子元素，没有 center。
+   ≤1000px 时列定义是 minmax(0,1fr) auto，right 被要求待在 auto 那列，
+   它会紧贴 left 后面 —— 左侧工具组一多就被推下去、叠在主内容上。
+   这里让顶栏改成 flex + wrap：right 组永远靠右对齐，放不下就换行，
+   绝不与主内容重叠。 */
+@media (max-width: 1000px) {
+  .lobby-screen .topbar {
+    display: flex; flex-wrap: wrap; align-items: center;
+    justify-content: space-between; gap: .1rem .2rem;
+    height: auto; min-height: 1.1rem; padding-block: .12rem;
+  }
+  .lobby-screen .topbar__left { flex: 1 1 auto; min-width: 0; }
+  .lobby-screen .topbar__right {
+    flex: 0 0 auto; grid-column: auto; grid-row: auto;
+    justify-self: auto; margin-left: auto;
+  }
+  .lobby-screen .topbar__center { flex: 1 1 100%; grid-column: auto; grid-row: auto; }
 }
