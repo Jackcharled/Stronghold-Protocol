@@ -45,7 +45,7 @@ import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import { C2S, validateC2S } from '../shared/protocol.js';
 import { ERR, ERR_TEXT, NAME_MAX_LEN, PROTOCOL_VERSION } from '../shared/constants.js';
-import { verifyAdminToken, readUserToken } from './adminAuth.js';
+import { verifyAdminToken, readAdminToken, readUserToken } from './adminAuth.js';
 
 /** Tunables (all overridable through the Network / SessionRegistry constructors). */
 export const NET_DEFAULTS = Object.freeze({
@@ -759,8 +759,18 @@ export class Network {
       if (session) {
         if (session.connected && session.ws && session.ws !== conn.ws
           && (msg.noReplace || (Number.isFinite(msg.claimAt) && session.claimAt != null && msg.claimAt > session.claimAt))) {
+          // 这条拒绝以前不留任何痕迹，排查「刷新后回不到房间」时无从下手。记一行：
+          // token 前 8 位、哪一侧赢得 claim、旧 socket 是否还连着。
+          this.log.warn('[net] SESSION_IN_USE player=' + session.playerId + ' token=' + String(session.token).slice(0, 8)
+            + ' noReplace=' + !!msg.noReplace + ' claimAt=' + msg.claimAt + ' sessionClaimAt=' + session.claimAt
+            + ' oldConnected=' + session.connected);
           this.reply(conn, errorMsg(ERR.SESSION_IN_USE, rid));
           return;
+        }
+        // 同一个 token 的新连接接管旧连接：这是**正常刷新**的路径，不是错误。
+        if (session.ws && session.ws !== conn.ws) {
+          this.log.warn('[net] resume took over player=' + session.playerId + ' token=' + String(session.token).slice(0, 8)
+            + ' oldConnected=' + session.connected);
         }
         resumed = true;
         if (session.ws && session.ws !== conn.ws) this.detachReplaced(session.ws);
@@ -798,8 +808,25 @@ export class Network {
     // 管理员/服主身份：adminToken 是后台下发的能力令牌；accountToken 里同样带有由同一把
     // 密钥签名的 role。移动端冷启动、令牌过期或页面不经过后台登录时只有 accountToken，
     // 若只认 adminToken，管理员会被维护开关误拦。两者任一表明 owner/admin 即可。
-    session.admin = verifyAdminToken(msg.adminToken)
-      || (account != null && (account.role === 'owner' || account.role === 'admin'));
+    //
+    // ★ 本服 2026-10-31 改为「两道门」，缺一不可：
+    //   session.adminId  = 身份门：账号角色是 owner/admin（不看令牌）。
+    //   session.adminTool = 验码门：手里有**未过期**的 adminToken（只能由后台发码兑换得到）。
+    //   真正的放行条件是两者同时为真（见下面的 session.admin），
+    //   所以「只是 owner 但没去后台换码」的人进不了游戏内管理员工具。
+    //   注意 adminToken 与我们自己签的 accountToken 是同一把密钥、同样的 payload 结构，
+    //   verifyAdminToken 还会核对 role，因此不能拿 accountToken 冒充 —— 它没有 exp 由发码接口控制。
+    session.adminId = account != null && (account.role === 'owner' || account.role === 'admin');
+    // ★ 2026-10-31：验码门还要核对「这枚令牌是不是本人换来的」。
+    //   以前只调 verifyAdminToken(msg.adminToken) —— 它只证明「这枚令牌是真的、没过期、没被吊销」，
+    //   不证明**是谁**换的。实测：普通玩家把别人的 owner 令牌塞进 hello，
+    //   会得到 adminCode=true（虽然 adminTools 仍是 false，功能点下去也会被拒，
+    //   但界面已经显示出「已授权」的错状态）。令牌里带 uid，这里比一下即可。
+    const adminTokInfo = readAdminToken(msg.adminToken);
+    const sameUser = adminTokInfo != null && account != null
+      && Number(adminTokInfo.uid) > 0 && Number(adminTokInfo.uid) === Number(account.uid);
+    session.adminTool = sameUser && verifyAdminToken(msg.adminToken);
+    session.admin = session.adminId === true && session.adminTool === true;
     // 诊断用：记录本次 hello 带来的身份材料，便于排查「管理员不被识别」
     session.accountRole = account ? account.role : null;
     session.hadAdminToken = typeof msg.adminToken === 'string' && msg.adminToken.length > 0;
@@ -815,6 +842,16 @@ export class Network {
     let extra = null;
     try { extra = this.handler.welcomeInfo?.() ?? null; } catch (e) { this.log.error('[net] welcomeInfo crashed', e); }
     const welcome = { ...(extra && typeof extra === 'object' ? extra : null), t: 'welcome', playerId: session.playerId, token: session.token, name: session.name, tag: session.tag || null, serverNow: now, version: PROTOCOL_VERSION, resumed };
+    // 本服：告诉前端「这个连接是管理员」（adminToken 已验签，见上面 session.admin）。
+    // 前端据此渲染游戏内管理员工具（点延迟胶囊）。真正的放行在服务端
+    // （routeGameNow + Match.applyTestCommand 都查 session.admin / ps.admin），改前端没用。
+    // 非管理员不带这个键，所以普通玩家的 welcome 与上游逐字相同。
+    // adminTools：这个连接是否能用游戏内管理员工具（身份门 + 验码门都过）。
+    // adminId：只是身份门（owner/admin 账号），用于前端区分「你不是管理员」和「你还没换码」。
+    // adminTool：只是验码门。三者分别下发，前端据实显示，不靠 localStorage 猜。
+    if (session.admin === true) welcome.adminTools = true;
+    if (session.adminId === true) welcome.adminId = true;
+    if (session.adminTool === true) welcome.adminCode = true;
     if (session.aiTakeoverFrom) { welcome.takeoverFrom = session.aiTakeoverFrom; session.aiTakeoverFrom = null; }
     if (validRid(rid)) welcome.rid = rid;
     this.reply(conn, welcome);

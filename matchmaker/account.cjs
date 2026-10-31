@@ -43,6 +43,16 @@ function adminTokenFor(u) {
   return payload + '.' + sig;
 }
 
+// 验码令牌的有效期。默认 4 小时。
+// ★ 环境变量 SP_ADMIN_TOOL_TTL_MS 只用于测试「到期后自动退回取码界面」：
+//   调成 60000（1 分钟）重启 matchmaker，兑换后等 1 分钟，看面板是否自动退回。
+//   生产环境不要设它。
+function adminToolTtlMs() {
+  const v = Number(process.env.SP_ADMIN_TOOL_TTL_MS);
+  if (Number.isFinite(v) && v >= 10_000 && v <= 24 * 3600_000) return v;
+  return 4 * 3600_000;
+}
+
 // 登录账号的短期签名身份：游戏节点验签后只信 uid/tag，不再依赖可伪造的四位 tag。
 function userTokenFor(u) {
   if (!u || !u.id) return null;
@@ -1199,11 +1209,15 @@ async function handle(req, res, pathname) {
     }
     await db().query('DELETE FROM admin_settings WHERE k = ?', [key]);   // 一次性
     await audit({ id: a.id, email: a.email }, 'tool-code-redeem', a.id, a.role, ipOf(req));
-    // adminToken 有效期 4 小时（adminTokenFor 写死 12 小时，这里单独签一个短期的）
+    // 验码令牌的有效期：默认 4 小时。
+    // ★ 2026-10-31：抽成常量 + 环境变量，方便把时间调短做「到期自动退回」的测试。
+    //   测试方法：SP_ADMIN_TOOL_TTL_MS=60000 重启 matchmaker → 1 分钟后自动失效，
+    //   验证完把环境变量去掉、重启回 4 小时。生产不要设这个变量。
+    const ttlMs = adminToolTtlMs();
     // iat：签发时间。配合「吊销时间点」实现退出授权 —— 早于吊销点的令牌一律作废。
-    const payload = Buffer.from(JSON.stringify({ v: 1, typ: 'admin', uid: a.id, role: a.role, iat: Date.now(), exp: Date.now() + 4 * 3600_000 })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ v: 1, typ: 'admin', uid: a.id, role: a.role, iat: Date.now(), exp: Date.now() + ttlMs })).toString('base64url');
     const sig = crypto.createHmac('sha256', watchSecret()).update(payload).digest('base64url');
-    return sendJson(res, 200, { ok: true, adminToken: payload + '.' + sig, hours: 4, role: a.role });
+    return sendJson(res, 200, { ok: true, adminToken: payload + '.' + sig, hours: ttlMs / 3600_000, ttlMs, role: a.role });
   }
   // 吊销验码令牌（游戏内「退出授权」按钮调用）。
   // 令牌是无状态 HMAC，服务端无法单独作废某一枚，所以记一个「吊销时间点」：

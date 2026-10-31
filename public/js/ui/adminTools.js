@@ -59,10 +59,24 @@ const ADMIN_TOKEN_KEY = 'sp.adminToken';
 //   必须放在模块顶层（而不是组件里）：面板只在打开时才挂载，而 net 的 hello
 //   在页面一加载就发出去了 —— 等面板挂载再恢复就太晚了，那次 hello 已经不带令牌。
 //   net.js 的 hello 只从 window.__SP_ADMIN_TOKEN 取这个值。
+//
+//   ⚠ 恢复之前先看**有没有过期**：过期的令牌绝不能恢复，
+//   否则「4 小时到了」这件事只在面板打开时才被发现，没开面板时页面仍带着一枚
+//   服务端已经不认（或刚好还在认）的旧令牌，状态很混乱。
+//   sp.adminCodeExp 记的是兑换那一刻 + ttl，过期就当没换过。
 try {
-  const saved = globalThis.sessionStorage && globalThis.sessionStorage.getItem(ADMIN_TOKEN_KEY);
-  if (saved && !(typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN)) {
-    window.__SP_ADMIN_TOKEN = saved;
+  const expAt = Number((globalThis.localStorage && globalThis.localStorage.getItem('sp.adminCodeExp')) || 0);
+  const expired = !Number.isFinite(expAt) || expAt <= Date.now();
+  if (expired) {
+    // 授权已到期：连存下来的令牌一起清掉，回到「必须先输码」的状态。
+    try { globalThis.sessionStorage && globalThis.sessionStorage.removeItem(ADMIN_TOKEN_KEY); } catch { /* ignore */ }
+    try { globalThis.localStorage && globalThis.localStorage.removeItem('sp.adminCodeExp'); } catch { /* ignore */ }
+    if (typeof window.__SP_ADMIN_TOKEN === 'string') window.__SP_ADMIN_TOKEN = '';
+  } else {
+    const saved = globalThis.sessionStorage && globalThis.sessionStorage.getItem(ADMIN_TOKEN_KEY);
+    if (saved && !(typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN)) {
+      window.__SP_ADMIN_TOKEN = saved;
+    }
   }
 } catch { /* 隐私模式：忽略 */ }
 
@@ -99,11 +113,26 @@ export function AdminTools({ open, onClose, anchor = null }) {
   // 必须订阅才会真正去加载 data/*.json；否则下面 list() 拿到的永远是空表。
   // 一次订阅全部列表数据集，切页签不会又变回空白。
   useData('chess', 'items', 'bonds', 'bands', 'enemies');
+  // 每 5 秒核对一次有效期。到点要做的不只是「改一个布尔值」：
+  // 必须把令牌一起清掉并重新握手，否则 window.__SP_ADMIN_TOKEN 还留着，
+  // 服务端也还认它（服务端只看令牌 exp）—— 面板会退回取码界面，
+  // 但手里那枚过期令牌还在，属于「以为退出了其实没有」的隐患。
   useEffect(() => {
     const t2 = setInterval(() => {
       const m = readLeftMin();
       setCodeAuthed((prev) => (prev === (m > 0) ? prev : m > 0));
       setCodeLeftMin((prev) => (prev === m ? prev : m));
+      if (m <= 0) {
+        // 4 小时（或测试时的短时长）到期：彻底清掉授权，回到「未授权」状态。
+        try {
+          if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN) {
+            window.__SP_ADMIN_TOKEN = '';
+            try { sessionStorage.removeItem(ADMIN_TOKEN_KEY); } catch { /* ignore */ }
+            try { localStorage.removeItem('sp.adminCodeExp'); } catch { /* ignore */ }
+            try { net.rehandshake?.(); } catch { /* ignore */ }
+          }
+        } catch { /* ignore */ }
+      }
     }, 5000);
     return () => clearInterval(t2);
   }, []);
@@ -208,11 +237,13 @@ export function AdminTools({ open, onClose, anchor = null }) {
         //   于是「验证成功 → 重连 → 刷新 → 又要求输码」（维护者实测撞到）。
         //   用 sessionStorage 而不是 localStorage：关掉标签页授权就结束，符合「4 小时临时授权」的语义。
         sessionStorage.setItem(ADMIN_TOKEN_KEY, String(j.adminToken));
-        // 后端返回 hours（默认 4），记下到期时刻供上面显示
-        const hours = Number(j.hours) || 4;
-        localStorage.setItem('sp.adminCodeExp', String(Date.now() + hours * 3600_000));
+        // ★ 有效期以**服务端**为准：服务端回 ttlMs（默认 4 小时，测试时可调短）。
+        //   前端不要再写死 4 小时 —— 两边必须一致，否则会出现
+        //   「服务端已过期、前端还以为能用」或反过来「前端先退回、服务端还认」。
+        const ttlMs = Number(j.ttlMs) > 0 ? Number(j.ttlMs) : (Number(j.hours) || 4) * 3600_000;
+        localStorage.setItem('sp.adminCodeExp', String(Date.now() + ttlMs));
         setCodeAuthed(true);
-        setCodeLeftMin(Math.max(1, Math.ceil((hours * 3600_000) / 60000)));
+        setCodeLeftMin(Math.max(1, Math.ceil(ttlMs / 60000)));
       } catch { /* ignore */ }
       setCodeMsg(t('验证成功，正在重连…'));
       try { net.rehandshake?.(); } catch { /* 老版本没有 */ }
