@@ -11,9 +11,36 @@ import { OK, fail } from './common.js';
 import { onHumanEmote } from '../botEmotes.js';
 
 export class MatchIntents {
+  /**
+   * 当前还在局里的**真人**数量（不算 AI、不算已离开的）。
+   *
+   * 为什么实时算而不用 this.loneHuman：后者是建局时的快照，
+   * 「2 人开局、中场退了一个」之后它就过期了 —— 那时其实已经是单人局，
+   * 再按消极游戏踢剩下那一个人是不合理的。
+   * @returns {number}
+   */
+  _humanCount() {
+    try {
+      const list = Array.isArray(this.order) ? this.order : (this.players ? [...this.players.values()] : []);
+      let n = 0;
+      for (const p of list) if (p && !p.isBot && !p.left) n++;
+      return n;
+    } catch { return 0; }
+  }
+
   /** 消极游戏检测：连续 2 回合花钱（买/刷新/升级）但一次都没部署干员 → 踢出。 */
   _trackActivity(ps, msg) {
     if (!ps || ps.isBot) return;
+    // ★ 2026-10-31 维护者要求：**单人（只有一个真人）不判定消极游戏**。
+    //   理由很直接：消极游戏伤害的是「同局的其他真人」—— 一个人自己打单机，
+    //   挂机也好、不部署也好，没有别人受影响，踢掉他只会平白打断他。
+    //   同局的 AI 不算人：一真人 + 三个 AI 仍然是单人局，不判定。
+    //
+    //   ⚠ 不能用 this.loneHuman：那是**建局时**算好的一次性快照，
+    //   中途有人退出后它对不上（2 人开局、1 人退出 → 其实已经是单人局，
+    //   但 loneHuman 仍是 false，会把剩下那个人按消极踢掉）。
+    //   这里每次实时数一遍「还没离开的真人」。
+    if (this._humanCount() < 2) return;
     // 已经被判定消极游戏、踢出去了：不再重复判定（否则每回合都弹一次提示）
     if (ps._idleKicked) return;
     const round = Number(this.round) || 0;
