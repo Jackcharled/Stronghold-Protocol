@@ -3200,11 +3200,39 @@ git status --short                                                  # 无意外�
 
 ```powershell
 $tok = (Get-Content D:\Stronghold-Protocol\.secrets\github-token.txt -Raw).Trim()
-$url = "https://x-access-token:$tok@ghfast.top/https://github.com/Jackcharled/Stronghold-Protocol.git"
-git push   $url refs/heads/custom/production:refs/heads/custom/production --force
-git fetch  $url refs/heads/custom/production:refs/remotes/origin/custom/production --force
+$url = "https://x-access-token:$tok@github.com/SatsumaUton/Stronghold-Protocol.git"
+# 直连 + HTTP/1.1，见下面「镜像全挂时怎么办」
+git -c http.version=HTTP/1.1 -c credential.helper= -c http.postBuffer=524288000 `
+    push  $url refs/heads/custom/production:refs/heads/custom/production
+git -c http.version=HTTP/1.1 -c credential.helper= `
+    fetch $url refs/heads/custom/production:refs/remotes/origin/custom/production --force
 git rev-list --left-right --count origin/custom/production...HEAD   # 再确认一次 0  0
 ```
+
+#### 镜像全挂时怎么办（2026-10-31 实测）
+
+那天 `ghfast.top` 连续十几次超时（21 秒后 `Failed to connect`），直连也报
+`Recv failure: Connection was reset`，一度以为推不上去。逐个试出来的结论：
+
+| 通道 | 结果 |
+|---|---|
+| `ghfast.top` | 连接超时，全程不可用 |
+| `gh-proxy.com` | **读可以、写不行**：`remote: No anonymous write access.` |
+| `gitclone.com` | 只读镜像，不认 token |
+| `hk.gh-proxy.com` | HTTP 超时 20s |
+| **直连 `github.com` + HTTP/1.1** | ✅ 成功（`ls-remote` 1.8s，30 个提交直接推完） |
+
+关键有两条：
+
+1. **`-c http.version=HTTP/1.1`** —— 这道改动让直连从「21 秒超时」变成「1.8 秒通」。
+   默认协商的 HTTP/2 在这条链路上会被卡住。
+2. **token 必须拼在 URL 里**（`https://x-access-token:$tok@github.com/...`），
+   用 `http.extraHeader="Authorization: Bearer ..."` 反而会走到凭据提示，
+   报 `could not read Username`。
+
+> 判断「连不连得上」不要用 `Test-NetConnection`：它只测 TCP 握手，
+> 那天它对 `ghfast.top:443` 报 `True`，但 TLS/HTTP 层根本走不通。
+> 真判据是 `git ls-remote <url> HEAD` 能不能在几秒内返回。
 
 #### ⚠ 判断「推送成功没有」不要看 `origin/custom/production`
 
