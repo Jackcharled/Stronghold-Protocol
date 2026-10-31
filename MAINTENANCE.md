@@ -1454,6 +1454,47 @@ nginx 的 `if ($arg_room ~ "^[A-Za-z0-9]{4,6}$") { set $sp_node $cookie_sp_route
 `X-SP-Accepts-New` 响应头就是给它用的（`1` 接新 / `0` 不接），只在结算页读，
 **不在对局中打扰**——对局中刷新有风险，而提示的意义只是「什么时候方便就刷新」。
 
+##### ★ 提示出现在哪几个地方（2026-10-31 扩全）
+
+| 位置 | 组件 | 判据 |
+|---|---|---|
+| 单人结算页 | `result.js` 的 `ResultView` → `NodeCodeHint` | `X-SP-Accepts-New: 0` |
+| **同盟结算页** | `settle.js` 的 `TeamPage` → `NodeCodeHint` | 同上 |
+| **大厅 / 房间等待中** | `connBanner.js` 的横幅（顶部居中） | ① 本节点 build 变了（`buildStale`）**或** ② `X-SP-Accepts-New: 0`（新加） |
+| 对局中 | 同一个横幅 | 只在 build 变了时出现，**不打断对局** |
+
+这里有两个**完全不同**的判据，别混：
+
+- **`buildStale`** —— 这一页加载之后，**同一节点**的 `/healthz.build` 变了（节点重启换版）。
+  `ui/buildGuard.js` 负责，60 秒查一次。
+- **`X-SP-Accepts-New: 0`** —— nginx 说这台节点不接新玩家了，也就是它**在跑旧代码**。
+  这台节点可能从开机起就没变过 build（`buildGuard` 永远不会报），
+  但玩家该刷新换节点。**这是维护者在 node-7 上等不到提示的原因。**
+
+##### 三个曾经踩过的坑
+
+1. **离开房间就 `buildGuard.stop()`** → 之后再也不检查版本，大厅里永远收不到提示。
+   改成 `buildGuard.reset()`：清掉刚结束那一局的判定，但**继续监控**。
+   注意 `reset()` 不能把 `known` 清成 null —— 页面没刷新，`known` 没变；
+   清掉之后下一轮当 first 处理，会把服务器当前 build 记成基准，
+   **「服务器确实换版了」这件事就再也发现不了**。
+2. **同盟结算页没挂 `NodeCodeHint`** → 单人打完有提示，同盟打完什么都没有。
+3. **同盟结算页挂了但看不见** → `.settle__stage` 是
+   `position:absolute; 19.2rem×10.8rem`，里面 `steam__outcome` / `steam__rounds` / `steam__when`
+   **全是 absolute 固定坐标**。普通流内元素夹在中间会被盖住。
+   现在 `.steam__nodehint` 自己绝对定位到**舞台顶部居中**，`z-index:3`、`pointer-events:none`。
+   实测：439×24、`top=16px`、与底部元素**无重叠**。
+
+##### 横幅位置：所有界面统一在**顶部居中**
+
+`.conn-banner` 原来是 `bottom: .24rem`（大厅在底部），对局中由 `.sp-in-match` 覆写成顶部。
+2026-10-31 统一成 `top: calc(1.34rem + var(--sa-t))`、`bottom: auto`。
+
+选顶部而不是底部：对局底部被「战斗视图切换器 + 商店栏」占着，大厅底部可能压到页脚。
+实测大厅 / 房间 / 对局三者 `top` 都是 94px、水平中心都在视口中心。
+
+顺带：`.sp-conn .toast-host` 让 toast 在横幅可见时下移，避免常驻横幅与多行 toast 叠在一起。
+
 #### 自查命令
 
 ```powershell
@@ -1649,6 +1690,203 @@ curl.exe -k -s -o NUL -D - -H "Cookie: sp_route=6" https://127.0.0.1/healthz | S
 | 同一局里被标记成观战者 | false | 不出现（len 0） |
 
 单元测试：`cd repo-sync && node --test test/ui/adminGate.test.js`（12 项）。
+
+#### ★ 三道门：身份 / 权限 / 验码（2026-10-31 定稿）
+
+上面 ①–⑤ 是「**在哪能点开**」。真正能不能用工具，还要过三道门，缺一不可：
+
+| 门 | 字段（`welcome` 下发） | 判据 | 谁能过 |
+|---|---|---|---|
+| ① 身份门 | `adminId` | 账号 `role in (owner, admin)` | 管理员账号 |
+| ② **权限门** | `gameTool` | 后台 `admin_perms` 里有 `tools.game` | owner 恒真；普通 admin 看权限表 |
+| ③ 验码门 | `adminCode` | 手里有未过期、未被吊销的验码令牌 | 兑换过授权码的人 |
+
+前端在 `adminGate.js` 里判 `adminId && gameTool`（**身份+权限**），
+`adminTools.js` 组件内再判一次 `if (!adminId || !gameTool) return null`。
+**没有权限的 admin 连取码框都看不到** —— 维护者明确要求「没权限不能打开授权界面」。
+
+`gameTool` 是怎么到节点的：matchmaker 查库判定（`gameToolAllowed()`），
+写进 `userToken` 的 `gameTool` 字段，节点 `readUserToken()` 读出来 → `session.gameTool` → `welcome.gameTool`。
+节点只验签、不查库，所以必须这样带过去。
+
+> ⚠ **旧令牌没有 `gameTool` 字段，一律按 `false` 处理**（保守）。
+> 改了权限逻辑或升级后，管理员需要**退出账号重新登录一次**才有这个字段。
+> 现场表现：管理员工具入口完全不出现，刷新也没用 —— 先查 `welcome.gameTool` 在不在。
+
+##### 验码门的三条硬规则
+
+1. **授权码只能被生成它的管理员本人兑换。**
+   兑换身份**只取自登录会话**（`currentUser(req)`），请求体里的 `email` 一律不采信；
+   另外再比对一次 `rec.uid === me.id`。
+   篡改请求体塞别人的邮箱 → `403 not_your_code`；未登录 → `401 login_required`。
+2. **有效期 4 小时，到点自动退回取码界面。**
+   有效期由服务端 `adminToolTtlMs()` 决定，随兑换响应回 `ttlMs`，前端不再写死 4 小时。
+   到点时前端会**清掉 `window.__SP_ADMIN_TOKEN` / `sessionStorage` / `sp.adminCodeExp` 并重连** ——
+   只改一个布尔值是不够的，那样「面板退回了但手里还攥着旧令牌」。
+   模块加载时也会先判过期，过期就不恢复令牌。
+3. **兑换 / 退出授权都**不刷新页面**。**
+   `net.rehandshake()` 在同一条连接上重发 hello，服务端重算后通过 `welcome` 把
+   `adminCode` / `adminTools` 推下来，界面自己就切了。
+   实测：兑换前 false/false → 兑换后 true/true → 退出后 false/false，
+   `Page.frameNavigated` 计数全程 1（零刷新）。
+
+##### 测试有效期用的开关
+
+```powershell
+$env:SP_ADMIN_TOOL_TTL_MS='60000'      # 1 分钟
+pm2 restart matchmaker --update-env
+# 验证完务必改回来（不设 = 4 小时），并确认 pm2 env 里已经没有这个变量：
+pm2 env <matchmaker-id> | Select-String SP_ADMIN_TOOL_TTL_MS
+```
+
+> ⚠ pm2 会记住这个变量，`pm2 restart` 清不掉；要显式 `Remove-Item Env:\SP_ADMIN_TOOL_TTL_MS`
+> 再 `pm2 restart matchmaker --update-env`。确认兑换响应里 `ttlMs: 14400000` 才算恢复。
+
+##### 曾经踩过的坑
+
+| 坑 | 后果 |
+|---|---|
+| `adminTokenFor()` 签的令牌没有 `iat` | 点过一次「退出授权」后，账号登录带来的令牌**永久**失效（`verifyAdminToken` 把无 `iat` 的令牌全废）。刷新也没用 |
+| `/api/auth/me`、登录、改名都顺手发 `adminToken` | 「登录管理员账号」= 「工具直接可用」，验码门形同虚设 |
+| 兑换后 `location.reload()`，令牌只在内存 | 一刷新就丢，而码 10 分钟就过期 —— 等于白换 |
+| `verifyAdminToken` 不比对 uid | 普通玩家塞进别人的 owner 令牌会得到 `adminCode=true`（功能仍被拒，但界面显示错状态） |
+| `seat.admin` 直接读 `session.admin`（三道门全过） | 没兑换码的 owner 在控制台被显示成「玩家」。**徽章 = 身份+权限**，不是「此刻能不能改数据」 |
+| 只有 `startMatch` 算 `ps.admin` | 对局中才兑换授权码的人，`g.test` 一直被拒、甚至崩（`_testRate` 没初始化）。已在 `onHello` 同步 |
+
+---
+
+### 9.34d 防消极游戏（2026-10-31）
+
+维护者的规则（分四次提出，合并成现在这一套）：
+
+> 消极游戏自动踢出；被踢的人本局不能自己加回来；
+> **单人（不足 2 个真人）不判定**；挂机 4 分钟也踢。
+
+#### ★ 先说最重要的一课：这套机制原本就有，但**从来没生效过**
+
+`MatchIntents._trackActivity()` 里早就写了两条规则，`server/lobby.js` 也写了 `kickIdle()`。
+但创建 Match 时**没传 `onIdleKick` 回调**，于是：
+
+```js
+this.onIdleKick?.(ps.playerId, 'idle');   // 可选链吞掉，永远不执行
+```
+
+结果：**只弹一个 toast，人照样留在局里**。而且这个 bug 静默了不知道多久 ——
+没有报错、没有日志，界面还"正常提示"了，只有去读 `ps.admin` / 查代码才发现。
+
+> **教训：写「回调式」扩展点时，一定要检查调用方是否真的接线。**
+> `?.` 会把漏接线变成静默失败。
+> `patcher/new/server/lobby.js:1480` 里本来有这行接线，升级时漏合并到了
+> `server/lobby.js` —— 这也是「补丁完整性」检查之外，需要人工复检的一类漂移。
+
+#### 现在的完整规则
+
+**对局中**（`_trackActivity`，只在第 1–4 回合判定）：
+
+| 规则 | 条件 | 动作 |
+|---|---|---|
+| 一 | 连续 2 回合**花钱**（买/刷新/升级）却**一次没部署** | 踢出 |
+| 二 | 连续 2 回合**既不购买也不部署** | 踢出 |
+
+不判定的情况（**全都必须满足才判**）：
+
+- **真人数量 < 2** —— 单人局（一真人 + 任意 AI 都算单人）
+- 第 4 回合之后（中后期踢人会让整局失衡）
+- AI 座位
+- 已经被踢过的（`ps._idleKicked` 标记）
+
+**房间里**（`sweepIdle` + `idleKickMs`，默认 **4 分钟**）：
+
+- 坐着、**没点准备**、连接着、4 分钟没有任何消息 → 移出
+- 已点准备的 / AI / 断线的**不算**（断线另有 15 分钟重连窗口）
+- `session.lastActiveAt` 在 `onMessage()` 开头刷新，所以**任何操作都算活跃**
+
+#### 两个容易写错的细节
+
+1. **不能用 `this.loneHuman` 判单人。** 它是**建局时**的一次性快照。
+   「2 人开局、中场退了一个」之后它就过期了 —— 那时其实已经是单人局，
+   再按消极踢剩下那一个人是不合理的。现在用 `_humanCount()` **每次实时数**：
+   `this.order` 里 `!isBot && !left` 的数量。
+2. **被踢后要留记录，否则他立刻能加回来。**
+   记录放在 `room.idleKicked`（`Map<accountId, {...}>`），
+   `join()` 一开始就查，命中回 `ERR.IDLE_KICKED`（「你因消极游戏被移出本局，本局不能自己加回来」）。
+
+   - 按 **`accountId`** 记，不按 `playerId` —— 重连会换 `playerId`，按它记等于没记。
+   - 记录**挂在房间上**：房间散了就一起没，不会「被踢一次、以后永远进不了这个房」。
+     换新房间（新开局）也不受影响。
+   - 没有 `accountId` 的游客无法追踪，只照常移除、不记录（不崩）。
+
+#### 相关文件
+
+| 文件 | 职责 |
+|---|---|
+| `server/match/match/intents.js` | `_trackActivity`（两条规则）、`_humanCount()`、`ps._idleKicked` |
+| `server/lobby.js` | `kickIdle()`、`sweepIdle()`、`idleKickMs`、`onIdleKick` 接线、`room.idleKicked` 与 `join()` 的拦截 |
+| `shared/constants.js` | `ERR.IDLE_KICKED` + 文案 |
+| `server/match/Match.js` | `_testRate` / `testLog` / `testTimers` 的初始化（原来只在建局有管理员座位时建，对局中兑换授权码会崩，已在 `applyTestCommand` 里按需补齐） |
+
+#### 自查命令
+
+```powershell
+cd repo-sync
+node --test test/match/idle-guard.test.js       # 10 项：两条规则/单人豁免/退到1人/不重复踢/AI
+node --test test/match/idle-no-rejoin.test.js   # 5 项：按账号拦/换 playerId 拦不住/别人不受影响/换房能进
+```
+
+> ⚠ 测试环境 `data/create-room.json` 是 `{"enabled":false}`（建房维护开关），
+> `lobby.create` 会回 `CREATE_DISABLED`。测试里给 session 加 `admin: true` 借道建房
+> （代码里管理员无视维护开关），这与被踢判定无关。
+> 另外 `fail()` 返回的是 `{ error }`，**没有 `ok` 字段** —— 断言要用 `error`，别写 `ok === false`。
+
+---
+
+### 9.34e 今天顺手修的几处小的（2026-10-31）
+
+#### 后台「生成验证码」的字太小
+
+`matchmaker/public/admin.html` 里这一行写了**两个 `style` 属性**：
+
+```html
+<code id="toolCodeOut" style="font-family:monospace;..." style="font-size:20px;color:#9ff0d8"></code>
+```
+
+HTML 同一标签的重复属性，浏览器**只认第一个**，第二个整个丢弃 ——
+于是 6 位码一直是默认 12px + 全局 `code{color:#f0c674}` 的黄色。
+改成在 `<style>` 里用 `#toolCodeOut{...}`（28px、薄荷绿、加粗、带字距），
+另外加了 `:empty{display:none}`（没生成码时不占空框）和 `[data-state="used"]` 变灰。
+
+> **教训：HTML 里重复属性是静默失败的**，不报错、不警告，只有肉眼看样式才发现。
+> 改这类单行内联样式时，先 `Select-String 'style="'` 数一下同一行有没有两个。
+
+#### 有观战按钮时，节点状态胶囊会左右位移
+
+对局顶栏容器是 `topbar__left`（flex + `gap:10px`）。节点状态胶囊插在**延迟胶囊后面**，
+而游戏本体的观战胶囊（`SpectatorPill`）**也渲染在延迟胶囊后面** —— 两者抢位置，
+观战者一出现节点状态被推右 34px（实测 `left 199 → 233`），归零又弹回来。
+
+修法（`mm/client.js` 的 `place()`）：
+
+1. 每次把观战胶囊挪到**节点状态之后**，节点状态的位置就只由延迟胶囊宽度决定；
+2. 节点状态自身 `margin-left` 清零（间距交给容器 `gap`）——
+   原来 `margin:10px` 叠加 `gap:10px`，会让 `left` 在 165/167 之间跳 2px；
+3. 补 `flex: 0 0 auto`，避免被 flex 伸缩带着走。
+
+实测：反复插拔观战胶囊 6 次，`delta` 全部为 0。
+（`before` 值在 165~175 之间浮动是延迟数字宽度变化，与观战无关。）
+
+#### `tools/sync-open-nodes.ps1` 的 `-Force` 曾经是假的
+
+脚本里声明了 `[switch]$Force`，但「配置无变化」的短路判断在它之前就 `exit 0` 了 ——
+于是**改了 `nginx.conf` 本身**（`open-nodes.conf` 没变）跑 `-Apply`，会被当成"没变化"跳过，
+新配置**一直不上线**。已改成 `if ($oldContent -eq $newContent -and -not $Force)`。
+
+另外仓库里的这份脚本一度落后于部署目录（缺 `$EXCLUDE` 保留名单），已同步。
+
+#### 部署脚本的分发范围
+
+`deploy/sync-nodes.cjs` 的 `DIRS = ['public','shared','server','plugins','packs','schemas']` ——
+**`public/` 在里面**，所以 `public/js`、`public/css` 的改动要跑一次 `--apply` 分发到 30 台。
+（但改完不用重启节点：静态文件玩家刷新即可。）
 
 ---
 
