@@ -80,6 +80,42 @@ test('startBuildGuard: records this page\'s build in memory, reloads once on a N
   assert.equal(m.guard.stale(), true);
 });
 
+test('reset(): stops reporting stale but KEEPS watching (2026-10-31, "大厅里也要提示更新")', async () => {
+  // 维护者要求：更新后，已经建了房、或者还停在大厅里的人也要看到「刷新换新版本」的提示。
+  // 以前 main.js 在「离开房间」时直接 buildGuard.stop()，于是这些人永远收不到提示。
+  // 现在改成 reset()：清掉刚结束那一局的提示，但**继续监控**。
+  const m = manual();
+  await new Promise((r) => setTimeout(r, 0));      // 首次检查：基准 = aaa
+  m.setBuild('bbb');
+  await m.tick();                                  // 一次观测，还不够
+  await m.tick();                                  // 两次一致 → 判定 stale
+  assert.equal(m.guard.stale(), true);
+  assert.equal(m.calls.stale.length, 1);
+
+  // 离开房间：reset 清掉状态，但监控还在。
+  // ⚠ 这里要先让在途的 check() 落定：tick() 只是触发，await 的是微任务，
+  //   而 check 内部有多个 await —— 不先 flush 就可能读到上一轮尚未写完的 stale。
+  m.guard.reset();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(m.guard.stale(), false, 'reset 之后不再报告 stale');
+
+  // 服务器仍是新版本：再检查两轮应该**重新**判定为 stale 并再次通知
+  await m.tick();
+  await m.tick();
+  assert.equal(m.guard.stale(), true, 'reset 之后仍在监控：新版本会被重新发现');
+  assert.equal(m.calls.stale.length, 2, '第二次 stale 也要通知（大厅里的横幅靠它）');
+});
+
+test('reset() after stop() is a no-op (a stopped guard never comes back)', async () => {
+  const m = manual();
+  await new Promise((r) => setTimeout(r, 0));
+  m.guard.stop();
+  m.guard.reset();
+  m.setBuild('bbb');
+  await m.tick();
+  assert.equal(m.guard.stale(), false, 'stop 之后不能再判定 stale');
+  assert.equal(m.calls.stale.length, 0);
+});
 test('startBuildGuard: a NEW build that is then not served twice is dropped (rolling deploy / reverts)', async () => {
   const m = manual();
   await new Promise((r) => setTimeout(r, 0));

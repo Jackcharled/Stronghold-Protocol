@@ -145,6 +145,35 @@ export function startBuildGuard(o = {}) {
   timer = setIv(tick, intervalMs);
   return {
     stop: () => { stopped = true; stopTimer(); },
+    /**
+     * 复位「已判定为旧版本」的状态，但**继续监控**（2026-10-31）。
+     *
+     * 用在「离开房间/对局」这类事件上：那一刻的提示属于刚结束的那一局，应该清掉；
+     * 但人还在大厅里，服务器随时可能换版，所以不能停表 —— 以前 main.js 在这里调 stop()，
+     * 结果「在大厅/房间里等着的人」永远收不到更新提示。
+     *
+     * 复位后下一轮检查会把当前 build 当成新的基准重新比对：
+     * 如果服务器确实已经换了版本，几秒内会重新判定为 stale 并再次触发 onStale。
+     */
+    reset: () => {
+      // ★ 2026-10-31 踩到：这里原本有一句 `if (stopped) return;`，于是 reset 什么都不做。
+      //   因为 check() 判定 stale 后会走 reloadNow() → `stopped = true`；
+      //   而 main.js 的 reload 回调被改成「只设 buildStale、不真的刷新」，
+      //   所以「已经 stale 的 guard」其实已经 stopped 了 —— reset 被第一行挡掉，
+      //   stale 永远是 true。实测：reset 后立刻读仍是 true。
+      //
+      // ★ 另一个坑：不能把 known 清成 null。known 是「这一页跑的是哪个 build」，
+      //   它没有变（页面没刷新）。清掉之后下一轮会当 first 直接把服务器当前 build
+      //   记成基准，于是「服务器确实换了版本」这件事就再也发现不了了（实测）。
+      //   只清「判定过程中的中间状态」，保留 known。
+      stale = false;
+      candidate = null;
+      seen = 0;
+      if (stopped) {
+        stopped = false;
+        if (timer == null) timer = setIv(tick, intervalMs);
+      }
+    },
     check,
     stale: () => stale,
     known: () => known,

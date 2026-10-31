@@ -686,10 +686,19 @@ async function boot() {
       },
     });
     if (buildGuard) {
-      // Leaving any room/match stops the build guard: no "refresh page" state should
-      // appear as a result of coming back to the lobby.
+      // 离开房间 / 对局结束时，只清掉「刚才那局留下的」刷新提示，**不要停掉监控**。
+      //
+      // ★ 2026-10-31 修正（维护者要求：大厅、房间等待中也要提示更新）：
+      //   以前这里是 buildGuard.stop() —— 一离开房间就再也不检查版本了，
+      //   于是「在大厅/房间里等更新」的人永远收不到提示，只有正在打对局的人才会被拦。
+      //   现在改成：停一次即时检查的标记清空，然后**继续监控**（重新开始比对 build）。
+      //   这样人回到大厅后，服务器一换版，横幅照样会出现在大厅里。
       window.addEventListener('sp-room-left', () => {
-        try { buildGuard.stop(); } catch { /* ignore */ }
+        try {
+          // 复位「已判定为旧版本」的状态，让下一轮检查重新开始比对；
+          // 不停表 —— 停表正是「大厅里收不到提示」的原因。
+          buildGuard.reset?.();
+        } catch { /* ignore */ }
         store.patch('ui', { buildStale: false });
       });
       // A normal tab already open while the admin watches must also stop its build guard
