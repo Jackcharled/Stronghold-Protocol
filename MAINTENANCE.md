@@ -1821,6 +1821,40 @@ if (ps.playerId !== this.hostId) return fail(ERR.NOT_HOST);   // ← 上游 host
 
 **生效方式**：`server/` 改动 → **必须重启节点**（刷新页面不够）。
 
+##### ★ 9.34c-1b 「管理员」徽章只看身份，不看权限（2026-10-31 踩了两次）
+
+这一条被写错过**两次**，都被维护者发现：
+
+| 写法 | 后果 |
+|---|---|
+| `seat.admin = session.admin`（三道门：身份+权限+验证码） | 没兑换验证码的 owner 在后台显示成「玩家」 |
+| `seat.admin = adminId && gameTool`（身份+权限） | **没勾 `tools.game` 的 admin 显示成「玩家」** |
+
+**正确判据只有一个：`seat.admin = adminId === true`。**
+
+三件事必须分清，别再来回搅：
+
+| 字段 | 含义 | 判据 |
+|---|---|---|
+| `seat.admin` | **身份**：这个账号是不是 owner/admin。后台那个「管理员 / 玩家」标签读它 | 只看 `adminId` |
+| `session.gameTool` | **能力**：有没有 `tools.game` 权限。决定了工具界面能不能打开 | 权限表 `tools.game` |
+| `ps.admin`（Match 里） | **此刻能不能改这局数据**。`g.test` 放行用它 | `adminId && gameTool && adminCode` 三道门全过 |
+
+> 一句话：**身份是身份，权限是权限。** 一个人是管理员，不代表他能改数据；
+> 但没有权限也不该让他看起来像普通玩家。
+
+改动位置有两处，**必须同时改**（否则实时同步和下发会不一致）：
+
+- `Lobby.humanSeat()` 里的 `admin:` 字段（下发给客户端）
+- `lobby.onHello()` 里的 `wantBadge`（重连/换码时实时同步座位标记）
+
+测试：`test/lobby.test.js` 的「seat.admin badge is about IDENTITY」，
+反向验证过 —— 把判据退回 `adminId && gameTool` 会 FAIL。
+
+> ⚠ **旧令牌没有 `gameTool` 字段，一律按 `false` 处理。**
+> 所以改过权限或升级过节点之后，管理员必须**退出账号重新登录一次**，
+> 否则 `gameTool` 一直是 false，工具面板打不开。徽章不受影响（只看 `adminId`）。
+
 ##### 9.34c-3 其他玩家看不到任何「管理员在用工具」的痕迹（2026-10-31）
 维护者要求：管理员用工具时，**其他玩家那边不能有任何提示**，只有管理员自己看得到。
 
@@ -2504,6 +2538,49 @@ grep -c '#roomBody \.room-kind\.'   matchmaker/public/admin.html  → 0
 - 抄样式时**先确认目标有没有那条规则**。控制台没有 `.room-player.is-admin`，
   后台就不该有 —— 多写一条就是多一处漂移点。
 - 两处都自写的 UI，出现不一致时优先**合并成一份**，而不是反复对齐数值。
+
+#### ★★ 2026-10-31：同一个坑又踩了一次（改东西前先读这一节）
+
+维护者报「我明明是管理员，管理后台还是显示玩家」。我去修的时候**没读这一节**，
+于是又走了同样的弯路，而且叠加了另一个错误：
+
+1. **先修错了页面。** 一直以为是 `dashboard`（运维后台 `:3080`），
+   查了数据、接口、还真开了无头浏览器验证 —— 全都是好的。
+   实际维护者截的是 **`matchmaker/public/admin.html`**（管理后台 `:3090`，特征是有「隐身观战」按钮）。
+   → **两个后台是两套独立页面**，问「后台」时要先确认是哪一个。
+2. **`admin.html` 压根没引共享样式。** 它有自己那份 `.room-kind` / `.room-player` 本地副本，
+   而且**没有 `<link rel="stylesheet" href="/__admin-ui/room-tags.css">`**。
+   所以它连「管理员」这个标签都渲染不出来 —— 判据里只读 `p.guest`，写的是
+   `(p.guest ? '游客' : '玩家')`，**从来没读过 `p.admin`**。
+3. **我又自己写了一份配色。** 补 `is-admin` 时手写了一条蓝紫色的本地规则 ——
+   正是本节开头说的「不要再本地复制」。维护者立刻发现颜色和节点控制台不一样。
+
+**这次的完整修法**（`matchmaker/public/admin.html`，该文件被 `.gitignore` 排除，只改本机）：
+
+| 改动 | 说明 |
+|---|---|
+| 渲染逻辑 | 由 `(p.guest ? '游客' : '玩家')` 改为 `p.admin ? 管理员 : p.guest ? 游客 : 玩家`（顺序与 dashboard 一致） |
+| 加上 `<link>` | `<link rel="stylesheet" href="/__admin-ui/room-tags.css">`，排在本地 `<style>` **之前** |
+| 删掉本地重复规则 | `.room-kind`（player/guest/admin）、`.room-player`、`.room-player.is-host`、`em`、`i`、`.room-spectator`、`.room-spectators` 全部删除 |
+| 只保留容器样式 | `.room-players` 的 `max-height:4.6rem` + 滚动条（共享文件里没有） |
+
+改完按本节的验证方法实测：
+
+```
+:3080/__admin-ui/room-tags.css → 200, 3302 字节, text/css
+:3090/__admin-ui/room-tags.css → 200, 3302 字节, text/css   ← 字节数相同
+grep '#rooms-bar \.room-kind\.'  dashboard/public/index.html  → 0
+grep '#roomBody \.room-kind\.'   matchmaker/public/admin.html → 0
+```
+
+**新增教训（写给下一个改这里的人，包括未来的我）**：
+
+- **动任何两处都有的 UI 之前，先读本节。** 这里已经因为「两处各写一份」改过
+  三轮 + 一次事后事故，再写一份本地副本就是第四次。
+- **维护者说「后台」时，先问是 `:3080`（运维）还是 `/mm/admin.html`（管理后台）。**
+  两者的特征：管理后台有「隐身观战 / 结束对局」按钮，运维后台有节点/进程/nginx 面板。
+- 改 `admin.html` 不需要重启服务：`matchmaker/server.js` 的 `serveStatic` 是
+  `fs.readFile` 每次读盘 + `cache-control: no-store`，刷新页面即生效。
 
 **后续事故（2026-10-29，同一天发现）**：合并成共享文件后，**管理后台的玩家标签一度完全没有样式**
 （玩家名变成纯文字、没有胶囊边框）。原因是：
