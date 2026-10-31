@@ -45,6 +45,13 @@ $logFile = Join-Path $root 'logs\open-nodes.log'
 $TOTAL = 30
 $TIMEOUT_MS = 900
 
+# 不对外接新玩家的节点（逗号分隔节点号）。它们仍然留在 map 里，
+# 所以已经在那台上的人刷新 / 重连都不受影响，只是新访客不会再被分过去。
+# 用法：临时维护某台节点（例如开 SP_TEST_MODE 做排查）时把它加进来，
+#       维护完记得删掉，否则它永远接不到新玩家。
+# 当前为空 —— 2026-10-31 的莱恩哈特伤害排查已结束，node-30 恢复开放。
+$EXCLUDE = @()
+
 function Log-Pair {
   param([string[]]$Lines)
   $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -116,12 +123,17 @@ if ($alive.Count -eq 0) {
 }
 
 # 新访客可以去的节点 = 活着 且 跑新代码。挂掉的、跑旧代码的都挡在外面。
-$accept = @($alive | Where-Object { $stale -notcontains $_ })
+$accept = @($alive | Where-Object { $stale -notcontains $_ -and $EXCLUDE -notcontains $_ })
+$excludedAlive = @($alive | Where-Object { $EXCLUDE -contains $_ })
+if ($excludedAlive.Count -gt 0) {
+  $lines += ('  维护者保留（不接新玩家）: {0}' -f ($excludedAlive -join ','))
+}
 # 极端兜底：如果所有人都"跑旧代码"（比如代码刚更新、一台都还没重启），
 # 这时如果严格过滤，新玩家会无处可去 —— 站点等于关停。
 # 按「可用性优先」放行全部存活节点，并把这件事写进日志提醒去重启。
 if ($accept.Count -eq 0) {
-  $accept = $alive
+  $accept = @($alive | Where-Object { $EXCLUDE -notcontains $_ })
+  if ($accept.Count -eq 0) { $accept = $alive }   # 连排除后都空了，只能全放
   $lines += '★ 所有存活节点都还在跑旧代码：本次放行全部存活节点接新玩家（否则新玩家将无处可去）'
   $lines += '  → 请尽快重启这些节点（面板「重启这 N 个空闲节点」）'
 }
@@ -161,14 +173,29 @@ $newLines += '  default 0;'
 $newLines += ('  {0}' -f (($accept | ForEach-Object { "$_ 1;" }) -join ' '))
 $newLines += '}'
 $newLines += ''
+$newLines += '# 「老 cookie 指向的这个节点，接不接新玩家」→ 1 接（新代码）/ 0 不接（旧代码）。'
+$newLines += '# 与 map $sp_node $sp_node_accepts_new 同源，只是 key 换成 cookie。'
+$newLines += '# 用途（2026-10-31）：cookie 指向旧代码节点时，只有「正开着对局」的玩家才允许粘住，'
+$newLines += '# 其余人改派到新代码节点 —— 否则 30 天有效的老 cookie 会把玩家永久锁在旧版本上。'
+$newLines += 'map $cookie_sp_route $sp_cookie_accepts_new {'
+$newLines += '  default 0;'
+$newLines += ('  {0}' -f (($accept | ForEach-Object { "$_ 1;" }) -join ' '))
+$newLines += '}'
+$newLines += ''
 
 $newContent = ($newLines -join "`n") + "`n"
 $oldContent = if (Test-Path $confFile) { [System.IO.File]::ReadAllText($confFile, [System.Text.Encoding]::UTF8) } else { '' }
 
-if ($oldContent -eq $newContent) {
+# ★ 只有「内容相同」且「没加 -Force」才跳过。
+#   -Force 的用途：改的是 nginx.conf 本身（open-nodes.conf 没变），仍然要 reload 一次才生效。
+#   踩过：改了 nginx.conf 跑 -Apply，被这里短路成「配置无变化」，新配置一直没上线，白测半天。
+if ($oldContent -eq $newContent -and -not $Force) {
   $lines += '配置无变化，不 reload'
   Log-Pair $lines
   exit 0
+}
+if ($oldContent -eq $newContent) {
+  $lines += '配置无变化，但 -Force 指定了强制 reload'
 }
 
 $lines += ('节点列表变化: {0} -> 新访客可去 [{1}]' -f `
