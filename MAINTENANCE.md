@@ -1822,7 +1822,6 @@ if (ps.playerId !== this.hostId) return fail(ERR.NOT_HOST);   // ← 上游 host
 **生效方式**：`server/` 改动 → **必须重启节点**（刷新页面不够）。
 
 ##### 9.34c-3 其他玩家看不到任何「管理员在用工具」的痕迹（2026-10-31）
-
 维护者要求：管理员用工具时，**其他玩家那边不能有任何提示**，只有管理员自己看得到。
 
 三层保证，都已有测试守着（`test/test-mode.test.js`）：
@@ -1975,7 +1974,54 @@ HTML 同一标签的重复属性，浏览器**只认第一个**，第二个整�
 **`public/` 在里面**，所以 `public/js`、`public/css` 的改动要跑一次 `--apply` 分发到 30 台。
 （但改完不用重启节点：静态文件玩家刷新即可。）
 
+#### ★ 跨节点「突然刷一下」：build 指纹必须与内容一致（2026-10-31）
+
+维护者反馈：玩着玩着会**突然刷一下**，问是不是网络不好。
+
+**不是网络问题。** 查下来 30 个节点的 `/healthz.build` 分成 **4 种**：
+
+```
+bb91f23812e1  →  20 个
+606fdcd17256  →   8 个
+30ef69bcf64e  →   1 个（node-1）
+5cf406bb8a38  →   1 个（node-30）
+```
+
+代码内容其实**完全一样**，差别全在文件 mtime/size 上。指纹一变，`ui/buildGuard.js`
+就当「服务器更新了」→ 触发刷新。玩家在两个节点之间跳转时就会莫名其妙刷一下。
+
+两个独立的根因：
+
+| 根因 | 为什么发生 | 修法 |
+|---|---|---|
+| `fs.copyFileSync` 不给目标写源文件的时间戳 | 每个节点在**不同的时刻**被分发，mtime 各不相同 | `deploy/sync-nodes.cjs` 复制完补 `fs.utimesSync` |
+| `buildTag.js` 把 `data/` **整个**算进指纹 | `data/` 混了两类东西：浏览器要下载的数据，和**每台机器各自的运行时配置** | 加了 `LOCAL_RUNTIME_FILES` 排除表 |
+
+被排除的三个文件（**它们本来就该各机不同**）：
+
+- `data/create-room.json` —— 建房开关
+- `data/room-ttl.json` —— 房间 TTL
+- `data/assets.json` —— 资源清单（各机素材挂载点/重建时间不同）
+
+另外 `*.bak-xxx` / `*.old` / `*.orig` 这些维护者手工副本也一并排除
+（node-1 上就躺着一堆 `data/assets.json.bak-*`）。
+
+改完实测：**30 个节点算出同一种指纹**（构造测试里也钉死了这一点，
+见 `test/build.test.js` 的「每台机器各自的运行时配置不参与指纹」）。
+
+```powershell
+# 一次性把现存节点的 mtime 对齐到 repo-sync 源文件（以后 sync-nodes 会自己带）
+node deploy/sync-mtime.cjs            # 预演
+node deploy/sync-mtime.cjs --apply    # 执行
+```
+
+> ⚠ **`buildTag.js` 是 `server/` 代码，必须重启节点才生效。**
+> 重启前各节点仍然算出旧指纹 —— 这就是为什么改完之后还会「刷一下」，直到全部重启完。
+> 现在的做法：只重启 `matches=0 && rooms=0` 的节点，有对局的等它空下来
+> （`deploy/rolling-restart.ps1` 每 10 分钟会自动处理空闲节点）。
+
 ---
+
 
 ### 9.35 含中文的 `.ps1` 必须带 UTF-8 BOM（2026-10-31 踩到）
 

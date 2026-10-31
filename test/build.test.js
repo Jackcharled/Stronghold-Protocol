@@ -43,6 +43,40 @@ for (const rel of ['server/sim/content/kits/skill.js', 'shared/protocol.js', 'da
   });
 }
 
+test('computeBuildTag: 每台机器各自的运行时配置不参与指纹（2026-10-31 跨节点反复刷新的根因）', () => {
+  // 维护者反馈：玩家这边会「突然刷一下」。查下来 30 个节点分成 4 种 build 指纹，
+  // 而代码内容其实一样 —— 差别全在 data/ 下几台机器本来就不同的配置文件的 mtime/size 上。
+  // 指纹一变，ui/buildGuard.js 就当「服务器更新了」，触发刷新。
+  const root = fixture();
+  try {
+    // 这几个是「每台机器各自的运行时配置」，本来就该各机不同
+    for (const rel of ['data/create-room.json', 'data/room-ttl.json', 'data/assets.json']) {
+      const abs = path.join(root, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, '{"enabled":true}');
+    }
+    const known = computeBuildTag(root);
+
+    // 模拟另一台机器：同样是这几个文件，但内容和时间都不同
+    for (const rel of ['data/create-room.json', 'data/room-ttl.json', 'data/assets.json']) {
+      fs.writeFileSync(path.join(root, rel), '{"enabled":false,"minutes":30,"huge":"'.padEnd(400, 'x') + '"}');
+    }
+    assert.equal(computeBuildTag(root), known, '本机运行时配置不同 → 不算新版本');
+
+    // 维护者手工备份也不算（*.bak-xxx / *.old）
+    for (const rel of ['data/assets.json.bak-20261031', 'data/chess.json.old']) {
+      fs.writeFileSync(path.join(root, rel), 'backup');
+    }
+    assert.equal(computeBuildTag(root), known, '手工备份文件不算新版本');
+
+    // 但真正被浏览器加载的数据变了，必须算新版本
+    fs.writeFileSync(path.join(root, 'data/chess.json'), 'real data changed');
+    assert.notEqual(computeBuildTag(root), known, '真正的数据改动仍然是新版本');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('computeBuildTag: server-only code and downloaded media do not change the browser build', () => {
   const root = fixture();
   try {

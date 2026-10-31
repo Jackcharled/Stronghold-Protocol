@@ -54,6 +54,18 @@ for (let n = 2; n <= 30; n++) {
     for (const x of diffs) {
       fs.mkdirSync(path.dirname(x.target), { recursive: true });
       fs.copyFileSync(x.full, x.target);
+      // ★ 2026-10-31：**必须把源文件的 mtime 一起带过去**。
+      //
+      //   /healthz.build（server/http/buildTag.js）的指纹是 `[相对路径, 大小, mtimeMs]`。
+      //   上游是单机部署，mtime 天然就代表内容版本 —— 但本服是 30 个独立目录，
+      //   fs.copyFileSync 会给每个目标文件写「复制那一刻」的时间戳。
+      //   于是**同一份代码在不同节点算出不同的 build**（实测 30 个节点分成 4 种指纹），
+      //   玩家在两个节点之间跳转时 buildGuard 以为「服务器更新了」，就触发一次刷新。
+      //   把 mtime 复制成源文件的，各节点的 build 就只由内容决定。
+      try {
+        const st = fs.statSync(x.full);
+        fs.utimesSync(x.target, st.atime, st.mtime);
+      } catch { /* 设不上也不致命，只是那一轮 build 可能不一致 */ }
       totalCopied++;
     }
     console.log(`   → 已复制 ${diffs.length} 个文件`);

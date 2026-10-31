@@ -32,6 +32,35 @@ const isIgnoredBuildName = (name) => name.startsWith('.') || name.endsWith('~');
  */
 const VERSIONS_BUILD_DIR = 'data/versions';
 
+/**
+ * ★ 2026-10-31（本服）：**每台机器各自不同的运行时配置，不能参与 build 指纹。**
+ *
+ * 为什么需要：指纹是 `[相对路径, 大小, mtimeMs]`。上游是单机部署，`data/` 下的东西
+ * 天然全站一致；但本服是 30 个独立目录，下面这些文件**本来就应该各机不同**：
+ *
+ *   * `data/create-room.json`  建房开关（维护者可能临时关掉某台机器的建房）
+ *   * `data/room-ttl.json`     房间 TTL
+ *   * `data/assets.json`       资源清单（各机素材挂载点 / 重建时间不同）
+ *
+ * 一旦参与指纹，同一份代码在 30 台机器上会算出不同的 build，
+ * 玩家跨节点浏览时 `ui/buildGuard.js` 就以为「服务器更新了」并触发一次刷新。
+ * 实测：30 个节点分成 4 种指纹，node-1 和多数节点不同，于是反复「刷一下」。
+ *
+ * 排除它们是安全的：浏览器读的是 `data/` 下的具体数据文件（关卡、干员…），
+ * 不读这三个配置；「部署后旧页面能收到新版本」这个目的不受影响。
+ */
+const LOCAL_RUNTIME_FILES = new Set([
+  'data/create-room.json',
+  'data/room-ttl.json',
+  'data/assets.json',
+]);
+
+/** 维护者手工副本（`*.bak-xxx` / `*.old` / `*.orig`）也不算版本。 */
+const isBackupName = (rel) => /(?:\.bak|\.old|\.orig)(?:$|[-.])/i.test(path.posix.basename(rel));
+
+/** Whether a BUILD_INPUTS-relative path takes part in the build tag. */
+const isBuildInput = (rel) => !LOCAL_RUNTIME_FILES.has(rel) && !isBackupName(rel);
+
 /** @type {{ tag: string|null }|null} */
 let buildCache = null;
 
@@ -42,7 +71,7 @@ let buildCache = null;
 function buildEntries(abs, rel, out, served) {
   let stat;
   try { stat = fs.statSync(abs); } catch { return; }
-  if (stat.isFile()) { out.push([rel, stat.size, stat.mtimeMs]); return; }
+  if (stat.isFile()) { if (isBuildInput(rel)) out.push([rel, stat.size, stat.mtimeMs]); return; }
   if (!stat.isDirectory()) return;
   let names;
   try { names = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
@@ -54,7 +83,10 @@ function buildEntries(abs, rel, out, served) {
       if (rel === VERSIONS_BUILD_DIR && !served.has(childRel)) continue;
       buildEntries(child, childRel, out, served);
     }
-    else if (d.isFile()) { try { const s = fs.statSync(child); out.push([childRel, s.size, s.mtimeMs]); } catch { /* ignore */ } }
+    else if (d.isFile()) {
+      if (!isBuildInput(childRel)) continue;
+      try { const s = fs.statSync(child); out.push([childRel, s.size, s.mtimeMs]); } catch { /* ignore */ }
+    }
   }
 }
 
