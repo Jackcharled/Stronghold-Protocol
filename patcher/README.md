@@ -82,6 +82,7 @@ patcher\
 | 跳过按钮（仅非 allowRepeat） | `public/js/match/matchChrome.js:StepHeader`、`server/match/match/phases.js` | `game-core-match` | 刷新页面 + 重启节点 |
 | **鸭爵策略可叠加**（实验开关） | `server/sim/content/bands/meta.js:duckGlobal`、`server/match/Match.js`、`server/match/gamedata.js`、`server/match/snapshot.js`、`shared/experimental.js`、`public/js/screens/room.js` | `game-core-server` / `server-snapshot-checkpoint` / `server-player-capacity` | **重启节点** |
 | **叠加时「补抽」**（撞到已选敌人时改抽别的目标，而不是跳过；20 人大波次覆盖率 13.6→19.5 个） | `server/sim/content/bands/meta.js:duckPicks`（`exclude` 参数）+ `duckGlobal`（`taken` 传入） | `game-core-server` | **重启节点** |
+| **build 指纹与机器无关**：30 个节点算出同一个 build，玩家跨节点不再莫名刷新 | `server/http/buildTag.js`（`LOCAL_RUNTIME_FILES` 排除各机配置 + 备份文件排除）、`deploy/sync-nodes.cjs`（复制时保留 mtime）、`deploy/sync-mtime.cjs` | `game-core-server` | **重启节点** |
 | 禁用鸭爵策略（5–20 人） | `server/match/gamedata.js`、`shared/experimental.js`、`public/js/screens/bandDraft.js` | `server-player-capacity` | 刷新页面 + 重启节点 |
 | **联防救援（队友复活）**：被淘汰的博士在 15 秒窗口内由合格队友支付 10 点生命救回；每局每人最多被救一次 | `shared/protocol.js`（**`C2S` 的 `g.revive` 白名单**）、`server/match/Match.js:revive/revivalWindowOpen/revivalDonorEligible`、`server/match/match/intents.js`、`server/match/match/common.js`、`public/js/ui/revival.js`、`shared/experimental.js` | `server-player-capacity`（客户端 UI 在 `game-core-client-ui`） | **重启节点** |
 | 挂机踢人 / 同 IP 限制 | `server/match/match/intents.js` | `server-idle-guard` | 重启节点 |
