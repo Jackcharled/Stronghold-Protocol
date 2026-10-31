@@ -45,7 +45,7 @@ import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import { C2S, validateC2S } from '../shared/protocol.js';
 import { ERR, ERR_TEXT, NAME_MAX_LEN, PROTOCOL_VERSION } from '../shared/constants.js';
-import { verifyAdminToken, readUserToken } from './adminAuth.js';
+import { verifyAdminToken, readAdminToken, readUserToken } from './adminAuth.js';
 
 /** Tunables (all overridable through the Network / SessionRegistry constructors). */
 export const NET_DEFAULTS = Object.freeze({
@@ -817,7 +817,15 @@ export class Network {
     //   注意 adminToken 与我们自己签的 accountToken 是同一把密钥、同样的 payload 结构，
     //   verifyAdminToken 还会核对 role，因此不能拿 accountToken 冒充 —— 它没有 exp 由发码接口控制。
     session.adminId = account != null && (account.role === 'owner' || account.role === 'admin');
-    session.adminTool = verifyAdminToken(msg.adminToken);
+    // ★ 2026-10-31：验码门还要核对「这枚令牌是不是本人换来的」。
+    //   以前只调 verifyAdminToken(msg.adminToken) —— 它只证明「这枚令牌是真的、没过期、没被吊销」，
+    //   不证明**是谁**换的。实测：普通玩家把别人的 owner 令牌塞进 hello，
+    //   会得到 adminCode=true（虽然 adminTools 仍是 false，功能点下去也会被拒，
+    //   但界面已经显示出「已授权」的错状态）。令牌里带 uid，这里比一下即可。
+    const adminTokInfo = readAdminToken(msg.adminToken);
+    const sameUser = adminTokInfo != null && account != null
+      && Number(adminTokInfo.uid) > 0 && Number(adminTokInfo.uid) === Number(account.uid);
+    session.adminTool = sameUser && verifyAdminToken(msg.adminToken);
     session.admin = session.adminId === true && session.adminTool === true;
     // 诊断用：记录本次 hello 带来的身份材料，便于排查「管理员不被识别」
     session.accountRole = account ? account.role : null;
