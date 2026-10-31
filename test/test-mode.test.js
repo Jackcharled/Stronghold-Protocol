@@ -314,6 +314,44 @@ test('all commands reject a normal match; forged flags and unknown identities ca
   assert.equal(buildResult(h.m, { victory: false }).test, undefined);
 });
 
+test('an admin who is NOT the host may run commands (2026-10-31: 管理员不必是房主)', (t) => {
+  // 维护者实测：只有房主时，管理员点工具回「只有房主能执行这条指令」。
+  // 期望：座位带 admin 标记（三道门全过的管理员）时，即使不是房主也能下命令，
+  // 且命令照旧只改**他自己**的座位。
+  const h = fixture(t, { mode: 'coop', humans: 2 });
+  const guest = h.ps('p_1');
+  assert.notEqual(guest.playerId, h.m.hostId, 'p_1 不是房主');
+
+  // 不是管理员 → 仍然 NOT_HOST（上游行为不变）
+  const before = guest.funds;
+  error(h.cmd('funds', { amount: 90 }, 'p_1'), 'NOT_HOST');
+  assert.equal(guest.funds, before);
+
+  // 座位变成管理员 → 放行
+  guest.admin = true;
+  ok(h.cmd('funds', { amount: 90 }, 'p_1'));
+  assert.equal(guest.funds, 90, '改的是他自己这一队，不是房主的');
+  assert.notEqual(h.ps('p_0').funds, 90, '没有动房主的座位');
+
+  // 房主自己仍然能用（上游原有的测试模式路径没被破坏）
+  ok(h.cmd('funds', { amount: 77 }, 'p_0'));
+  assert.equal(h.ps('p_0').funds, 77);
+
+  // 管理员标记掉回 false → 立即回到 NOT_HOST
+  guest.admin = false;
+  h.sched.advance(20000);
+  error(h.cmd('funds', { amount: 5 }, 'p_1'), 'NOT_HOST');
+});
+
+test('an admin still needs the match to be controllable: a normal match without the admin flag refuses every command', (t) => {
+  // ps.admin 是唯一放行来源，它只由 lobby 从已校验的 session.admin 写入。
+  // 普通对局里任何座位（含伪造的 msg.admin）都不能进测试路径。
+  const h = fixture(t, { test: false });
+  for (const cmd of ['funds', 'chess', 'round']) {
+    error(h.m.handle('p_0', { t: 'g.test', cmd, args: { amount: 9 }, admin: true }), 'TEST_FORBIDDEN');
+  }
+});
+
 test('funds, chess, item and token grants use the host seat and actual acquisition primitives', (t) => {
   const h = fixture(t);
   ok(h.cmd('funds', { amount: 99999 })); assert.equal(h.p.funds, 99999);

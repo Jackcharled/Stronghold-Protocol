@@ -1786,6 +1786,40 @@ pm2 env <matchmaker-id> | Select-String SP_ADMIN_TOOL_TTL_MS
 | `verifyAdminToken` 不比对 uid | 普通玩家塞进别人的 owner 令牌会得到 `adminCode=true`（功能仍被拒，但界面显示错状态） |
 | `seat.admin` 直接读 `session.admin`（三道门全过） | 没兑换码的 owner 在控制台被显示成「玩家」。**徽章 = 身份+权限**，不是「此刻能不能改数据」 |
 | 只有 `startMatch` 算 `ps.admin` | 对局中才兑换授权码的人，`g.test` 一直被拒、甚至崩（`_testRate` 没初始化）。已在 `onHello` 同步 |
+| `g.test` 只认房主（上游 `58fe3d50` 的 host-only） | **管理员不是房主时，点任何工具都回「只有房主能执行这条指令」**。见下面 9.34c-2 |
+
+##### 9.34c-2 管理员不必是房主（2026-10-31 晚）
+
+维护者实测：单人和别人开的房间，自己是管理员但不是房主 → 管理员工具能打开、
+能选指令，**一点就报「只有房主能执行这条指令」**。
+
+原因：`server/match/match/testCommands.js` 里 `TEST_FORBIDDEN` 那道门已经放行了
+`ps.admin`（本服加的），但紧接着还有一道上游的判断：
+
+```js
+if (ps.playerId !== this.hostId) return fail(ERR.NOT_HOST);   // ← 上游 host-only
+```
+
+上游这么写是对的：测试模式开关挂在房间上，命令改的也是房主的座位，别人下没意义。
+但本服的「游戏内管理员工具」是另一回事。
+
+现在放行条件改成二选一（都先过 `TEST_FORBIDDEN`）：
+
+| 条件 | 含义 |
+|---|---|
+| `ps.admin === true` | 三道门全过的管理员（身份 + `tools.game` 权限 + 验证码） |
+| `ps.playerId === this.hostId` | 上游原有的房主（测试模式下房主仍可下命令） |
+
+`ps.admin` 只由 `lobby.onHello` 从**已校验的** `session.admin` 写入，客户端改不了
+（`msg.admin` 之类的伪造字段无效，有测试守着）。
+
+> 命令仍然**只改执行者自己的座位**（`_applyTest` 全走 `ps.*`），
+> 所以管理员改的是自己那一队的数据，不会动房主或别的玩家。
+
+客户端 `adminTools.js` 的 `NOT_HOST` 文案也跟着改了：
+「这条指令需要管理员身份或房主身份。若你刚兑换了验证码，刷新一次页面再试。」
+
+**生效方式**：`server/` 改动 → **必须重启节点**（刷新页面不够）。
 
 ---
 

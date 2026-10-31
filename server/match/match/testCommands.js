@@ -85,7 +85,20 @@ export class MatchTestCommands {
       this._testAudit(ps, cmd, { rejected: true }, ERR.SPECTATOR);
       return fail(ERR.SPECTATOR);
     }
-    if (ps.playerId !== this.hostId) {
+    // ★ 2026-10-31（维护者要求）：**管理员不必是房主**。
+    //
+    //   上游的设计是「测试模式只有房主能下命令」（58fe3d50，host-only），那是对的：
+    //   测试模式开关挂在房间上，命令改的也是房主的座位，别人来下没有意义。
+    //   但本服的「游戏内管理员工具」是另一回事 —— 拥有 tools.game 权限、且兑换了
+    //   验证码的管理员，应该能在**自己参与的这局里**直接改数据，不管房主是谁。
+    //   维护者实测：只有房主时，管理员点任何工具都回「只有房主能执行这条指令」。
+    //
+    //   放行条件（二选一，都要先过上面的 TEST_FORBIDDEN 闸门）：
+    //     * ps.admin === true —— 三道门全过的管理员（身份 + tools.game 权限 + 验证码）
+    //     * ps.playerId === this.hostId —— 上游原有的房主（测试模式下房主仍可下命令）
+    //   注意 ps.admin 只来自 lobby 对已校验 session.admin 的写入，客户端改不了。
+    const isHost = ps.playerId === this.hostId;
+    if (!isHost && ps.admin !== true) {
       this._testAudit(ps, cmd, { rejected: true }, ERR.NOT_HOST);
       return fail(ERR.NOT_HOST);
     }
