@@ -35,7 +35,7 @@ import { data, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
 import { reducedMotion } from './device.js';
 import { serverNow } from '../store.js';
-// 本服：游戏内管理员工具（点延迟胶囊开关）
+// 本服：游戏内管理员工具（点左上角「节点状态」胶囊开关，不是延迟胶囊）
 import { useStore } from '../store.js';
 import { AdminTools } from './adminTools.js';
 import { isCombatPhase, isBossPhase, prepCapsuleLabel, bossFrac, bossPctText, fmtNum, shopBlockReason } from './gameLogic.js';
@@ -534,8 +534,10 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
   useEffect(() => { preloadCapsuleArt(); }, []);
   const onLeft = () => (pen ? onPen(false) : onDrawer('info'));
   const onRight = () => (pen ? onPen(false) : penAvail ? onPen(true) : null);
-  // 本服：管理员工具。只有登录 owner/admin 账号（服务端 welcome.adminTools）时，点延迟胶囊才
-  // 打开面板；普通玩家这里连 onClick 都不会挂 —— 点了只是原本的延迟显示，没有任何反应。
+  // 本服：管理员工具。只有登录 owner/admin 账号（服务端 welcome.adminTools）时，点左上角的
+  // 「节点状态」胶囊才打开面板。★ 注意不是延迟胶囊：PingPill 只是个延迟显示、没有点击事件，
+  // 真正派发 sp-open-admin-tools 的是 mm/client.js 里那颗节点状态胶囊。
+  // 普通玩家这里连 onClick 都不会挂 —— 点了只是原本的延迟 / 节点状态显示，没有任何反应。
   const adminTools = useStore((s) => s.adminTools === true);
   const adminId = useStore((s) => s.adminId === true);
   const [adminOpen, setAdminOpen] = useState(false);

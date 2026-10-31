@@ -11,7 +11,8 @@
 //   3) 服务端 routeGameNow：g.test 在非测试房里 session.admin 不为真就拒绝。
 //   4) 服务端 Match.applyTestCommand：再查一次 ps.admin。
 //
-// 入口：对局中点击左上角的延迟胶囊（ui/hud.js 的 PingPill）。
+// 入口：对局中点击左上角的「节点状态」胶囊（mm/client.js 派发 sp-open-admin-tools，
+// ui/hud.js 监听）。★ 不是延迟胶囊：PingPill 只是个延迟显示，没有点击事件。
 import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { html, Icon } from './components.js';
 import { useStore } from '../store.js';
