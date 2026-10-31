@@ -51,6 +51,21 @@ const TABS = [
 
 const nameOf = (rec, key) => (rec && (data.localeName?.(rec.name || rec.displayName) || rec.name)) || key;
 
+// 换来的验码令牌在 sessionStorage 里的键。刷新/重连后靠它恢复
+// （只放内存会在 location.reload() 后丢失，见 verify() 里的说明）。
+const ADMIN_TOKEN_KEY = 'sp.adminToken';
+
+// ★ 2026-10-31：模块一加载就把上次兑换的令牌放回 window.__SP_ADMIN_TOKEN。
+//   必须放在模块顶层（而不是组件里）：面板只在打开时才挂载，而 net 的 hello
+//   在页面一加载就发出去了 —— 等面板挂载再恢复就太晚了，那次 hello 已经不带令牌。
+//   net.js 的 hello 只从 window.__SP_ADMIN_TOKEN 取这个值。
+try {
+  const saved = globalThis.sessionStorage && globalThis.sessionStorage.getItem(ADMIN_TOKEN_KEY);
+  if (saved && !(typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN)) {
+    window.__SP_ADMIN_TOKEN = saved;
+  }
+} catch { /* 隐私模式：忽略 */ }
+
 /**
  * 管理员工具面板。
  * @param {{ open: boolean, onClose: () => void }} props
@@ -180,6 +195,11 @@ export function AdminTools({ open, onClose, anchor = null }) {
       }
       window.__SP_ADMIN_TOKEN = j.adminToken;
       try {
+        // ★ 2026-10-31：换来的令牌必须落盘（sessionStorage）。
+        //   原来只放内存，紧接着下面 location.reload() 一刷就没了 ——
+        //   于是「验证成功 → 重连 → 刷新 → 又要求输码」（维护者实测撞到）。
+        //   用 sessionStorage 而不是 localStorage：关掉标签页授权就结束，符合「4 小时临时授权」的语义。
+        sessionStorage.setItem(ADMIN_TOKEN_KEY, String(j.adminToken));
         // 后端返回 hours（默认 4），记下到期时刻供上面显示
         const hours = Number(j.hours) || 4;
         localStorage.setItem('sp.adminCodeExp', String(Date.now() + hours * 3600_000));
@@ -210,6 +230,7 @@ export function AdminTools({ open, onClose, anchor = null }) {
             await fetch('/mm/api/admintool/revoke', { method: 'POST', credentials: 'same-origin', cache: 'no-store' });
           } catch { /* 网络失败也继续清本地 */ }
           try { localStorage.removeItem('sp.adminCodeExp'); } catch { /* ignore */ }
+          try { sessionStorage.removeItem(ADMIN_TOKEN_KEY); } catch { /* ignore */ }
           try { window.__SP_ADMIN_TOKEN = ''; } catch { /* ignore */ }
           try { net.rehandshake?.(); } catch { /* ignore */ }
           setCodeAuthed(false); setCodeLeftMin(0); setShowCode(false);

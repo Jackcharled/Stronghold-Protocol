@@ -30,7 +30,15 @@ function watchSecret() {
 function adminTokenFor(u) {
   if (!u || (u.role !== 'owner' && u.role !== 'admin')) return null;
   // typ 区分令牌用途：只有 typ='admin' 的才算验码令牌，accountToken（typ='user'）不能冒充
-  const payload = Buffer.from(JSON.stringify({ v: 1, typ: 'admin', uid: u.id, role: u.role, exp: Date.now() + 12 * 3600_000 })).toString('base64url');
+  //
+  // ★ 2026-10-31：必须带 iat。
+  //   server/adminAuth.js 的 verifyAdminToken 拿 iat 和「退出授权」记下的吊销时刻比：
+  //   没有 iat 的令牌在吊销发生后一律作废（那边写得很明确：宁可重新换码也不留后门）。
+  //   这条令牌以前没有 iat，于是管理员点过一次「退出授权」之后，
+  //   账号登录带来的令牌**永远**是坏的 —— 游戏里怎么看都显示「需要验证码」，
+  //   刷新也没用（维护者 2026-10-31 实测撞到）。
+  //   加上 iat 之后语义才对：「我这次登录是在那次吊销之后，所以我是新授权」。
+  const payload = Buffer.from(JSON.stringify({ v: 1, typ: 'admin', uid: u.id, role: u.role, iat: Date.now(), exp: Date.now() + 12 * 3600_000 })).toString('base64url');
   const sig = crypto.createHmac('sha256', watchSecret()).update(payload).digest('base64url');
   return payload + '.' + sig;
 }
