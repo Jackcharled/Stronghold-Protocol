@@ -286,6 +286,9 @@
       state.user = null; state.guest = false; syncReady = false;
     window.__SP_ADMIN_TOKEN = null;
     window.__SP_ACCOUNT_TOKEN = null;
+      // 登出要连兑换令牌一起清（否则换账号登录还带着上一个人的授权）
+      try { sessionStorage.removeItem('sp.adminToken'); } catch { /* ignore */ }
+      try { localStorage.removeItem('sp.adminCodeExp'); } catch { /* ignore */ }
       clearAccountCache();
       // 清掉输入框里的账号代号，避免游客模式继承
       const cs = findCallsign();
@@ -469,7 +472,10 @@
       }
       state.user = r.body.user;
       state.guest = false;
-      window.__SP_ADMIN_TOKEN = r.body.adminToken || null;
+      // ★ 2026-10-31：服务端已不再下发 adminToken（要用验证码换）。
+      //   这里必须**保留手头那枚**（可能正是刚兑换来的），不能写成 `|| null` ——
+      //   那样每次登录都会把兑换到的授权清掉，表现为「输码成功、一刷新又要求输码」。
+      window.__SP_ADMIN_TOKEN = r.body.adminToken || window.__SP_ADMIN_TOKEN || null;
       window.__SP_ACCOUNT_TOKEN = r.body.userToken || null;
       try { window.dispatchEvent(new Event('sp-account-token')); } catch { /* ignore */ }
       try { if (r.body.token) localStorage.setItem('mm.sid', r.body.token); } catch { /* 忽略 */ }
@@ -797,7 +803,10 @@
       const r = await api('/api/auth/me');
       if (r.status === 200 && r.body && r.body.user) {
         state.user = r.body.user;
-        window.__SP_ADMIN_TOKEN = r.body.adminToken || null;
+        // ★ 2026-10-31：**这一行每次刷新都会跑**，写 `|| null` 会把
+        //   ui/adminTools.js 从 sessionStorage 恢复出来的兑换令牌清掉 ——
+        //   表现为「验证成功 -> 刷新 -> 又要输码」。必须保留已有值。
+        window.__SP_ADMIN_TOKEN = r.body.adminToken || window.__SP_ADMIN_TOKEN || null;
         window.__SP_ACCOUNT_TOKEN = r.body.userToken || null;
         try { window.dispatchEvent(new Event('sp-account-token')); } catch { /* ignore */ }
         pullPrefs();

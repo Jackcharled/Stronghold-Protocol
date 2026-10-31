@@ -613,7 +613,13 @@ async function handle(req, res, pathname) {
 
   if (method === 'GET' && pathname === '/api/auth/me') {
     const u = await currentUser(req);
-    return u ? sendJson(res, 200, { ok: true, user: u, userToken: userTokenFor(u), adminToken: adminTokenFor(u) }) : sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    // ★ 2026-10-31：这里**不再下发 adminToken**（维护者要求）。
+    //   以前 /api/auth/me 和登录都顺手给一枚 adminToken，于是「登录了管理员账号」
+    //   等于「游戏内管理员工具直接可用」—— 验码门形同虚设。
+    //   维护者定的规则是：第一次打开必须先输授权码，4 小时后过期要重新输。
+    //   所以 adminToken 只能由 /api/admintool/exchange 发（那边签 4 小时）。
+    //   身份仍照常下发（user.role），前端靠它决定"要不要显示取码框"。
+    return u ? sendJson(res, 200, { ok: true, user: u, userToken: userTokenFor(u) }) : sendJson(res, 401, { ok: false, error: 'unauthorized' });
   }
 
   // 跨节点恢复：只告诉当前登录账号它自己所在的房间，不暴露全服房间目录。
@@ -841,7 +847,8 @@ async function handle(req, res, pathname) {
     await db().query('UPDATE accounts SET nickname = ?, name = ?, tag = ? WHERE id = ?', [nickname, nickname + '#' + tag, tag, u.id]);
     const display = nickname + '#' + tag;
     const next = { ...u, nickname, tag, name: display, displayName: display, titleName: display };
-    return sendJson(res, 200, { ok: true, userToken: userTokenFor(next), adminToken: adminTokenFor(next), user: next });
+    // ★ 2026-10-31：改名也不再补发 adminToken（原样保留手头那枚 4 小时的兑换令牌即可）。
+    return sendJson(res, 200, { ok: true, userToken: userTokenFor(next), user: next });
   }
   // （这里原有一段重复的 /api/auth/set-name 分支，永远不可达——上面的同名路由已先行 return。
   //   它写的是 name = nickname（不带 #代码），与实际生效的逻辑相反，容易误导，已删除。）
@@ -902,7 +909,9 @@ async function handle(req, res, pathname) {
     }
     const sid = await createSession(u.id, req, res);
     const display = displayOf(u);
-    return sendJson(res, 200, { ok: true, token: sid, userToken: userTokenFor(u), adminToken: adminTokenFor(u), user: { id: u.id, email: u.email, nickname: u.nickname, tag: u.tag, role: u.role || 'player', name: display, displayName: display, titleName: u.nickname ? u.nickname + '#' + u.tag : null } });
+    // ★ 2026-10-31：登录**不再下发 adminToken**，理由同 /api/auth/me（见那处注释）。
+    //   管理员要用游戏内工具，必须到后台生成验证码再兑换 —— 这是验码门存在的意义。
+    return sendJson(res, 200, { ok: true, token: sid, userToken: userTokenFor(u), user: { id: u.id, email: u.email, nickname: u.nickname, tag: u.tag, role: u.role || 'player', name: display, displayName: display, titleName: u.nickname ? u.nickname + '#' + u.tag : null } });
   }
 
   if (method === 'POST' && pathname === '/api/auth/logout') {

@@ -107,14 +107,22 @@ export function AdminTools({ open, onClose, anchor = null }) {
     }, 5000);
     return () => clearInterval(t2);
   }, []);
-  const adminTools = useStore((s) => s.adminTools === true);
-  // 以服务端为准：adminCode 为真才算「验码已生效」。
-  // localStorage 只用于显示「剩余几分钟」（服务端不下发剩余时间），
-  // 但**能不能用**完全由服务端这一次连接的实际状态决定 —— 否则会出现
-  // 「前端说已生效、点功能却回没有权限」的矛盾（2026-10-31 实测）。
-  const adminCode = useStore((s) => s.adminCode === true);
+  // 订阅 adminTools 只为触发重渲染（退出授权 / 重新验码后界面要跟着更新），值本身不用。
+  useStore((s) => s.adminTools === true);
   // 身份门：是 owner/admin 账号（不看有没有验证码）。面板的「能不能打开」用它判断。
   const adminId = useStore((s) => s.adminId === true);
+  // 验码门：✱ 2026-10-31 维护者重新明确规则 ✱
+  //   「打开第一次先输入授权码，超过 4 小时过期了就需要重新输入」
+  //   ——所以光有身份不够，必须**兑换过验证码**，而且必须在有效期内。
+  //
+  //   判据同时看两处，缺一不可：
+  //   · 服务端这一次连接认不认（adminCode，来自 welcome）—— 决定功能点下去会不会被拒；
+  //   · 本机记的兑换截止时刻（sp.adminCodeExp）—— 决定 4 小时到没到。
+  //   只看服务端：/api/auth/me 以前会自动发令牌，登录即有权限（已修）。
+  //   只看 localStorage：前端说已生效、点功能却回没有权限（2026-10-31 实测过）。
+  const adminCode = useStore((s) => s.adminCode === true);
+  // codeAuthed 由上面那个 5 秒轮询跟着 sp.adminCodeExp 走，过期会自己变 false。
+  const codeValid = adminCode && codeAuthed;
   if (!open) return null;
 
   const push = (ok, text) => setLog((l) => [{ ok, text }, ...l].slice(0, 10));
@@ -286,8 +294,8 @@ export function AdminTools({ open, onClose, anchor = null }) {
     //   用 adminTools 会让「管理员退出授权后」看不到取码框 —— 死锁。
     return null;
   }
-  if (!adminCode) {
-    // 是管理员，但还没兑换 / 码已过期：只给取码框，功能一律不渲染。
+  if (!codeValid) {
+    // 是管理员，但还没兑换 / 码已过期 / 4 小时到期：只给取码框，功能一律不渲染。
     return html`<div class="admintools" style=${panelStyle} data-testid="admin-tools" role="dialog" aria-label=${t('管理员工具')}>
       <header class="admintools__head">
         <b>${t('管理员工具')}</b>
