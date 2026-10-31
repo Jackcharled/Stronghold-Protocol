@@ -1451,17 +1451,37 @@ nginx 的 `if ($arg_room ~ "^[A-Za-z0-9]{4,6}$") { set $sp_node $cookie_sp_route
 「这台服务器还在使用旧版本。本局已结束，刷新页面即可换到新版本。」
 刷新后 `split_clients` 之外的 `map` 分支已经不含该节点，浏览器自然被分到新代码节点。
 
-`X-SP-Accepts-New` 响应头就是给它用的（`1` 接新 / `0` 不接），只在结算页读，
-**不在对局中打扰**——对局中刷新有风险，而提示的意义只是「什么时候方便就刷新」。
+`X-SP-Accepts-New` 响应头就是给它用的（`1` 接新 / `0` 不接），
+主要在结算页读，**不在对局中打扰**——对局中刷新有风险，而提示的意义只是「什么时候方便就刷新」。
+大厅和房间准备阶段也会读（走 `connBanner.js` 的横幅），但**对局中一律不显示**，
+规则见下一节的「提示出现在哪几个地方」。
 
-##### ★ 提示出现在哪几个地方（2026-10-31 扩全）
+##### ★ 提示出现在哪几个地方（2026-10-31 扩全 + 限定）
+
+**维护者最终确定的规则（2026-10-31 晚）：只在大厅、房间准备阶段、结算界面提示；
+对局中（从 `INFO_CHECK` 选人到 `SETTLE` 休整）一律不弹。**
+
+界线由 `public/js/ui/buildGuard.js` 的 `updateHintAllowed(route, phase)` 一处决定，
+`connBanner.js` 用它把横幅整个挡掉（连 `html.sp-conn` 也不加，否则 toast 会被无谓地下压）：
+
+| 界面 | `selectRoute` | `m.public.phase` | 提示 |
+|---|---|---|---|
+| 大厅 | `lobby` | — | ✅ |
+| 房间准备阶段 | `room` | — | ✅ |
+| 标题页 | `title` | — | ✅ |
+| **结算界面** | `game` | `RESULT` | ✅ |
+| 对局中（选人/选角/备战/战斗/休整） | `game` | 其余全部 | ❌ |
+| 开局瞬间（`m.public` 还没到） | `game` | `undefined` / `LOBBY` | ❌ |
+
+⚠ **结算界面的 `selectRoute` 仍然是 `game`** —— 只看路由会把结算也一并挡掉。
+所以必须同时看 `phase`：`route !== 'game'` 或 `phase === PHASE.RESULT` 才放行。
 
 | 位置 | 组件 | 判据 |
 |---|---|---|
 | 单人结算页 | `result.js` 的 `ResultView` → `NodeCodeHint` | `X-SP-Accepts-New: 0` |
 | **同盟结算页** | `settle.js` 的 `TeamPage` → `NodeCodeHint` | 同上 |
-| **大厅 / 房间等待中** | `connBanner.js` 的横幅（顶部居中） | ① 本节点 build 变了（`buildStale`）**或** ② `X-SP-Accepts-New: 0`（新加） |
-| 对局中 | 同一个横幅 | 只在 build 变了时出现，**不打断对局** |
+| **大厅 / 房间准备 / 结算** | `connBanner.js` 的横幅（顶部居中） | ① `buildStale`（本节点 build 变了）**或** ② `X-SP-Accepts-New: 0`（在跑旧代码），且 `updateHintAllowed` 放行 |
+| 对局中 | 同上，但**被 `updateHintAllowed` 挡掉，不显示** | — |
 
 这里有两个**完全不同**的判据，别混：
 
@@ -1471,19 +1491,33 @@ nginx 的 `if ($arg_room ~ "^[A-Za-z0-9]{4,6}$") { set $sp_node $cookie_sp_route
   这台节点可能从开机起就没变过 build（`buildGuard` 永远不会报），
   但玩家该刷新换节点。**这是维护者在 node-7 上等不到提示的原因。**
 
-##### 三个曾经踩过的坑
+##### 四个曾经踩过的坑
 
 1. **离开房间就 `buildGuard.stop()`** → 之后再也不检查版本，大厅里永远收不到提示。
-   改成 `buildGuard.reset()`：清掉刚结束那一局的判定，但**继续监控**。
-   注意 `reset()` 不能把 `known` 清成 null —— 页面没刷新，`known` 没变；
-   清掉之后下一轮当 first 处理，会把服务器当前 build 记成基准，
-   **「服务器确实换版了」这件事就再也发现不了**。
+   改成 `buildGuard.resume()`：只保证表没停，**不动「已判定为旧版本」这个结论**。
+   ⚠ 别再改回 `reset()`：`reset()` 会把 `stale` 清成 false，而 `known` 还停在旧 build，
+   要再攒 2 次确认（约 2 分钟）才会重新触发 —— 中间那段时间玩家在大厅/结算页什么也看不到。
+   也**不能**把 `known` 清成 null —— 页面没刷新，`known` 没变；清掉之后下一轮当 first 处理，
+   会把服务器当前 build 记成基准，**「服务器确实换版了」这件事就再也发现不了**。
 2. **同盟结算页没挂 `NodeCodeHint`** → 单人打完有提示，同盟打完什么都没有。
 3. **同盟结算页挂了但看不见** → `.settle__stage` 是
    `position:absolute; 19.2rem×10.8rem`，里面 `steam__outcome` / `steam__rounds` / `steam__when`
    **全是 absolute 固定坐标**。普通流内元素夹在中间会被盖住。
    现在 `.steam__nodehint` 自己绝对定位到**舞台顶部居中**，`z-index:3`、`pointer-events:none`。
    实测：439×24、`top=16px`、与底部元素**无重叠**。
+4. **对局中照样弹**（维护者 2026-10-31 报的「打一半跳出来一条刷新提示」）→
+   `connBanner.js` 原来**没有任何「对局中不显示」的判断**，注释写着有、代码里没有。
+   现在统一由 `updateHintAllowed` 把关，规则见上表。
+
+##### ⚠ `inMatch` 与「提示显示」是两件事，别混
+
+| 问题 | 由谁回答 | 现在的行为 |
+|---|---|---|
+| 要不要**自动刷新**页面 | `buildGuard` 的 `inMatch`（`selectRoute === 'game'`） | 对局中 `true` → 绝不自动刷新；变成 `RESULT` 后路由不再是 `game` → 自动刷新一次 |
+| 要不要**显示**刷新提示 | `updateHintAllowed(route, phase)` | 大厅 / 房间 / `RESULT` 显示；其余对局阶段不显示 |
+
+维护者要的只是「别在中途弹提示」，**不是**「别在中途换版本」——
+所以本次改动没有动 `inMatch` 那套自动刷新逻辑。
 
 ##### 横幅位置：所有界面统一在**顶部居中**
 

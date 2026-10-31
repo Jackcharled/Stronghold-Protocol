@@ -21,12 +21,42 @@
 //
 // Kept dependency-free and injectable (fetch / reload / inMatch / timers) so test/ui/buildGuard.test.js can drive it.
 
+import { PHASE } from '../../../shared/constants.js';
+
 /** How often a page re-asks the server for its build tag. */
 export const BUILD_CHECK_MS = 60_000;
 /** Give up on a `/healthz` that does not answer: a request left hanging must not stop the guard from ever checking again. */
 export const BUILD_FETCH_TIMEOUT_MS = 5_000;
 /** How many checks in a row must report the same NEW build before the page acts on it. */
 export const BUILD_CONFIRMATIONS = 2;
+
+/**
+ * 哪些界面允许出现「服务器已更新，请刷新页面」。
+ *
+ * 维护者要求（2026-10-31）：**对局中一律不弹**，只在
+ *   大厅、房间准备阶段、结算界面 这三个地方提示。
+ *
+ * 理由：对局中刷新会把当前这局丢掉（或者至少打断），而当下的规则是
+ * 「对局中不刷新、等结算」—— 既然不会刷新，中途弹一个「请刷新」只会让人分心。
+ * 之前对局中也弹，所以维护者看到的就是「打一半跳出来一条刷新提示」。
+ *
+ * ⚠ 与「什么时候真的刷新」是两件事，别混：
+ *   * `inMatch`（main.js 传给 startBuildGuard）只决定**要不要自动刷新**：
+ *     对局中是 true → 绝不刷新；结算变成 RESULT 后 `selectRoute` 不再是 'game'，
+ *     于是回到「不等待」的状态，会自动刷新一次。这个自动刷新**与横幅无关**，
+ *     本次改动不影响它（维护者要的是「别在中途弹提示」，不是「别在中途换版本」）。
+ *   * 这里决定的是**要不要把横幅画出来**。
+ *
+ * @param {'title'|'lobby'|'room'|'game'} route selectRoute 的返回值
+ * @param {string|undefined|null} phase 对局阶段（m.public.phase）
+ * @returns {boolean}
+ */
+export function updateHintAllowed(route, phase) {
+  // 对局中（含 INFO_CHECK / 选点 / 备战 / 战斗 / 休整 / SETTLE…）一律不提示；
+  // 只有 RESULT 才是「结算界面」，那时 route 仍是 'game'，所以必须先判断 phase。
+  if (route !== 'game') return true;          // 大厅 / 房间准备阶段 / 标题页
+  return phase === PHASE.RESULT;              // 结算界面
+}
 
 /**
  * Fetch `/healthz` and return its `build` tag (null when unavailable, not reported, or too slow). Never throws.
@@ -166,9 +196,32 @@ export function startBuildGuard(o = {}) {
       //   它没有变（页面没刷新）。清掉之后下一轮会当 first 直接把服务器当前 build
       //   记成基准，于是「服务器确实换了版本」这件事就再也发现不了了（实测）。
       //   只清「判定过程中的中间状态」，保留 known。
+      //
+      // ★★★ 2026-10-31 修正（维护者：「对局中不要弹，结算/房间/大厅才弹」）：
+      //   这里**不能再把 stale 清掉当常态**。以前 main.js 在 sp-room-left 时 reset()，
+      //   本意是「清掉上一局留下的提示」—— 但现在提示本来就只在大厅/房间/结算出现，
+      //   对局中已经不显示了，清它反而会**把大厅里刚该出现的提示一起抹掉**：
+      //   判定 stale 之后如果玩家正好离开房间，reset 把 stale 清成 false，
+      //   而 known 还停在旧 build，下一轮要再攒 2 次确认才重新触发 ——
+      //   中间那段大厅/结算的时间窗口里，提示是看不见的。
+      //   所以：sp-room-left 现在走 resume()（只恢复监控，**不动 stale**），
+      //   reset() 留给「真的想清掉这条提示」的场合。
       stale = false;
       candidate = null;
       seen = 0;
+      if (stopped) {
+        stopped = false;
+        if (timer == null) timer = setIv(tick, intervalMs);
+      }
+    },
+    /**
+     * 只恢复监控，**不动「已判定为旧版本」这个结论**（2026-10-31）。
+     *
+     * 用在 sp-room-left：对局结束的那一刻，如果服务器确实换过版，
+     * 大厅/房间/结算**本来就应该**继续显示刷新提示（维护者要的就是这三个地方提示）。
+     * 这里只保证表没停，别的都不碰。
+     */
+    resume: () => {
       if (stopped) {
         stopped = false;
         if (timer == null) timer = setIv(tick, intervalMs);

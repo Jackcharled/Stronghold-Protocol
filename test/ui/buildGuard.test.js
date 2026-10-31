@@ -6,7 +6,8 @@
 // in a row agree, and a match on screen is never thrown away — the guard waits for it (and its settlement) to end.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkBuildOnce, startBuildGuard, fetchBuild, BUILD_CHECK_MS, BUILD_FETCH_TIMEOUT_MS } from '../../public/js/ui/buildGuard.js';
+import { checkBuildOnce, startBuildGuard, fetchBuild, updateHintAllowed, BUILD_CHECK_MS, BUILD_FETCH_TIMEOUT_MS } from '../../public/js/ui/buildGuard.js';
+import { PHASE } from '../../shared/constants.js';
 
 /** A fake fetch answering /healthz with `build` (null → the frame carries none). */
 const fetchOf = (build) => async (url, init) => {
@@ -203,4 +204,69 @@ test('onHealth: told every /healthz body a check reads — what else the page re
   assert.deepEqual(state, { installedPlugins: 0, installedNotices: true }, 'language-only notices reach the title');
   onHealth({});
   assert.deepEqual(state, { installedPlugins: 0, installedNotices: false }, 'a notice-free server clears the hint');
+});
+
+// ---------------------------------------------------------------------------------------------------
+// 2026-10-31 维护者要求：「服务器更新需要刷新的提示，**对局中不要弹出**，
+// 只有结算界面、房间准备阶段、大厅的时候弹出。」
+// ---------------------------------------------------------------------------------------------------
+
+test('updateHintAllowed: 对局中（任何阶段）都不提示，只在大厅/房间/结算提示', () => {
+  // 大厅、房间准备阶段、标题页：不是对局，提示照常
+  assert.equal(updateHintAllowed('lobby', undefined), true, '大厅');
+  assert.equal(updateHintAllowed('room', undefined), true, '房间准备阶段');
+  assert.equal(updateHintAllowed('title', undefined), true, '标题页');
+  // 结算界面：RESULT 时 selectRoute 仍是 'game'，靠 phase 放行
+  assert.equal(updateHintAllowed('game', PHASE.RESULT), true, '结算界面（RESULT）');
+  // 对局中：除了 RESULT 一律挡住
+  for (const ph of [PHASE.INFO_CHECK, PHASE.BAND_DRAFT, PHASE.BATTLE_CHECK, PHASE.PREP, PHASE.ROUND_START,
+    PHASE.SP_DRAFT, PHASE.COMBAT, PHASE.UNITE, PHASE.FINAL_ASSAULT, PHASE.HIDDEN_CORE, PHASE.SETTLE]) {
+    assert.equal(updateHintAllowed('game', ph), false, `对局中不提示：${ph}`);
+  }
+  // 对局刚开头 m.public 还没到（route 已是 game、phase 还是 LOBBY）：也算对局中
+  assert.equal(updateHintAllowed('game', PHASE.LOBBY), false, 'm.public 未到但已在开局');
+  assert.equal(updateHintAllowed('game', undefined), false, '没有 phase 但已在 game 路由');
+});
+
+test('connBanner 用的是 hintAllowed：对局中横幅不画，sp-conn 也不亮（toast 不会被白压下去）', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../../public/js/ui/connBanner.js', import.meta.url), 'utf8');
+  // 判定函数必须被真正用上，而不是只 import 进来
+  assert.match(src, /updateHintAllowed\(route, phase\)/, '横幅必须用 updateHintAllowed 决定画不画');
+  assert.match(src, /const staleShown = stale && hintAllowed/, '显示条件 = 是旧版本 且 这一屏允许提示');
+  // 两个早退分支和 sp-conn 都要用 staleShown，不能用裸 stale
+  assert.match(src, /bannerVisible\(conn, entered, restoring, staleShown\)/, 'sp-conn 必须跟随 staleShown');
+  assert.match(src, /conn\.status === 'online' && !restoring && !staleShown/, '在线且允许提示时才继续渲染');
+  assert.match(src, /conn\.status === 'online' && staleShown/, '横幅由 staleShown 把关');
+  // 反过来：不能残留用裸 stale 做显示判断（那会绕过闸门）
+  assert.doesNotMatch(src, /=== 'online' && stale\)/, '不能残留用裸 stale 判断显示');
+});
+
+test('resume(): 离开房间不停表、也不清 stale —— 大厅/结算该看到的提示必须还在', async () => {
+  // 这是「对局中不弹、离开后要弹」的关键：如果 sp-room-left 把 stale 清掉，
+  // 玩家要在大厅里再干等 2 次检查（约 2 分钟）才能重新看到提示。
+  const m = manual({ inMatch: true });
+  await new Promise((r) => setTimeout(r, 0));
+  m.setBuild('bbb');
+  await m.tick();
+  await m.tick();
+  assert.equal(m.guard.stale(), true, '对局中已判定为旧版本');
+  assert.equal(m.calls.reload, 0, '对局中绝不自动刷新');
+  // 对局结束：现在改走 resume()，而不是 reset()
+  m.setInMatch(false);
+  m.guard.resume();
+  assert.equal(m.guard.stale(), true, 'resume 不能把「已更新」这个结论清掉');
+  // 且监控还在：之后服务器再换一次版本照样能发现
+  m.setBuild('ccc');
+  await m.tick();
+  await m.tick();
+  assert.equal(m.guard.known(), 'aaa', 'known 没被当成新基准（否则以后再换版就发现不了）');
+});
+
+test('main.js: sp-room-left 走 resume，不再 reset + 清 buildStale', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../../public/js/main.js', import.meta.url), 'utf8');
+  const block = /addEventListener\('sp-room-left'[\s\S]*?\}\);/.exec(src)?.[0];
+  assert.ok(block, 'main.js 仍然监听 sp-room-left');
+  assert.match(block, /buildGuard\.resume\?\.\(\)/, '离开房间只恢复监控，不重置判定');
+  assert.doesNotMatch(block, /buildGuard\.reset/, '不能再用 reset（会把大厅里该出现的提示一起抹掉）');
+  assert.doesNotMatch(block, /buildStale: false/, '不能清 buildStale（同上）');
 });

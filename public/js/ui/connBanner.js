@@ -7,10 +7,11 @@
 
 import { html, Button, Icon, useTicker } from './components.js';
 import { net, CLIENT_ERR_TEXT } from '../net.js';
-import { useStore, shallowEqual } from '../store.js';
+import { useStore, shallowEqual, selectRoute } from '../store.js';
 import { useDocClass } from './device.js';
 import { useState, useEffect } from '../../vendor/hooks.module.js';
 import { checkNodeAcceptsNew } from './nodeCodeHint.js';
+import { updateHintAllowed } from './buildGuard.js';
 import { t } from '../../../shared/i18n.js';
 
 /** Whether the banner shows for this connection state (mirrors the early returns below). */
@@ -26,6 +27,12 @@ export function ConnectionBanner() {
   const entered = useStore((s) => s.session.entered);
   const restoring = useStore((s) => s.ui.restoring);
   const buildStale = useStore((s) => !!s.ui.buildStale);
+  // ★ 2026-10-31（维护者要求）：**对局中不弹「服务器已更新」**，只在大厅 / 房间准备阶段 / 结算界面弹。
+  //   这两次订阅要分开写：selectRoute 只返回路由字符串，拿不到 phase，而结算界面（RESULT）
+  //   的路由仍然是 'game' —— 只看路由会把结算也当成「对局中」一并挡掉。
+  const route = useStore(selectRoute);
+  const phase = useStore((s) => s.match?.public?.phase);
+  const hintAllowed = updateHintAllowed(route, phase);
   // Hidden admin watch is not the player's page: a new build must not offer/force a 刷新状态 there.
   const adminWatch = (() => {
     try {
@@ -41,8 +48,9 @@ export function ConnectionBanner() {
   //                    也就是它还在跑旧代码，刷新能换到新节点上。
   //   维护者在 node-7（旧代码、build 一直没变）上等不到任何提示，就是缺了这一条：
   //   那台节点没重启过，buildGuard 永远不会说「有新版本」。
-  //   探测频率与 buildGuard 一致（60s），并且只在「不在对局里」时才提示刷新，
-  //   避免打断正在打的人（对局中的提示仍由 buildStale 负责，它知道等对局结束）。
+  //   探测频率与 buildGuard 一致（60s）。★ 2026-10-31 修正：原来这里注释说「只在不在对局里时才提示」，
+  //   但代码其实没做这个限制 —— 于是对局中也照样弹（buildStale 那条同样弹）。现在统一由
+  //   updateHintAllowed 把关：对局中一律不显示，只在大厅 / 房间准备阶段 / 结算界面显示。
   const [oldNode, setOldNode] = useState(false);
   useEffect(() => {
     if (adminWatch) return undefined;
@@ -61,15 +69,19 @@ export function ConnectionBanner() {
     const t = setInterval(probe, 60_000);
     return () => { alive = false; clearInterval(t); };
   }, [adminWatch]);
+  // ★ 2026-10-31：`stale` 只看「该不该提示刷新」这件事本身；**画不画**由 hintAllowed 决定。
+  //   注意 `html.sp-conn`（给 toast 让位的那个 class）跟着的是 bannerVisible —— 用 hintAllowed 参与判断，
+  //   否则横幅被藏起来、toast 却被无谓地压在下面。
   const stale = !adminWatch && (buildStale || oldNode);
+  const staleShown = stale && hintAllowed;
   useTicker(conn.status === 'reconnecting' ? 500 : 0);
-  useDocClass('sp-conn', bannerVisible(conn, entered, restoring, stale));
+  useDocClass('sp-conn', bannerVisible(conn, entered, restoring, staleShown));
   if (!entered) return null;
-  if (conn.status === 'online' && !restoring && !stale) return null;
+  if (conn.status === 'online' && !restoring && !staleShown) return null;
   if (conn.status === 'online' && restoring) {
     return html`<div class="conn-banner" role="status"><${Icon} name="refresh" /><span>${t('正在同步同盟状态…')}</span></div>`;
   }
-  if (conn.status === 'online' && stale) {
+  if (conn.status === 'online' && staleShown) {
     // the server has a newer build than this page: the guard reloads by itself once the match is over, the button is
     // for a player who would rather do it now
     return html`<div class="conn-banner" role="alert">

@@ -695,11 +695,15 @@ async function boot() {
       //   这样人回到大厅后，服务器一换版，横幅照样会出现在大厅里。
       window.addEventListener('sp-room-left', () => {
         try {
-          // 复位「已判定为旧版本」的状态，让下一轮检查重新开始比对；
-          // 不停表 —— 停表正是「大厅里收不到提示」的原因。
-          buildGuard.reset?.();
+          // ★ 2026-10-31 第二次修正（维护者要求：对局中不弹，大厅/房间/结算才弹）。
+          //   这里**不要再清 stale**。以前是 reset()（清 stale），但：
+          //     · 现在对局中本来就不显示这条提示，所以「上一局留下的提示」不存在了；
+          //     · 清了反而会抹掉「离开房间后大厅里该出现的提示」，
+          //       而 known 还是旧 build，要再攒 2 次确认（约 2 分钟）才能重新触发，
+          //       中间这段时间玩家在大厅/结算页什么也看不到。
+          //   所以改成 resume()：只确保监控没停，**保留「服务器已更新」这个结论**。
+          buildGuard.resume?.();
         } catch { /* ignore */ }
-        store.patch('ui', { buildStale: false });
       });
       // A normal tab already open while the admin watches must also stop its build guard
       // when the watch closes (the marker is written by the watch tab).
