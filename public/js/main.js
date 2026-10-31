@@ -67,6 +67,7 @@ import { installRehearsal } from './battle/rehearsal.js';
 import { recordResult, installStatsRecorder } from './ui/stats.js';
 import { installLoadoutSync, installOwnershipSync, installDiySync, installSkinsSync, installCardSync, installSettingsViews, loadoutStore } from './ui/loadoutSync.js';
 import { startBuildGuard } from './ui/buildGuard.js';
+import { startStickyNode } from './ui/stickyNode.js';
 import { installAccountObserver } from './ui/accountObserver.js';
 import { initLang, useLang, tickerText } from './ui/lang.js';
 import { t, N_, translateWire } from '../../shared/i18n.js';
@@ -668,6 +669,10 @@ async function boot() {
   })();
   try {
     let buildGuard = null;
+    // 「正开着对局」时把当前节点写进 sp_sticky cookie，离开时删掉。
+    // nginx 靠它决定「cookie 指向旧代码节点时还要不要粘住这个人」（见 ui/stickyNode.js）。
+    // admin 观战页不写：观战者本来就没在对局里，写了反而会把观战页钉在旧节点上。
+    if (!adminWatchPage) startStickyNode(store, { selectRoute });
     if (!adminWatchPage && !recentlyLeftWatch) buildGuard = startBuildGuard({
       inMatch: () => selectRoute(store.get()) === 'game',
       // never reload the page on our own

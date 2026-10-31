@@ -647,6 +647,51 @@ async function handle(req, res, pathname) {
     return sendJson(res, 200, { ok: true, room: null });
   }
 
+  // 内部接口（只给 nginx 用，仅本机可访问）：这个登录账号在 node=N 上有没有房间？
+  //
+  // 背景：nginx 的 map $cookie_sp_route 原本让「所有存活节点」都能粘住 cookie，
+  // 于是 30 天有效的老 cookie 会把玩家带回旧代码节点 —— 哪怕他根本不在对局中。
+  // nginx 查不了数据库，所以在这里提供一个只回 204/404 的极简接口，配 auth_request 用。
+  //
+  // 鉴权：只看 nginx 转发来的 X-Real-IP 是否本机（公网访问直接 403），
+  // 且必须带登录 session（否则视为「没有房间」→ 不粘 → 走随机新节点，安全侧）。
+  if (method === 'GET' && pathname === '/api/account/room-on-node') {
+    const ip = ipOf(req) || '';
+    if (!(ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1')) {
+      res.writeHead(403, { 'cache-control': 'no-store' });
+      return res.end();
+    }
+    const u = await currentUser(req);
+    if (!u) { res.writeHead(404, { 'cache-control': 'no-store' }); return res.end(); }
+    const wantNode = Number(new URL(req.url, 'http://x').searchParams.get('node'));
+    if (!Number.isInteger(wantNode) || wantNode < 1 || wantNode > 30) {
+      res.writeHead(400, { 'cache-control': 'no-store' });
+      return res.end();
+    }
+    const uid = u.id != null ? String(u.id) : null;
+    let has = false;
+    try {
+      const r = await fetch('http://127.0.0.1:3080/api/status', { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        for (const n of j?.rooms?.nodes || []) {
+          if (Number(n.n) !== wantNode) continue;
+          for (const room of n.rooms || []) {
+            // 只认「已开局的对局」：大厅里等人不算（那种情况刷新不会掉线）。
+            if (room.started !== true) continue;
+            const players = (room.players || []).filter(Boolean);
+            if (uid && players.some((x) => x && x.accountId != null && String(x.accountId) === uid)) { has = true; break; }
+          }
+          if (has) break;
+        }
+      }
+    } catch { /* 查不到 = 没有房间 */ }
+    res.writeHead(has ? 204 : 404, {
+      'cache-control': 'no-store',
+      ...(has ? { 'X-SP-Room-On-Node': String(wantNode) } : {}),
+    });
+    return res.end();
+  }
   if (method === 'POST' && pathname === '/api/auth/send-code') {
     const ip = ipOf(req) || '?';
     if (limited('code-ip:' + ip, 20, 60 * 60 * 1000)) return sendJson(res, 429, { ok: false, error: 'too_many_requests', retryAfter: 60 });

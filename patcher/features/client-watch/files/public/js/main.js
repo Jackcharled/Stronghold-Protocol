@@ -67,6 +67,7 @@ import { installRehearsal } from './battle/rehearsal.js';
 import { recordResult, installStatsRecorder } from './ui/stats.js';
 import { installLoadoutSync, installOwnershipSync, installDiySync, installSkinsSync, installCardSync, installSettingsViews, loadoutStore } from './ui/loadoutSync.js';
 import { startBuildGuard } from './ui/buildGuard.js';
+import { startStickyNode } from './ui/stickyNode.js';
 import { installAccountObserver } from './ui/accountObserver.js';
 import { initLang, useLang, tickerText } from './ui/lang.js';
 import { t, N_, translateWire } from '../../shared/i18n.js';
@@ -222,6 +223,10 @@ function onWelcome(msg) {
     installedPlugins: pluginCount(msg.content),
     installedNotices: msg.content?.notices === true,
     testMode: msg.testMode === true,
+    // 本服：管理员工具入口开关（服务端 net.js 用 adminToken 验签后下发；普通玩家永远拿不到这个键）
+    adminTools: msg.adminTools === true,
+    adminId: msg.adminId === true,
+    adminCode: msg.adminCode === true,
     // the official versions the server enables (protocol §2; absent: the switch is off — versions.js)
     versions: sanitizeVersions(msg.versions),
   });
@@ -298,12 +303,35 @@ function onRoomState(msg) {
   maybeFinishRestore();
 }
 
+// 房间关闭的提示文案。每条都可以给 `solo` / `coop` 两个说法：
+// 独立模拟（solo）里没有「同盟」这个概念，说「同盟已解散」会很怪。
+// 只写一个字符串的条目（ended / shutdown）两种模式通用。
+// 2026-10-28 维护者要求：「独立模拟和同盟模拟的关闭信息」要分开。
 const CLOSE_REASON = {
   // 'timeout' = this player was removed after staying disconnected past the lobby grace (server/lobby.js)
-  host_left: N_('创建者已离开，同盟已解散'), timeout: N_('由于长时间断开连接，你已离开同盟'), empty: N_('同盟已解散'),
-  kicked: N_('你已被移出同盟'), ended: N_('模拟已结束'), expired: N_('同盟已过期'), shutdown: N_('服务器维护中，同盟已关闭'),
-  'stuck-preparing': N_('同盟超时未开始，已自动解散'),
+  host_left: { solo: N_('创建者已离开，模拟已结束'), coop: N_('创建者已离开，同盟已解散') },
+  timeout: { solo: N_('由于长时间断开连接，你已离开模拟'), coop: N_('由于长时间断开连接，你已离开同盟') },
+  empty: { solo: N_('模拟已结束'), coop: N_('同盟已解散') },
+  kicked: { solo: N_('你已被移出模拟'), coop: N_('你已被移出同盟') },
+  ended: N_('模拟已结束'),
+  expired: { solo: N_('模拟已过期'), coop: N_('同盟已过期') },
+  shutdown: N_('服务器维护中，模拟已关闭'),
+  'stuck-preparing': { solo: N_('模拟超时未开始，已自动结束'), coop: N_('同盟超时未开始，已自动解散') },
+  // 管理员从控制台 / 管理后台手动关闭（服务器 /admin/room/close）
+  'admin-closed': { solo: N_('该模拟已被管理员关闭'), coop: N_('该同盟已被管理员关闭') },
 };
+
+/**
+ * 一条关闭原因在当前模式下的文案键。
+ * @param {string | Record<string, string>} entry CLOSE_REASON 的值
+ * @param {string | null} mode 关闭前的房间模式：'solo' | 'coop' | null
+ * @returns {string}
+ */
+function closeText(entry, mode) {
+  if (typeof entry === 'string') return t(entry);
+  // 单人房就是 solo；其余（含模式未知）按同盟的说法，保持改动前的行为
+  return t(mode === 'solo' ? entry.solo : entry.coop);
+}
 
 function wireNet() {
   net.on('status', (snap) => {
@@ -357,10 +385,15 @@ function wireNet() {
   });
   net.on('room.state', onRoomState);
   net.on('room.closed', (msg) => {
+    // 房间关闭提示要按模式说人话：独立模拟（solo）里没有「同盟」这个概念。
+    // backToLobby() 会把 store.room 清空，所以模式必须在它之前抓（2026-10-28）。
+    const mode = store.get().room?.mode ?? null;
     clearPendingJoin();
     backToLobby();
     const known = Object.hasOwn(CLOSE_REASON, String(msg.reason)) ? CLOSE_REASON[msg.reason] : null;
-    toast(known ? t(known) : typeof msg.reason === 'string' && msg.reason.length < 60 ? t('同盟已关闭：{reason}', { reason: msg.reason }) : t('同盟已关闭'), 'warn');
+    const text = known ? closeText(known, mode) : typeof msg.reason === 'string' && msg.reason.length < 60
+      ? t('同盟已关闭：{reason}', { reason: msg.reason }) : t('同盟已关闭');
+    toast(text, 'warn');
   });
   net.on('m.public', (msg) => { matchAt = Date.now(); store.patch('match', { public: payload(msg) }); maybeFinishRestore(); });
   net.on('m.private', (msg) => { matchAt = Date.now(); store.patch('match', { private: payload(msg) }); });
@@ -636,6 +669,10 @@ async function boot() {
   })();
   try {
     let buildGuard = null;
+    // 「正开着对局」时把当前节点写进 sp_sticky cookie，离开时删掉。
+    // nginx 靠它决定「cookie 指向旧代码节点时还要不要粘住这个人」（见 ui/stickyNode.js）。
+    // admin 观战页不写：观战者本来就没在对局里，写了反而会把观战页钉在旧节点上。
+    if (!adminWatchPage) startStickyNode(store, { selectRoute });
     if (!adminWatchPage && !recentlyLeftWatch) buildGuard = startBuildGuard({
       inMatch: () => selectRoute(store.get()) === 'game',
       // never reload the page on our own

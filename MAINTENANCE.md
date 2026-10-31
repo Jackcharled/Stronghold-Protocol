@@ -1477,6 +1477,99 @@ node tools\e2e-node-code-hint.mjs       # 结算页提示只在旧代码节点�
 > 用 `/<text[^>]*>([^<]+)<\/text>/` 的 `exec` 只会拿到第一个字符，登录必然 `captcha_wrong`。
 > 要用 `matchAll` 拼起来。`tools/e2e-refresh-room.mjs` 里就有这个 bug（偶尔碰巧能过）。
 
+### 9.34b 只有「正开着对局」的人才被 cookie 粘在旧代码节点上（2026-10-31）
+
+#### 要解决的问题
+
+`sp_route` cookie 的有效期是 **30 天**（`Max-Age=2592000`）。一个节点重启到新代码后不再接新玩家，
+可是**手上留着老 cookie 的人**会被一直钉在那台上 —— 哪怕他根本不在对局里。
+
+实测证据：node-6 在 10-31 凌晨还是旧代码，当天早上进它的 **5 个新房全部是 10:09–11:15 之间**
+由老 cookie 进来的，没有一个是新分配。这些人以为自己「换了个服务器」，其实只是被 30 天前
+的一次分配锁住了。
+
+维护者的要求（2026-10-31 原话）：
+> 确认可以改成只有在**玩**的玩家可以被 cookie 粘住，其他的旧玩家不能被关闭的节点粘住 cookie。
+
+#### 现在的规则
+
+`nginx/conf/nginx.conf` 的 `location /` 里，判断顺序是：
+
+```nginx
+set $sp_sticky 0;
+if ($cookie_sp_sticky = $cookie_sp_route) { set $sp_sticky 1; }   # 值必须与 sp_route 一致
+if ($cookie_sp_sticky !~ "^([1-9]|[12][0-9]|30)$") { set $sp_sticky 0; }
+set $sp_old 0;
+if ($sp_cookie_accepts_new = 0) { set $sp_old 1; }                # cookie 指向旧代码节点
+set $sp_final_open $sp_cookie_open;
+if ($sp_old = 1) { set $sp_final_open $sp_sticky; }
+set $sp_dispatch 1;
+if ($sp_is_document = 1) { set $sp_dispatch $sp_final_open; }     # 只对 HTML 文档改派
+if ($sp_dispatch = 0) { set $sp_node $sp_rand_node; }
+if ($sp_final_open = 1) { set $sp_node $cookie_sp_route; }
+```
+
+| cookie 情况 | 落点 |
+|---|---|
+| `sp_route=6`（node-6 旧代码），**无** `sp_sticky` | 改派到随机新代码节点 ✓ |
+| `sp_route=6` + `sp_sticky=6`（真在对局） | 留在 node-6 ✓ |
+| `sp_route=6` + `sp_sticky=27`（不一致） | 改派 ✓（实测过，早期版本会误粘） |
+| `sp_route=7`（新代码） | 留在 node-7，`sp_sticky` 无关 |
+| `/healthz`、`/js`、`/data`、WebSocket | **一律留在页面那台**，不受改派影响 |
+
+#### `sp_sticky` 由谁写
+
+只能由**前端**写 —— nginx 是「看 cookie 做决定」的一端，它没法自己知道这个人是不是在打对局。
+
+`public/js/ui/stickyNode.js`：
+
+- `selectRoute(store.get()) === 'game'`（即 `match.public.phase ≠ LOBBY` 或 `room.inMatch`）
+  → 写入 `sp_sticky=<sp_node cookie 的值>`，`Max-Age` 7 天
+- 离开对局 / 回到大厅 → **立刻删掉**
+- 页面刚打开时如果不在对局 → 也删掉（清掉上一次会话的残留）
+- 拿不到 `sp_node` 就**不写**：猜一个节点写进去比不写更糟（会把人在错误的节点上钉死）
+
+已在 `public/js/main.js` 里 `startStickyNode(store, { selectRoute })` 启动；
+admin 观战页不启动（观战者本来就不在对局里，写了反而把观战页钉在旧节点上）。
+
+#### 踩过的坑（都实测确认过）
+
+1. **`map` 出来的变量是只读的。** `$sp_cookie_open` 来自 `map`，对它 `set` 会**被静默忽略** ——
+   不报错、`nginx -t` 也通过。第一版就是直接 `set $sp_cookie_open $sp_sticky;`，
+   看起来改派了，实测一个都没生效，白测半天。必须另开可写变量（这里是 `$sp_final_open`）。
+2. **`add_header` 的值是空串时，nginx 照样输出这个头。** 第一版把 `Set-Cookie` 的默认值给了空串，
+   于是 `/healthz` 返回 `Set-Cookie: sp_route=; Max-Age=2592000` —— 浏览器把玩家的 `sp_route`
+   清空，**每打一次健康检查就把人踢下节点**。默认值必须是 `$sp_node`（幂等写回当前节点）。
+3. **`if` 块里的 `add_header` 会让外层所有 `add_header` 失效**（nginx 的按块继承规则）。
+   `/healthz` 的 `X-SP-Node`、`X-SP-Accepts-New` 因此**一直是缺失的**，直到这次才修。
+   解法：`if` 块里只 `set` 变量，`add_header` 全部留在外层。
+4. **`if` 按书写顺序执行。** 先算完 `$sp_final_open` 才能拿它改派，顺序错了就是静默无效。
+5. **没初始化的变量读出来是空串，空串不等于 0。** `$sp_dispatch` 必须先 `set 1`，
+   否则「不改派」这个行为是靠巧合成立的。
+6. **`tools/sync-open-nodes.ps1 -Apply` 会因「配置无变化」短路，即使改的是 `nginx.conf` 本身。**
+   加 `-Force` 强制 reload（已修：`-Force` 现在真的能绕过短路）。
+
+#### 自查命令
+
+```powershell
+# 核心矩阵（node-6 / node-30 是当前旧代码节点，实际节点号看 sync-open-nodes.ps1 输出）
+1..30 | ForEach-Object {
+  $n = $_
+  # (a) 无 sticky → 必须不在旧代码节点上
+  $h1 = curl.exe -k -s -o NUL -D - -H "Cookie: sp_route=$n" -H "Accept: text/html" https://127.0.0.1/
+  $a1 = ($h1 | Select-String '^X-SP-Node:\s*(\d+)').Matches.Groups[1].Value
+  # (b) 有对应的 sticky → 必须落回自己
+  $h2 = curl.exe -k -s -o NUL -D - -H "Cookie: sp_route=$n; sp_sticky=$n" -H "Accept: text/html" https://127.0.0.1/
+  $a2 = ($h2 | Select-String '^X-SP-Node:\s*(\d+)').Matches.Groups[1].Value
+  if ($a2 -ne "$n") { "✗ node-$n sticky 没粘住，变成 $a2" }
+}
+
+# /healthz 绝不能清 cookie（看有没有 Set-Cookie: sp_route=;）
+curl.exe -k -s -o NUL -D - -H "Cookie: sp_route=6" https://127.0.0.1/healthz | Select-String 'Set-Cookie'
+```
+
+单元测试：`cd repo-sync && node --test test/ui/stickyNode.test.js`（8 项）。
+
 ---
 
 ### 9.35 含中文的 `.ps1` 必须带 UTF-8 BOM（2026-10-31 踩到）
