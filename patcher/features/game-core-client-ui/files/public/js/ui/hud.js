@@ -35,9 +35,10 @@ import { data, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
 import { reducedMotion } from './device.js';
 import { serverNow } from '../store.js';
-// 本服：游戏内管理员工具（点延迟胶囊开关）
-import { useStore } from '../store.js';
+// 本服：游戏内管理员工具（点左上角「节点状态」胶囊开关，不是延迟胶囊）
+import { store, useStore } from '../store.js';
 import { AdminTools } from './adminTools.js';
+import { canOpenAdminTools } from './adminGate.js';
 import { isCombatPhase, isBossPhase, prepCapsuleLabel, bossFrac, bossPctText, fmtNum, shopBlockReason } from './gameLogic.js';
 import { uniteBudgetInfo } from './gameLogic/phases.js';
 import { overtimeState, overtimeDrainPerSec, remainAt } from './matchStatus.js';
@@ -534,17 +535,32 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
   useEffect(() => { preloadCapsuleArt(); }, []);
   const onLeft = () => (pen ? onPen(false) : onDrawer('info'));
   const onRight = () => (pen ? onPen(false) : penAvail ? onPen(true) : null);
-  // 本服：管理员工具。只有登录 owner/admin 账号（服务端 welcome.adminTools）时，点延迟胶囊才
-  // 打开面板；普通玩家这里连 onClick 都不会挂 —— 点了只是原本的延迟显示，没有任何反应。
-  const adminTools = useStore((s) => s.adminTools === true);
+  // 本服：管理员工具。只有登录 owner/admin 账号（服务端 welcome.adminTools）时，点左上角的
+  // 「节点状态」胶囊才打开面板。★ 注意不是延迟胶囊：PingPill 只是个延迟显示、没有点击事件，
+  // 真正派发 sp-open-admin-tools 的是 mm/client.js 里那颗节点状态胶囊。
+  // 普通玩家这里连 onClick 都不会挂 —— 点了只是原本的延迟 / 节点状态显示，没有任何反应。
+  // adminTools（两道门都过）在这里只用来触发重渲染：退出授权后组件要跟着更新。
+  // 真正的开关判据是 adminId + canOpenAdminTools，不看这个值 ——
+  // 否则退出授权后连面板都打不开，就没地方重新输码了（2026-10-31 的死锁）。
+  useStore((s) => s.adminTools === true);
   const adminId = useStore((s) => s.adminId === true);
   const [adminOpen, setAdminOpen] = useState(false);
   // 面板锚点：从节点胶囊的实际屏幕位置来，面板开在它正下方。
   const [adminAnchor, setAdminAnchor] = useState(null);
   // 对局中那颗「节点状态」胶囊也开这个面板（mm/client.js 派发事件）：
   // 那次点击发生在注入的 DOM 里，够不到 React 状态，所以用 window 事件转一手。
+  //
+  // ★ 2026-10-31：这个监听**自己也要再判一次**，不能只信派发方。
+  //   维护者的规则是「只有在自己参与的对局里才能开管理员工具」，观战/隐身观战一律不能。
+  //   判据统一在 ui/adminGate.js。mm/client.js 因为要同步判断、又是 IIFE，
+  //   没法 import 它，所以那边有一份等价副本 —— test/ui/adminGate.test.js 会盯着两份别走样。
+  //   派发方已经挡了一层，但如果哪天它被绕过（或有人手动 dispatch 一个事件），
+  //   这里就是唯一的防线。
   useEffect(() => {
     const open = (e) => {
+      let s = null;
+      try { s = store.get(); } catch { /* 拿不到状态就当「不能开」 */ }
+      if (!canOpenAdminTools(s)) return;
       const d = e && e.detail;
       setAdminAnchor(d && Number.isFinite(d.left) ? { left: d.left, top: d.top, width: d.width } : null);
       setAdminOpen(true);

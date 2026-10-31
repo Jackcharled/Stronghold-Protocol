@@ -10,7 +10,128 @@
 
 (function () {
   const q = new URLSearchParams(location.search);
-  const NAME = (q.get('name') || '').trim().slice(0, 12);
+
+  // ---------------------------------------------------------------- client.js 版本自检（本服新增）
+  //
+  // 页面加载后模块留在内存里，服务器更新送不到已打开的标签页。节点的 ui/buildGuard.js 靠
+  // /healthz.build 发现更新并自动刷新，但那个 buildTag 不含 matchmaker 的 client.js。
+  // 于是改了这里，玩家的旧页面会一直跑旧代码 —— 实测 2026-10-27 合并轮询上线 15 分钟后，
+  // 12,252 次轮询里只有 215 次走新端点，client.js 只被请求了 9 次。
+  //
+  // 做法：/api/pulse 带回服务器当前 client.js 的 sha1 前 12 位（server.js clientBuildTag）。
+  // 页面第一次拿到它时记下当作"我这一份"，之后再不同就说明服务器换过文件了。
+  // 刷新规则与 buildGuard 一致，宁可不刷也不打断对局：
+  //   * 对局中：不刷，只等到回到大厅；
+  //   * 对局外：直接刷新，且最多自动刷一次（避免出问题时来回刷）。
+  // 拿不到该字段（老节点）时一律不刷。
+  let seenClientBuild = null;
+  let clientUpdatePending = false;
+  /** 已因版本变化自动刷新过的那一个 build。用它而不是布尔量，避免"刷过一次就永远不再刷"。 */
+  let reloadedForBuild = null;
+  /**
+   * 当前是否在跑一局（对局中不允许自动刷新，避免把玩家的局刷掉）。
+   *
+   * ⚠ 这里曾经用 `window.__spStore` —— 那个全局**根本不存在**（全仓搜不到任何定义），
+   * 于是判断退化成只看 `.game-screen` 这个 DOM 类名。而**选策略阶段根本没有 .game-screen**，
+   * 玩家在 BAND_DRAFT 时就被判成"不在对局中"，client.js 一更新就 location.reload()，
+   * 表现为「选策略时突然回到主页」。这是本次要修的 bug，不是猜测：
+   * 玩家的对局还在服务端跑，页面却被自己刷掉了。
+   *
+   * 现在改成与节点侧 ui/buildGuard.js 相同的判断：把 store 上的路由状态读出来。
+   * 与 public/js/store.js 的 selectRoute 保持一致，另外把 BAND_DRAFT 也算作"在局中"——
+   * 那个阶段玩家已经在选策略了，刷新等于把这一局丢掉。
+   */
+  function inRunningMatch() {
+    try {
+      const g = window.__SP__;
+      const store = g && g.store;
+      const s = store && typeof store.get === 'function' ? store.get() : null;
+      if (s) {
+        if (!s.session || !s.session.entered) return false;      // 标题页
+        const phase = s.match && s.match.public && s.match.public.phase;
+        if (phase && phase !== 'LOBBY') return true;             // 含 BAND_DRAFT / PREP / BATTLE …（store.js selectRoute）
+        if (s.room && s.room.inMatch) return true;               // 对局正在开始，public 还在路上
+        if (s.room) return true;                                 // 在房间里也不行：刷新会把房间丢掉
+        return false;                                            // 大厅
+      }
+    } catch { /* ignore */ }
+    // 拿不到 store 时保守处理：只要还看得到对局/房间界面就认为在局中
+    try {
+      return !!document.querySelector('.game-screen, .draft__main, .room-screen');
+    } catch { return true; }
+  }
+  function checkClientBuild(serverBuild) {
+    if (typeof serverBuild !== 'string' || !serverBuild) return;
+    if (seenClientBuild === null) { seenClientBuild = serverBuild; return; }
+    if (serverBuild === seenClientBuild) { clientUpdatePending = false; return; }
+    // 同一个 build 已经自动刷过一次就不再刷（避免 reload 与轮询打架来回刷）；
+    // 换了一个更新的 build 仍然会继续处理。
+    if (reloadedForBuild === serverBuild) return;
+    if (inRunningMatch()) { clientUpdatePending = true; return; }  // 对局中：等回大厅
+    // ★ 只在「绝对安全」的时候自动刷新。
+    //
+    // 这个自检是为了让 matchmaker 的改动能下发到已打开的页面（节点的 buildTag 不覆盖 matchmaker/），
+    // 但它的触发成本很高：每 5 秒轮询一次，文件一变就把页面刷掉。
+    // 实测代价：开发期一天改 6 次 client.js，等于把所有在线玩家各踢 6 次；
+    // 而且玩家如果正处在"刚点完某个按钮、表单填了一半、正在打字"的状态，刷新同样是破坏性的。
+    //
+    // 现在只在这几种状态自动刷（其余一律等玩家自己刷新，绝不主动打断）：
+    //   * 还在标题页（没进大厅）
+    //   * 在大厅且没开房间、没在匹配
+    // 换句话说：房间里、选策略、对局、结算 —— 一律不刷。
+    let safeToReload = false;
+    try {
+      const g = window.__SP__;
+      const s = g && g.store && typeof g.store.get === 'function' ? g.store.get() : null;
+      if (s) {
+        const entered = !!(s.session && s.session.entered);
+        const phase = s.match && s.match.public && s.match.public.phase;
+        const inMatchNow = !!(phase && phase !== 'LOBBY') || !!(s.match && s.match.result);
+        const inRoom = !!s.room;
+        const matching = !!(s.ui && (s.ui.pendingJoin || s.ui.matchmaking));
+        safeToReload = !entered || (!inMatchNow && !inRoom && !matching);
+      }
+    } catch { /* 拿不到状态就不要刷 */ }
+    if (!safeToReload) {
+      // 不方便刷：记下"有更新待应用"，等玩家自己刷新或回到安全状态再处理
+      clientUpdatePending = true;
+      return;
+    }
+    reloadedForBuild = serverBuild;
+    seenClientBuild = serverBuild;
+    try { (window.__SP_AUTO_LOG ||= []).push({ event: 'client-build-reload', at: Date.now() }); } catch { /* ignore */ }
+    setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 1200);
+  }
+  /**
+   * 对局刚结束时调用：如果这局期间服务器换过 client.js，立刻刷新，
+   * 不必等下一轮 5 秒轮询（玩家回到大厅那一刻正好是刷新的好时机）。
+   */
+  function flushClientBuildWait() {
+    if (!clientUpdatePending) return;
+    if (reloadedForBuild === seenClientBuild) { clientUpdatePending = false; return; }
+    if (inRunningMatch()) return;
+    clientUpdatePending = false;
+    reloadedForBuild = seenClientBuild;
+    try { (window.__SP_AUTO_LOG ||= []).push({ event: 'client-build-reload', at: Date.now(), via: 'after-match' }); } catch { /* ignore */ }
+    setTimeout(() => { try { location.reload(); } catch { /* ignore */ } }, 600);
+  }
+  window.__mmFlushClientBuild = flushClientBuildWait;
+
+  // 名字：优先 URL 参数（匹配/邀请链接会带），否则回退到本机记住的名字。
+  // 只认 URL 的话，老玩家直接打开域名（没有 ?name=）时 NAME 为空：
+  // 于是 net.setName 从不调用 → net.name 为空 → hello 不发、rehandshake 也返回 false
+  // → accountToken 送不上去 → 服务端 session.accountId 为空 → 有账号却被判成游客。
+  const NAME = (() => {
+    const fromUrl = (q.get('name') || '').trim();
+    if (fromUrl) return fromUrl.slice(0, 12);
+    try {
+      for (const k of ['sp.name', 'mm.name']) {
+        const v = (localStorage.getItem(k) || '').trim();
+        if (v) return v.replace(/#\d{4}\s*$/, '').slice(0, 12);   // 去掉「#四位代码」后缀
+      }
+    } catch { /* 隐私模式 */ }
+    return '';
+  })();
   const ROOM = q.get('room');
   const IS_HOST = q.get('mmhost') === '1';
   const MID = q.get('mid');
@@ -91,6 +212,48 @@ const JOIN_COOKIE = (() => {
     document.cookie = `sp_node=${node}; path=/; max-age=86400; SameSite=Lax`;
     document.cookie = `sp_route=${node}; path=/; max-age=86400; SameSite=Lax`;
   };
+  /**
+   * 跨节点切换「无感」版：不刷新页面，只把 WebSocket 重连到目标节点。
+   *
+   * 原理：nginx 的 location = /ws 支持 ?watchNode=N（见 nginx.conf），会用它覆盖
+   * $sp_node 选择上游；页面本身的资源继续由当前的 sp_route 提供，不必重新下载。
+   * 于是玩家看不到任何刷新/白屏，只是 socket 换了个节点。
+   *
+   * 注意：切换后必须重设 cookie，否则之后刷新页面会回到旧节点（那里没有这个房间）。
+   * @param {number} node @param {{sp:any, keepName?:string}} opts
+   */
+  function switchNodeLive(sp, node) {
+    try { console.info('[mm-debug] switchNodeLive', { node, net: sp && sp.net && sp.net.status }); } catch { /* ignore */ }
+    return new Promise((resolve, reject) => {
+      try {
+        const net = sp && sp.net;
+        if (!net || typeof net.connect !== 'function') { reject(new Error('net unavailable')); return; }
+        const base = net.url || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+        const u = new URL(base, location.href);
+        u.searchParams.set('watchNode', String(node));
+        // 先记下目标节点：重连成功前页面仍显示旧状态，但 cookie 已经是新的
+        setNodeCookie(node);
+        // 关旧 socket（不触发自动重连），换 url 再开
+        try { net._quietSwap = true; } catch { /* ignore */ }
+        net.close?.();
+        net.url = u.toString();
+        const done = () => {
+          net.off?.('welcome', onWelcome);
+          clearTimeout(timer);
+          resolve();
+        };
+        const fail = (e) => {
+          net.off?.('welcome', onWelcome);
+          clearTimeout(timer);
+          reject(e || new Error('switch timeout'));
+        };
+        const onWelcome = () => done();
+        const timer = setTimeout(() => fail(new Error('switch timeout')), 8000);
+        try { net.on?.('welcome', onWelcome); } catch { /* ignore */ }
+        net.connect?.();
+      } catch (e) { reject(e); }
+    });
+  }
   const seatsOf = (room) => (room && Array.isArray(room.seats) ? room.seats.filter(Boolean).length : 0);
 
   const TIPS = [
@@ -117,22 +280,61 @@ const JOIN_COOKIE = (() => {
     try {
       const u = new URL(location.href);
       const keepName = !(window.__SP__ && window.__SP__.store && window.__SP__.store.get().session.entered);
-      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'c', 'pmid', 'pcid', 'pd', 'mm', 'spectate'].forEach((k) => {
+      // boot/retry 是启动失败重试用的，成功进入后没有意义，留在地址栏只会难看
+      ['room', 'n', 'name', 'mmhost', 'mid', 't', 'tk', 'd', 'c', 'pmid', 'pcid', 'pd', 'mm', 'spectate', 'boot', 'retry'].forEach((k) => {
         if (k === 'name' && keepName) return;   // 还没进入大厅前保留名字，进房后再清
         u.searchParams.delete(k);
       });
       const qs = u.searchParams.toString();
-      history.replaceState(history.state, '', u.pathname + (qs ? '?' + qs : '') + u.hash);
+      // /r/CODE 是邀请短链的形式：进过房间之后它就没有意义了，留着会让
+      // 页面每次刷新都重新触发一次 room.join（对局已开始时表现为反复「加入失败」）。
+      let pathname = u.pathname;
+      if (/^\/r\/[^/]+$/i.test(pathname)) pathname = '/';
+      else if (/^\/room\/[^/]+$/i.test(pathname)) pathname = '/';
+      history.replaceState(history.state, '', pathname + (qs ? '?' + qs : '') + u.hash);
     } catch (e) { /* ignore */ }
   }
 
   const __mmResponsiveCss = `
 /* mm-responsive-v1：注入元素的尺寸随窗口缩放 */
+/* 同盟模拟 / 独立模拟 顶栏：左侧「标题 + 当前延迟 + 节点状态」比右侧按钮块高，
+   .proto-top 是 align-items:flex-start，导致左侧按自己的 65px 高居中、右侧按钮按 42px 高居中，
+   两者中心线差 ~5px。让左侧内容与右侧按钮的中心线对齐。 */
+/* 大厅顶栏：节点状态「30/30 · 正常 · N 人在线」与右侧方形按钮同高对齐。
+   大厅是 [返回][ping][当前延迟][状态栏][Q群] | [统计][设置][玩法说明]，
+   左侧 chip 高 24、右侧按钮高 42，需要让 chip 的中心线落在按钮的中心线上，
+   而不是按各自文本基线排。 */
+.lobby-screen .topbar__left{align-items:center!important}
+.lobby-screen .topbar__left > #mm-nodes,
+.lobby-screen .topbar__left > #mm-qq-lobby{align-self:center!important;margin-block:0!important}
+/* 顶栏是 flex + gap:10px，节点状态如果自带 margin-left:10px 会叠加成 20px，
+   在延迟与状态条之间留出多余空白。这里统一清零，间距只由 gap 决定。 */
+.lobby-screen .topbar__left > #mm-nodes{margin:0!important}
+/* 延迟胶囊（.ping）的宽度随毫秒数位数变化，会把右侧工具组整体推动，表现为 2~3px 的漂移。
+   给固定最小宽度并让内容居中，布局就稳定了。 */
+.lobby-screen .topbar__left > .ping{min-width:84px!important;justify-content:center!important}
+/* 弹窗（同盟模拟 / 独立模拟）里的节点状态：与大按钮同高、垂直居中 */
+.mm-proto-meter{display:flex!important;align-items:center!important;gap:10px!important;flex:none!important;align-self:center!important}
+.mm-proto-meter > #mm-nodes{display:inline-flex!important;align-items:center!important;height:42px!important;max-height:42px!important;line-height:1!important;flex:none!important;margin:0!important;align-self:center!important}
+.mm-proto-meter > #mm-nodes > .chip{display:inline-flex!important;align-items:center!important;justify-content:center!important;height:42px!important;min-height:42px!important;max-height:42px!important;box-sizing:border-box!important;padding:0 16px!important;line-height:1!important;margin:0!important}
+.mm-proto-meter > #mm-nodes > .chip > *{line-height:1!important;display:inline-flex!important;align-items:center!important}
+
+/* 节点状态 chip：位于大厅顶栏左侧（延迟之后、分隔线之前），与右侧按钮同一中心线 */
+.lobby-screen .topbar__left > #mm-nodes{display:inline-flex!important;align-items:center!important;height:42px!important;line-height:1!important;flex:none!important;align-self:center!important}
+.lobby-screen .topbar__left > #mm-nodes > .chip{display:inline-flex!important;align-items:center!important;justify-content:center!important;height:42px!important;min-height:42px!important;box-sizing:border-box!important;padding:0 16px!important;line-height:1!important;margin:0!important}
+.lobby-screen .topbar__left > #mm-nodes > .chip > *{line-height:1!important;display:inline-flex!important;align-items:center!important}
+.lobby-screen .topbar__tools > #mm-qq-lobby{margin-left:0!important;margin-right:0!important}
+/* 节点状态的宽度：原先用 min-width:230px + justify-content:flex-end 锁宽度防止抖动，
+   但那样会在胶囊左侧留出一大片空白（看起来像多了一段间距）。
+   改为按内容自适应并居中——位置稳定性由 .ping 的固定宽度保证。 */
+.lobby-screen .topbar__left > #mm-nodes{justify-content:center!important}
+.lobby-screen .topbar__left > #mm-qq-lobby{flex:none!important}
+.lobby-screen .topbar__left > #mm-nodes{flex:none!important}
 #mm-nodes:not(.topbar) .chip{height:clamp(26px,2.2vw,32px);padding:0 clamp(9px,0.9vw,14px) 0 clamp(7px,0.75vw,11px)}
 #mm-nodes:not(.topbar) .chip .num,#mm-nodes:not(.topbar) .chip span{font-size:clamp(11px,1.05vw,14px)}
-#mm-room-timer{--bk-c:var(--mint-500);background:rgba(0,0,0,.38);border:1px solid var(--line);box-sizing:border-box;overflow:hidden}
-#mm-room-timer .mm-timer-time{color:#7ff0cf;font-weight:700;font-family:"Noto Sans SC",system-ui,sans-serif;line-height:1.1}
-#mm-room-timer .mm-timer-label{color:#a8c0b9;letter-spacing:.5px}
+#mm-room-timer{box-sizing:border-box;gap:2px;flex:none;line-height:1.15}
+#mm-room-timer .mm-timer-time{color:var(--mint-400,#5ee0b9);font-weight:700;font-family:var(--font-num,monospace);font-variant-numeric:tabular-nums;line-height:1.1}
+#mm-room-timer .mm-timer-label{color:var(--text-lo,#a8c0b9);letter-spacing:.02em;opacity:.9}
 #mm-ticker{height:clamp(26px,2.2vw,32px)!important}
 #mm-ticker .line{font-size:clamp(11px,1.05vw,15px)!important}
 `;
@@ -159,35 +361,183 @@ const JOIN_COOKIE = (() => {
     setInterval(clear, 1500);
   }
 
+  // 新版（0.3.3）悬停提示外观：深色底 + 左侧薄荷竖条 + 直角 + 同字号投影。
+  // 用它替代浏览器原生 title（系统气泡，样式改不了），覆盖我们插入的按钮。
+  let mmTipEl = null;
+  let mmTipAnchor = null;
+  function mmTipCss() {
+    if (document.getElementById('mm-tip-css')) return;
+    const st = document.createElement('style');
+    st.id = 'mm-tip-css';
+    st.textContent = `
+      #mm-tip{position:fixed;z-index:2147483000;max-width:min(340px,70vw);padding:6px 9px;
+        border:1px solid var(--line-2,rgba(255,255,255,.14));border-left:2px solid var(--mint-500,#5ee0b9);border-radius:0;
+        background:rgba(10,13,12,.97);color:var(--text-md,#cfe9e0);
+        font-size:calc(.15 * var(--t,11px));line-height:1.55;letter-spacing:0;white-space:normal;text-align:center;
+        pointer-events:none;box-shadow:0 .06rem .2rem rgba(0,0,0,.55);opacity:0;transition:opacity .12s ease-out}
+      #mm-tip.is-shown{opacity:1}
+    `;
+    (document.head || document.documentElement).appendChild(st);
+  }
+  function mmTipShow(anchor, text) {
+    if (!anchor || !text || !document.body.contains(anchor)) return;
+    mmTipCss();
+    if (!mmTipEl) {
+      mmTipEl = document.createElement('div');
+      mmTipEl.id = 'mm-tip';
+      mmTipEl.className = 'tooltip';
+      mmTipEl.setAttribute('role', 'tooltip');
+      document.body.appendChild(mmTipEl);
+    }
+    mmTipEl.textContent = text;
+    mmTipAnchor = anchor;
+    const r = anchor.getBoundingClientRect();
+    const box = mmTipEl.getBoundingClientRect();
+    const top = Math.max(6, r.top - box.height - 8);
+    const left = Math.min(Math.max(6, r.left + r.width / 2 - box.width / 2), Math.max(6, innerWidth - box.width - 6));
+    mmTipEl.style.top = top + 'px';
+    mmTipEl.style.left = left + 'px';
+    mmTipEl.classList.add('is-shown');
+  }
+  function mmTipHide() {
+    mmTipAnchor = null;
+    if (mmTipEl) mmTipEl.classList.remove('is-shown');
+  }
+  /** 给元素挂上「悬停显示新版样式提示」的行为（不用原生 title）。 */
+  function mmTipBind(el, text) {
+    if (!el || el.dataset.mmTipBound === '1') {
+      if (el) el.dataset.mmTipText = text || '';
+      return;
+    }
+    el.dataset.mmTipBound = '1';
+    el.dataset.mmTipText = text || '';
+    el.removeAttribute('title'); // 原生气泡会盖住自绘提示，且样式无法统一
+    const show = () => mmTipShow(el, el.dataset.mmTipText);
+    el.addEventListener('mouseenter', show);
+    el.addEventListener('focus', show);
+    el.addEventListener('pointerdown', show);
+    el.addEventListener('mouseleave', mmTipHide);
+    el.addEventListener('blur', mmTipHide);
+    el.addEventListener('click', () => setTimeout(mmTipHide, 0));
+  }
+
+  /**
+   * 应用 /api/gate 的结果（也可能来自合并后的 /api/pulse.gate）。
+   * 从 refreshGate 里拆出来，供两条路径共用。
+   */
+  function applyGate(j) {
+    if (!j) return;
+    GATE = { start: j.start !== false, match: j.match !== false };
+    // 管理员/服主无视维护开关（服务端 session.admin 同样放行）。
+    // 角色变量由账号接口异步写入，也可能只有后台下发的 adminToken，两者任一即可。
+    const isAdmin = (() => {
+      try {
+        const r = window.__SP_ACCOUNT_ROLE;
+        if (r && r !== 'player') return true;
+        if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) return true;
+        return false;
+      } catch { return false; }
+    })();
+    if (GATE.start === false && !isAdmin) lastGateTip = true;
+    const b = [...document.querySelectorAll('button')].find((x) => /开始模拟/.test(x.textContent || ''));
+    if (!b) return;
+    if (GATE.start === false && !isAdmin) {
+      b.disabled = true;
+      b.dataset.mmGate = '1';
+      // 与新版同款悬停提示，而不是浏览器原生 title 气泡
+      b.dataset.mmTipText = '服务器暂时关闭了开始游戏，请稍后再试';
+      b.dataset.mmTipBound = '1';
+      b.removeAttribute('title');
+      mmTipBind(b, b.dataset.mmTipText);
+    } else if (b.dataset.mmGate) {
+      b.disabled = false;
+      delete b.dataset.mmGate;
+      b.dataset.mmTipText = '';
+      b.removeAttribute('title');
+    }
+  }
+
+  let lastGateTip = false;
+
   function refreshGate() {
     fetch('/mm/api/gate', { cache: 'no-store' })
       .then((r) => r.ok ? r.json() : null)
-      .then((j) => {
-        if (!j) return;
-        GATE = { start: j.start !== false, match: j.match !== false };
-        const b = [...document.querySelectorAll('button')].find((x) => /开始模拟/.test(x.textContent || ''));
-        if (!b) return;
-        if (GATE.start === false) {
-          b.disabled = true;
-          b.dataset.mmGate = '1';
-          b.title = '维护中，暂时无法开始游戏';
-        } else if (b.dataset.mmGate) {
-          b.disabled = false;
-          delete b.dataset.mmGate;
-          b.title = '';
-        }
-      })
+      .then(applyGate)
       .catch(() => {});
   }
 
+  // ---------------------------------------------------------------- 合并轮询（本服优化）
+  //
+  // 真实访问日志统计（1,192,827 条采样）：
+  //   /mm/api/gate          67,450 次
+  //   /mm/api/room-ttl      67,439 次
+  //   /mm/api/announcement  67,439 次
+  // 三个各自 5 秒轮询，合计约占全部请求的 55% —— 比素材请求（11.6%）多近 5 倍。
+  // 它们都返回几十到一百多字节的小 JSON，合并成一个 /mm/api/pulse 只花一次往返。
+  //
+  // 策略：能合并就合并；pulse 不可用（老节点）时自动退回原来的三个端点，行为不变。
+  //
+  // ⚠ 订阅要能拿到「已经到达过」的数据：模块 A 可能在第一次 pulse 返回之后才 install，
+  //   只推送不缓存的话它就永远收不到（要等下一轮 5 秒，或干脆错过初始值）。
+  //   所以这里保存 lastPulse，订阅时立刻补发一次。
+  let pulseOk = true;
+  let lastPulse = null;
+  const pulseHooks = { gate: [], ttl: [], announcement: [] };
+  /**
+   * 订阅某类数据的变化。
+   * 如果这一类数据已经到达过（lastPulse 里有），会立刻用当前值调用一次 ——
+   * 这样晚注册的模块不会漏掉初始值。
+   */
+  function onPulse(kind, fn) {
+    try {
+      pulseHooks[kind].push(fn);
+      const have = lastPulse && kind in lastPulse && lastPulse[kind] != null;
+      if (have) { try { fn(lastPulse[kind]); } catch { /* ignore */ } }
+    } catch { /* ignore */ }
+  }
+  function emitPulse(kind, value) {
+    for (const fn of pulseHooks[kind]) { try { fn(value); } catch { /* ignore */ } }
+  }
+
+  function refreshPulse() {
+    if (!pulseOk) { refreshGate(); return; }
+    fetch('/mm/api/pulse', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!j || !j.ok) { pulseOk = false; refreshGate(); return; }
+        const data = { gate: j.gate, ttl: j.roomTtl, announcement: j.announcement };
+        lastPulse = data;
+        applyGate(data.gate);
+        emitPulse('gate', data.gate);
+        emitPulse('ttl', data.ttl);
+        emitPulse('announcement', data.announcement);
+        // client.js 版本自检：服务器换过文件就让页面自我更新（对局中不刷）
+        try { checkClientBuild(j.clientBuild); } catch { /* ignore */ }
+      })
+      .catch(() => { /* 断网时保持现状，下一轮再试 */ });
+  }
+  /** 当前已到达的 pulse 数据（可能为 null：还没成功过一次）。供晚注册的模块主动取一次。 */
+  function getPulse() { return lastPulse; }
+
   function boot(sp) {
-    try { refreshGate(); setInterval(refreshGate, 5000); } catch { /* ignore */ }
+    // 合并轮询：一次拿到 gate / room-ttl / announcement，替代原来三个独立的 5 秒轮询。
+    // 老节点没有 /mm/api/pulse 时 refreshPulse 会自动退回 refreshGate。
+    try { refreshPulse(); setInterval(refreshPulse, 5000); } catch { /* ignore */ }
     document.addEventListener('click', (e) => {
       if (GATE.start !== false) return;
+      // 管理员/服主无视维护开关：服务端 start 分支按 session.admin 放行，
+      // 前端这里也必须放行，否则会把管理员的点击拦下来并弹提示。
+      try {
+        const r = window.__SP_ACCOUNT_ROLE;
+        if (r && r !== 'player') return;
+        if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) return;
+      } catch { /* 隐私模式：按普通玩家处理 */ }
       const b = e.target && e.target.closest ? e.target.closest('button') : null;
       if (!b || !/开始模拟/.test(b.textContent || '')) return;
       e.preventDefault();
       e.stopImmediatePropagation();
+      // 与新版一致：被拦截时用顶部 toast 说明原因，而不是静默无反应。
+      showStyledToast('服务器暂时关闭了开始游戏，请稍后再试', 'warn');
     }, true);
     try {
       if (!document.getElementById('mm-responsive-css')) {
@@ -210,20 +560,58 @@ const JOIN_COOKIE = (() => {
     // 隐身观战保留完整 URL：手机刷新后仍能重新进入 hidden spectator。
     if (ROOM && !ADMIN_WATCH) cleanUrl();
     else if (PIN_NODE && !IS_HOST && !ADMIN_WATCH) cleanUrl();
+    // 地址栏兜底清理：匹配/组队参数（?mm=1&mid=…&t=…&tk=…&d=…&c=…）本来要等建房成功才清，
+    // 但玩家没进入大厅（未登录 / 只是在看首页）时那条路径不会跑到，参数就一直挂在域名后面。
+    // 这些值已经读进常量了，立刻抹掉不影响后续流程。
+    else if (!ADMIN_WATCH && (IS_HOST || PMID || q.get('mm') === '1' || MID || TICKET)) cleanUrl();
 
-    if (NAME && !store.get().session.entered) {
-      try { store.set((s) => ({ ...s, me: { ...s.me, name: NAME }, session: { ...s.session, entered: true } })); } catch (e) { /* ignore */ }
+    // 名字必须**无条件**设置到 net：它是 hello 的前置条件。
+    // 以前这里写着 `if (NAME && !store.get().session.entered)`，而 entered 是存在
+    // localStorage 里的「本机进过大堂」标记 —— 老玩家第二次及以后打开页面时它是 true，
+    // 于是 setName() 从未被调用，net.name 一直为空：
+    //   · _onOpen 里 `if (this.name)` 不成立 → 连 hello 都不发
+    //   · rehandshake() 里 `if (... || !this.name) return false` → 身份重发也被跳过
+    // 结果 accountToken 送不上去，服务端 session.accountId 为空，玩家在有账号的情况下
+    // 被 lobby 判成游客（dashboard 显示「游客」、房间游客标签、游客限制也一并触发）。
+    // setName 本身是幂等的（同名字不会重复握手），放心每次调用。
+    if (NAME) {
+      if (!store.get().session.entered) {
+        try { store.set((s) => ({ ...s, me: { ...s.me, name: NAME }, session: { ...s.session, entered: true } })); } catch (e) { /* ignore */ }
+      }
       try { net.setName(NAME); } catch (e) { /* ignore */ }
     }
 
     if ((ADMIN_WATCH || WATCH_GUEST) && (ROOM || WATCH_CODE)) { adminWatchFlow(sp); roomUi(sp); }
     else if (IS_HOST && PMID && PCID) { partyHostFlow(sp); roomUi(sp); }
     else {
-      if (IS_HOST && MID && TICKET && SECRET && DIFF) hostFlow(sp);
-      else if (JOIN_COOKIE) resolveRoomNode(JOIN_COOKIE, () => joinFlow(sp, JOIN_COOKIE, false));
+      // 玩家刚主动退出对局时，不要因为地址栏/邀请 cookie 还留着房号就自动再进一次：
+      // 对局已经开始，重进必然失败（ROOM_STARTED），表现就是「回到大厅还在反复提示加入失败」。
+      // 2 分钟冷却由 ui/matchChrome.js quitMatch() 写入的 sp.matchExitAt 提供。
+      const recentExit = (() => {
+        try {
+          const t = Number(sessionStorage.getItem('sp.matchExitAt') || 0);
+          return t > 0 && Date.now() - t < 120000;
+        } catch { return false; }
+      })();
+      if (recentExit) {
+        try { sp.store.patch('ui', { pendingJoin: null, pendingSpectate: false }); } catch { /* ignore */ }
+        try { sessionStorage.removeItem('mm.pendingRoom'); } catch { /* ignore */ }
+        // 顺手把 /r/CODE 从地址里清掉，避免下次刷新又触发一遍
+        try {
+          if (/^\/r\/[^/]+$/i.test(location.pathname) || /^\/room\/[^/]+$/i.test(location.pathname)) {
+            history.replaceState(history.state, '', '/');
+          }
+        } catch { /* ignore */ }
+      } else if (IS_HOST && MID && TICKET && SECRET && DIFF) hostFlow(sp);
+      // 手输密钥/点「加入同盟」跨节点跳转时，目标房间记在 mm.pendingRoom 里。
+      // 它必须**排在 JOIN_COOKIE 之前**：刷新后 sp_join 里可能还留着上一次的邀请码，
+      // 若先走 JOIN_COOKIE 就会去解析旧码（甚至再跳一次节点），玩家就得多输一次密钥。
       else if (PENDING_JOIN) joinFlow(sp, PENDING_JOIN.code, PENDING_JOIN.spectate);
+      // sp_join 只带房号、不带观战意图，所以观战一律回到 PENDING_JOIN（它记了 spectate）。
+      // 走到这里说明是纯邀请链接，按加入处理。
+      else if (JOIN_COOKIE) resolveRoomNode(JOIN_COOKIE, () => joinFlow(sp, JOIN_COOKIE, false));
       else if (ROOM && ROOM_PINNED) joinFlow(sp, ROOM, SPECTATE);
-      else if (ROOM) resolveRoomNode(ROOM, () => joinFlow(sp, ROOM, SPECTATE));
+      else if (ROOM) resolveRoomNode(ROOM, () => joinFlow(sp, ROOM, SPECTATE), SPECTATE);
       roomUi(sp);
     }
     // 匹配成功的对局：不等房主手动点，自动准备 + 自动开始
@@ -231,10 +619,13 @@ const JOIN_COOKIE = (() => {
     installJoinRedirect();
     installNodeBadge();
     installAdminEntry();
-    
+    /* @sp-strip-icp:start */
+    installIcpBadge();
+    /* @sp-strip-icp:end */
   installQQGroup();
   setInterval(cleanTopExtras, 1200);
   installAnnouncement();
+  installResumeButton();
   installTempNotice();
   installRoomBarShrink();
 
@@ -313,6 +704,8 @@ const JOIN_COOKIE = (() => {
   }
 
   // 进入对局时的全屏过渡，盖住中间的「同盟等待室」，开局后自动消失
+  let transitionTimer = null;
+  let transitionWatch = null;
   function showTransition() {
     if (document.getElementById('mm-transition')) return;
     const ov = document.createElement('div');
@@ -329,13 +722,28 @@ const JOIN_COOKIE = (() => {
         <span class="mm-ov__foundsub" id="mm-transition-sub">正在进入模拟…</span>
       </div>`;
     document.body.appendChild(ov);
-    // 兜底：90 秒还没开局就把界面让出来，避免卡死
-    setTimeout(() => hideTransition(), 90_000);
+    // 兜底：90 秒还没开局就把界面让出来，避免卡死。
+    // 顺带把定时器记下来：如果遮罩被正常收掉，这个定时器也一并取消，
+    // 免得它 90 秒后再对一个新的遮罩动手。
+    transitionTimer = setTimeout(() => hideTransition(), 90_000);
+    // 更快的一道保险：8 秒后如果还没进对局、而且连接已经断了（被接管/掉线），
+    // 立刻收掉遮罩 —— 那种情况永远不会再"进入"了。
+    transitionWatch = setInterval(() => {
+      try {
+        const s = window.__SP__?.store?.get?.() || {};
+        const dead = s.match == null && !(s.room && s.room.inMatch);
+        if (window.__SP_RESTART_PENDING || dead) { hideTransition(); return; }
+        const st = window.__SP__?.net?.status;
+        if (st === 'closed') hideTransition();
+      } catch { /* ignore */ }
+    }, 2000);
   }
 
   function hideTransition() {
     const el = document.getElementById('mm-transition');
     if (el) el.remove();
+    if (transitionTimer) { try { clearTimeout(transitionTimer); } catch { /* ignore */ } transitionTimer = null; }
+    if (transitionWatch) { try { clearInterval(transitionWatch); } catch { /* ignore */ } transitionWatch = null; }
   }
 
   try { if (!document.querySelector('meta[name="mm-no-referrer"]')) { const m = document.createElement('meta'); m.name = 'mm-no-referrer'; m.setAttribute('name', 'referrer'); m.content = 'no-referrer'; document.head.appendChild(m); } } catch { /* ignore */ }
@@ -369,10 +777,24 @@ const JOIN_COOKIE = (() => {
     const tick = () => {
       const s = store.get();
       const room = s.room;
-      if (window.__SP_RESTART_PENDING) return; // 返回同盟提示还在：不要自动开下一局
+      // ★ 「重启中断」标志不能让过渡遮罩永远盖着。
+      //   以前这里直接 return，于是只要 __SP_RESTART_PENDING 为真，
+      //   hideTransition() 就永远走不到 —— 玩家被钉在「正在进入模拟…」上。
+      //   而那个标志恰恰是在「对局被打断」时置上的（mark()：room.inMatch && !match.result），
+      //   正是玩家最需要看见下面界面的时候。现在即使有该标志，也先把遮罩收掉：
+      //   遮罩只是"正在进入"的装饰，不该成为阻断。
+      if (window.__SP_RESTART_PENDING) {
+        try { hideTransition(); } catch { /* ignore */ }
+        return;
+      }
       // A started / in-match room already moved to the game: do not leave the transition
       // overlay covering it while waiting for the first m.public frame.
       if (s.room?.inMatch || s.match?.public) { autoDone = true; hideTransition(); return; }
+      // 被其他标签页接管（net 已 closed 且是 4001）时，本页不会再收到任何服务端推送：
+      // 遮罩留着只会让人以为还在加载。收掉它，让 main.js 的 replaced 处理把界面带回大厅。
+      try {
+        if (net.status === 'closed') { hideTransition(); return; }
+      } catch { /* ignore */ }
       if (autoDone) return;   // 已经开过一局：返回房间后不要自动重开
       if (!room) { enteredAt = Date.now(); readySent = false; startSent = false; return; }
       const me = s.me.playerId;
@@ -422,16 +844,29 @@ const JOIN_COOKIE = (() => {
 
   const MODE_NAMES = { FUNNY: '标准模拟', NORMAL: '险境模拟', HARD: '绝境模拟', ABYSS: '终极模拟' };
 
-  /** 按房号查房间在哪个节点；不在本节点就写 cookie 切过去，同节点则继续本地加入。 */
-  function resolveRoomNode(code, onSameNode) {
+  /**
+   * 按房号查房间在哪个节点；不在本节点就写 cookie 切过去，同节点则继续本地加入。
+   * @param {string} code 房号
+   * @param {Function} onSameNode 已在本节点时继续
+   * @param {boolean} [spectate] 观战意图。跨节点跳转会把地址栏清成 `/`，`?spectate=1` 随之消失，
+   *   所以必须显式带上并写进 mm.pendingRoom —— 否则观战会退化成「加入」。
+   */
+  function resolveRoomNode(code, onSameNode, spectate = SPECTATE) {
     fetch('/mm/api/find-room?code=' + encodeURIComponent(code))
       .then((r) => r.json())
       .then((d) => {
         const cur = nodeOf();
         if (d && d.node && d.node !== cur) {
-          setNodeCookie(d.node);
-          try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: SPECTATE })); } catch { /* ignore */ }
-          location.replace('/');
+          // 跨节点：不刷新页面，直接把 socket 换到目标节点（玩家无感），随后本地加入/观战
+          const sp = window.__SP__;
+          switchNodeLive(sp, d.node)
+            .then(() => { onSameNode && onSameNode(); })
+            .catch(() => {
+              // 无感切换失败（例如 socket 起不来）才退回整页跳转
+              setNodeCookie(d.node);
+              try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: !!spectate })); } catch { /* ignore */ }
+              location.replace('/');
+            });
           return;
         }
         if (d && d.node === cur) { onSameNode && onSameNode(); return; }
@@ -487,10 +922,16 @@ const JOIN_COOKIE = (() => {
             if (spec && Number(d.spectators) >= 2) { showStyledToast('观战席位已满（2/2），请稍后再试'); return; }
             if (!spec && d.started) { showStyledToast('该同盟已开始对局，无法加入；可以点「观战」进入'); return; }
             if (!spec && d.full) { showStyledToast('该同盟人数已满，无法加入；可以点「观战」进入'); return; }
-            if (d.node === nodeOf()) { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); return; }
-            setNodeCookie(d.node);
-            try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: spec })); } catch { /* ignore */ }
-            location.replace('/');
+            const localGo = () => { if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec); };
+            if (d.node === nodeOf()) { localGo(); return; }
+            // 跨节点：socket 无感切过去，然后照常在本地点按钮（玩家看不到刷新）
+            switchNodeLive(window.__SP__, d.node)
+              .then(() => { localGo(); })
+              .catch(() => {
+                setNodeCookie(d.node);
+                try { sessionStorage.setItem('mm.pendingRoom', JSON.stringify({ code, spectate: spec })); } catch { /* ignore */ }
+                location.replace('/');
+              });
             return;
           }
           if (btn) { bypass = true; btn.click(); setTimeout(() => { bypass = false; }, 500); } else clickLocal(spec);
@@ -513,15 +954,20 @@ const JOIN_COOKIE = (() => {
       checkAndGo(code, spec, btn);
     }, true);
     // 回车提交同样先检查（游戏自己的 onEnter 会直接在当前节点加入，绕过按钮）
+    // 注意：回车**必须按实际意图**处理。这里原先写死 false（当作加入），
+    // 于是在「观战」模式下按回车会丢掉观战意图，跨节点后变成加入，甚至失败后要重输。
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' || bypass) return;
       const el = document.activeElement;
       if (!el || el.tagName !== 'INPUT' || !/密钥|邀请链接/.test(el.placeholder || '')) return;
       const code = codeFrom(el.value);
       if (!code) return;
+      // 当前是否处于观战模式：以界面上可见的观战按钮标签为准（与点击路径同一判据）
+      const specBtn = findBtn(true);
+      const specMode = !!specBtn && !/加入同盟/.test(specBtn.textContent || '');
       e.preventDefault();
       e.stopPropagation();
-      checkAndGo(code, false, null);
+      checkAndGo(code, specMode, specMode ? specBtn : findBtn(false));
     }, true);
   }
 
@@ -621,8 +1067,15 @@ const JOIN_COOKIE = (() => {
       const humans = (room && room.seats || []).filter((x) => x && !x.isBot);
       const others = humans.filter((x) => x.playerId !== (room && room.hostId));
       const allReady = others.every((x) => x.ready && x.connected !== false);
+      // 观战者（含隐身观战）没有席位、不能匹配/开始，不该看到「匹配队友」按钮。
+      // 以前只看 inMatch/full，观战时按钮仍会出现并飘到错误位置（玩家反馈）。
+      const myId = s.me && s.me.playerId;
+      const isSpectator = !!room && myId != null
+        && ((room.spectators || []).some((x) => x && x.playerId === myId)
+          || (typeof room.hostId === 'string' && room.hostId !== myId
+            && !(room.seats || []).some((x) => x && x.playerId === myId)));
       // 每个同盟房间都显示「匹配队友」，但只有房主可以点（其余人置灰）
-      const show = !!room && !inMatch && !full && !autoArmed;
+      const show = !!room && !inMatch && !full && !autoArmed && !isSpectator;
       let el = document.getElementById('mm-room-btn');
       if (!show) { if (el) el.remove(); return; }
       if (!el || !document.body.contains(el)) {
@@ -632,28 +1085,48 @@ const JOIN_COOKIE = (() => {
         anchor.style.cssText = 'margin-right:10px';
         const bar = document.querySelector('.room-bar');
         if (!bar) return;
-        // 直接克隆「开始模拟」按钮，尺寸与样式完全一致
+        // 与「开始模拟」同款：proto-start 的结构是 mark(图标/字样) + label(主文字) + deco(斜纹)。
+        // 直接克隆会把旧文案残留在 mark 里，所以按结构重建一遍。
         const startBtn = [...bar.querySelectorAll('button')]
           .find((b) => /开始模拟|准备就绪|已就绪/.test(b.textContent || '') && b.offsetParent);
-        if (startBtn) {
-          const clone = startBtn.cloneNode(true);
-          clone.id = 'mm-room-btn';
-          clone.type = 'button';
-          clone.className = startBtn.className;
-          clone.disabled = false;
-          const label = clone.querySelector('.btn__label');
-          if (label) label.textContent = '匹配队友';
-          else clone.textContent = '匹配队友';
-          anchor.appendChild(clone);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.id = 'mm-room-btn';
+        b.className = startBtn ? startBtn.className.replace(/\bis-ready\b/g, '').trim() : 'proto-start rs-go';
+        b.setAttribute('aria-busy', 'false');
+        // 左侧标记块：沿用开始模拟的 [城堡] + STRONGHOLD PROTOCOL
+        const mark = startBtn ? startBtn.querySelector('.proto-start__mark') : null;
+        if (mark) {
+          b.appendChild(mark.cloneNode(true));
         } else {
-          anchor.innerHTML = '<button type="button" id="mm-room-btn" class="btn btn--secondary">'
-            + '<span class="btn__label">匹配队友</span></button>';
+          const m = document.createElement('span');
+          m.className = 'proto-start__mark';
+          m.setAttribute('aria-hidden', 'true');
+          b.appendChild(m);
         }
-        // 放在右侧「开始模拟」按钮左边（与它成对）
-        const action = [...bar.querySelectorAll('button')].find((b) => /开始模拟|准备就绪|已就绪/.test(b.textContent || ''));
-        const target = action ? (action.closest('.tt-anchor') || action) : null;
+        const label = document.createElement('span');
+        label.className = 'proto-start__label';
+        label.textContent = '匹配队友';
+        b.appendChild(label);
+        const deco = document.createElement('span');
+        deco.className = 'proto-start__deco';
+        deco.setAttribute('aria-hidden', 'true');
+        b.appendChild(deco);
+        anchor.appendChild(b);
+        // 放在右侧「开始模拟」按钮左边（与它成对）。
+        // 观战/非房主时没有「开始模拟」，退而找右侧栏的其它按钮（观战中 / 取消观战等），
+        // 否则会 bar.appendChild 到最左端，按钮飘到屏幕角落（玩家反馈的位置不对）。
+        const action = [...bar.querySelectorAll('button')].find((b2) => /开始模拟|准备就绪|已就绪/.test(b2.textContent || ''));
+        const rightAction = action || [...bar.querySelectorAll('button')]
+          .find((b2) => /观战中|取消观战|离开观战/.test(b2.textContent || ''));
+        const target = rightAction ? (rightAction.closest('.tt-anchor') || rightAction) : null;
         if (target) target.parentElement.insertBefore(anchor, target);
-        else bar.appendChild(anchor);
+        else {
+          // 兜底：放进右下角的按钮容器，而不是裸 append 到 bar
+          const right = bar.querySelector('.rs-foot__right, .room-bar__right');
+          if (right) right.insertBefore(anchor, right.firstChild);
+          else bar.appendChild(anchor);
+        }
         el = document.getElementById('mm-room-btn');
         el.addEventListener('click', onClick);
       }
@@ -661,15 +1134,40 @@ const JOIN_COOKIE = (() => {
       try {
         const startBtn = [...document.querySelectorAll('button')].find((b) => /开始模拟|准备就绪|已就绪/.test(b.textContent || '') && b.offsetParent);
         if (startBtn && startBtn.className) {
-          el.className = startBtn.className;
+          el.className = startBtn.className.replace(/\bis-ready\b/g, '').trim();
           el.id = 'mm-room-btn';
         }
       } catch { /* ignore */ }
-      el.querySelector('.btn__label').textContent = matched ? '正在分配…' : queued ? '取消匹配' : '匹配队友';
+      const mmLabel = el.querySelector('.proto-start__label, .btn__label');
+      if (mmLabel) mmLabel.textContent = matched ? '正在分配…' : queued ? '取消匹配' : '匹配队友';
+      else el.textContent = matched ? '正在分配…' : queued ? '取消匹配' : '匹配队友';
+      // 旧结构（只有文字、没有 mark/deco）就地补齐，避免一直显示成空白底板
+      if (!el.querySelector('.proto-start__mark')) {
+        const startBtn0 = [...document.querySelectorAll('button')].find((x) => /开始模拟|准备就绪|已就绪/.test(x.textContent || ''));
+        const mark0 = startBtn0 && startBtn0.querySelector('.proto-start__mark');
+        if (mark0 && mmLabel && mmLabel.parentElement === el) el.insertBefore(mark0.cloneNode(true), mmLabel);
+      }
+      if (!el.querySelector('.proto-start__deco')) {
+        const d = document.createElement('span');
+        d.className = 'proto-start__deco';
+        d.setAttribute('aria-hidden', 'true');
+        el.appendChild(d);
+      }
       const hasBot = (room && (room.seats || []).some((x) => x && x.isBot)) === true;
-      el.disabled = matched || !isHost || hasBot || !allReady || GATE.match === false;
+      // 管理员/服主无视「匹配队友」维护开关（服务端 matchmaking 分支同样按 session.admin 放行）。
+      // 角色变量是账号接口异步写入的，这里每次渲染都重新读，令牌晚到也能正确解锁。
+      const gateAdmin = (() => {
+        try {
+          const r = window.__SP_ACCOUNT_ROLE;
+          if (r && r !== 'player') return true;
+          if (typeof window.__SP_ADMIN_TOKEN === 'string' && window.__SP_ADMIN_TOKEN.length > 0) return true;
+          return false;
+        } catch { return false; }
+      })();
+      const matchBlocked = GATE.match === false && !gateAdmin;
+      el.disabled = matched || !isHost || hasBot || !allReady || matchBlocked;
       let tipText = '';
-      if (GATE.match === false) tipText = '维护中，暂时无法匹配队友';
+      if (matchBlocked) tipText = '维护中，暂时无法匹配队友';
       else if (hasBot) tipText = '房间内有 AI 队友，无法匹配（请先移除 AI 队友）';
       else if (!isHost) tipText = '仅房主可以发起匹配';
       else if (!allReady) tipText = '仍有博士未准备就绪';
@@ -680,10 +1178,14 @@ const JOIN_COOKIE = (() => {
         tip = document.createElement('span');
         tip.className = 'mm-room-tip';
         tip.setAttribute('role', 'tooltip');
+        // 与 0.3.3 原生 .tooltip 同款：深色底、左侧薄荷竖条、直角、同字号与投影，
+        // 不再用早期自绘的圆角小气泡。
         tip.style.cssText = 'position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);z-index:60;'
-          + 'display:none;padding:7px 10px;border:1px solid rgba(78,216,175,.55);border-radius:3px;'
-          + 'background:#07110e;color:#cfe9e0;font:12px/1.4 "Noto Sans SC",system-ui,sans-serif;white-space:nowrap;'
-          + 'pointer-events:none;box-shadow:0 4px 18px rgba(0,0,0,.45)';
+          + 'display:none;max-width:min(320px,60vw);padding:6px 9px;border:1px solid var(--line-2,rgba(255,255,255,.14));'
+          + 'border-left:2px solid var(--mint-500,#5ee0b9);border-radius:0;'
+          + 'background:rgba(10,13,12,.97);color:var(--text-md,#cfe9e0);'
+          + 'font-size:calc(.15 * var(--t,11px));line-height:1.55;letter-spacing:0;'
+          + 'white-space:normal;text-align:center;pointer-events:none;box-shadow:0 .06rem .2rem rgba(0,0,0,.55)';
         el.parentElement.style.position = 'relative';
         el.parentElement.appendChild(tip);
       }
@@ -708,15 +1210,17 @@ const JOIN_COOKIE = (() => {
             body: JSON.stringify({ guest: !window.__SP_ACCOUNT_USER,
               roomCode: room.code, node: nodeOf(), difficulty: room.difficulty,
               size: Math.max(1, seatsOf(room)), capacity: Number(room.capacity) || 4, clientId: CLIENT_ID,
+              // 本服：上报房间的游戏版本，匹配只会在同版本之间成局
+              version: room.version || undefined,
             }),
           });
-          if (r.error) { alert(r.error); return; }
+          if (r.error) { showStyledToast(r.error, 'warn'); return; }
           // Do not leave the party queued if the node refuses matchmaking because a
           // teammate is not ready.
           try { await sp.net.request('room.matchmaking', { on: true }); }
           catch (e) {
             try { await api('/mm/api/party/leave', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ roomCode: room.code, node: nodeOf(), clientId: CLIENT_ID }) }); } catch { /* ignore */ }
-            alert((e && e.message) || '所有队友准备后才能匹配队友');
+            showStyledToast((e && (e.message || e.msg)) || '所有队友准备后才能匹配队友', 'warn');
             return;
           }
           queued = true;
@@ -735,7 +1239,7 @@ const JOIN_COOKIE = (() => {
         if (queued) {
           queued = false; hideOverlay();
           try { await sp.net.request('room.matchmaking', { on: false }); } catch { /* ignore */ }
-        } else { alert(e.message); }
+        } else { showStyledToast((e && (e.message || e.msg)) || '匹配队友失败，请稍后再试', 'warn'); }
       }
       ensureButton();
     };
@@ -766,7 +1270,9 @@ const JOIN_COOKIE = (() => {
       }
       if (!code || polling) return;
       // matched 之后席位数量可能变化，但还要继续拿房间码用于跳转，不能因「满员」提前停下
-      if (!matched && seatsOf(room) >= 4) return;
+      // ★ 用房间自己的容量，不能写死 4：5–20 人房按真实人数判断，
+      //   否则 8 人房坐到 4 人就不再轮询状态，匹配成功后也永远拿不到结果、卡在搜寻界面。
+      if (!matched && seatsOf(room) >= (Number(room?.capacity) || 4)) return;
       // 房间里有 AI 队友时不参与匹配（AI 无法跨节点加入）
       if ((room && room.seats || []).some((x) => x && x.isBot)) {
         if (queued) {
@@ -842,7 +1348,8 @@ const JOIN_COOKIE = (() => {
         document.getElementById('mm-ov-stop').addEventListener('click', () => { if (canCancel) onClick(); });
         startedAt = Date.now();
         tipIndex = Math.floor(Math.random() * TIPS.length);
-        document.getElementById('mm-ov-tip').textContent = TIPS[tipIndex];
+        const tipEl = document.getElementById('mm-ov-tip');
+        if (tipEl) tipEl.textContent = TIPS[tipIndex];
         timerId = setInterval(() => {
           const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
           const clock = document.getElementById('mm-ov-clock');
@@ -979,18 +1486,19 @@ const JOIN_COOKIE = (() => {
       if (s.match && s.match.result) { clear(); return; }
       const rec = read();
       if (!rec) return;
-      // The interrupted room may not have been auto-rejoined yet (there is no sp.lastRoom on a
-      // fresh tab). Follow the marker through the account-resume route once.
-      if (!s.room) {
-        if (s.connection?.status !== 'online') return;
-        let tried = '';
-        try { tried = sessionStorage.getItem('sp.restartJoin') || ''; } catch { /* ignore */ }
-        if (tried !== rec.code) {
-          try { sessionStorage.setItem('sp.restartJoin', rec.code); } catch { /* ignore */ }
-          location.assign('/r/' + encodeURIComponent(rec.code) + '?accountResume=1');
-        }
-        return;
-      }
+      //
+      // ★ 2026-10-27：这里以前会自动 location.assign 到 /r/CODE?accountResume=1，
+      //   玩家刷新一下页面（或换设备打开）就被自己跳走。按维护者要求改成**不动页面**：
+      //   只把「上一局被服务器重启打断」这件事告诉玩家，并在下面给出一个按钮，
+      //   由他自己决定要不要回去。所有跳转都必须是玩家亲手点的。
+      //
+      // ★ 2026-10-27 再修（玩家反馈「新标签页也弹了本局模拟已结束」）：
+      //   sp.matchInterrupted 存在 **localStorage** 里 —— 它对所有标签页可见，还能活 30 分钟。
+      //   以前这里「只要没房间就弹面板」，于是**任何一个新开的标签页**都会看到
+      //   「本局模拟已结束」，哪怕它跟那一局毫无关系。
+      //   现在要求：只有**本页确实进过那间房**（s.room.code === rec.code）才提示。
+      //   刚打开、还没进任何房间的页面一律不弹 —— 那不是"本局被中断"，只是还没有房间。
+      if (!s.room) return;
       if (s.room.code !== rec.code) return;
       window.__SP_RESTART_PENDING = true;
       showBackPanel();
@@ -1010,12 +1518,43 @@ const JOIN_COOKIE = (() => {
     const box = document.createElement('div');
     box.id = 'mm-back';
     box.className = 'awayov';
-    box.innerHTML = '<div class="awayov__box brackets"><span class="micro micro--mint">SIMULATION CLOSED</span><h2>本局模拟已结束</h2><p class="t-lo">服务器重启导致对局中断，同盟已返回等待室</p><button type="button" class="btn btn--primary btn--lg"><span class="btn__icon" aria-hidden="true">‹</span><span class="btn__label">返回同盟</span></button></div>';
+    box.innerHTML = '<div class="awayov__box brackets"><span class="micro micro--mint">SIMULATION CLOSED</span><h2>本局模拟已结束</h2><p class="t-lo">服务器重启导致对局中断，同盟已返回等待室。要回去继续，点下面的按钮。</p><button type="button" class="btn btn--primary btn--lg"><span class="btn__icon" aria-hidden="true">‹</span><span class="btn__label">返回同盟</span></button></div>';
     box.querySelector('button').onclick = () => {
+      // 玩家亲手点了「返回同盟」才跳转（不再有自动跳转，见 resumeTick 的注释）。
+      //
+      // ★ 2026-10-27 修复（玩家反馈「在**新标签页**点返回同盟，回到的却是刚新开的对局」）：
+      //   这里以前先读 sp.matchInterrupted 拿到房间码，**紧接着被覆盖**：
+      //       inRoom = !!(s && s.room && s.room.code);
+      //       if (inRoom) code = s.room.code;      ← 用"当前所在房间"盖掉了被打断的那间
+      //       if (inRoom) { location.reload(); }   ← 于是只是原地刷新，永远回不到旧对局
+      //   而 sp.matchInterrupted 是写进 **localStorage** 的（跨标签页共享、30 分钟内有效），
+      //   所以"当前在哪个房间"和"被打断的是哪个房间"完全是两回事：
+      //   新标签页可能已经在新开的对局里，而面板说的仍是那个被打断的旧同盟。
+      //
+      //   现在：**以标记里的房间码为准**。标记里没有房间码，才退而求其次用当前房间。
+      let rec = null;
+      try { rec = JSON.parse(localStorage.getItem('sp.matchInterrupted') || 'null'); } catch { /* ignore */ }
+      const interrupted = rec && typeof rec.code === 'string' ? rec.code : '';
       try { localStorage.removeItem('sp.matchInterrupted'); } catch { /* ignore */ }
       window.__SP_RESTART_PENDING = false;
       box.remove();
-      // Drop the stale match render as well; the restored room page is the correct view.
+
+      let current = '';
+      try {
+        const s = window.__SP__ && window.__SP__.store && window.__SP__.store.get();
+        current = (s && s.room && s.room.code) || '';
+      } catch { /* ignore */ }
+
+      // 1) 面板说的就是当前这间 → 刷新即可把房间页面拿回来。
+      if (interrupted && interrupted === current) { location.reload(); return; }
+      // 2) 被打断的是另一间 → 明确跳到那一间（这是玩家的本意：回到被中断的那个同盟）。
+      if (interrupted) {
+        try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
+        location.assign('/r/' + encodeURIComponent(interrupted) + '?accountResume=1');
+        return;
+      }
+      // 3) 没有标记：退回当前房间 / 直接刷新。
+      if (current) { location.reload(); return; }
       location.reload();
     };
 
@@ -1028,42 +1567,11 @@ const JOIN_COOKIE = (() => {
   // ---------------------------------------------------------------- 重启后自动回到上次的房间（会话丢失时兜底）
 
   function installAutoRejoin() {
-    // 匹配转场期间不能自动回旧房间：房主要新建房间（否则会把旧房号当成新房间回报），
-    // 客人要加入匹配到的房间（否则会先回旧房，joinFlow 看到已有房间就不再加入目标房）。
-    if (IS_HOST && PMID && PCID) return;
-    if (ROOM) return;
-    try {
-      const qs = new URLSearchParams(location.search);
-      if (qs.get('adminWatch') === '1' || qs.get('watchGuest') === '1' || qs.get('watchToken')
-        || sessionStorage.getItem('sp_admin_watch_code') || localStorage.getItem('sp_admin_watch_code')) return;
-    } catch { /* ignore */ }
-    const sp = window.__SP__;
-    if (!sp || !sp.store || !sp.store.subscribe || !sp.net) return;
-    const KEY = 'sp.lastRoom';
-    let tried = false;
-    // 记录最近所在房间
-    sp.store.subscribe((s) => {
-      try {
-        if (s.room && s.room.code) localStorage.setItem(KEY, JSON.stringify({ code: s.room.code, at: Date.now() }));
-        if (!s.room && !s.match.public) { /* 保留 30 分钟 */ }
-      } catch { /* ignore */ }
-    });
-    const tick = () => {
-      if (tried) return;
-      if (watchExitRecent()) { tried = true; return; }
-      const s = sp.store.get();
-      if (!s || !s.session || !s.session.entered) return;
-      if (s.room) { tried = true; return; }
-      if (!sp.net || sp.net.status !== 'online') return;
-      let rec = null;
-      try { rec = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { /* ignore */ }
-      if (!rec || !rec.code) { tried = true; return; }
-      if (Date.now() - (rec.at || 0) > 30 * 60 * 1000) { tried = true; return; }
-      tried = true;
-      try { sp.net.request('room.join', { code: rec.code }).catch(() => {}); } catch { /* ignore */ }
-    };
-    setInterval(tick, 1500);
-    setTimeout(tick, 1200);
+    // ★ 已停用（2026-10-27，维护者要求「恢复对局必须玩家自己点」）。
+    //   这里以前会在刷新 / 重新打开页面时，拿 localStorage 的 sp.lastRoom 自动
+    //   `room.join` 回上一个房间 —— 玩家看到的就是「自己回到房里了」，或者在别的房间
+    //   操作时突然被拽走。现在一律不动：恢复只有大厅「恢复对局」按钮一条路。
+    //   原实现在 http://mm/client.js 的历史提交里；这里保留函数名，调用点不用改。
   }
 
 
@@ -1084,13 +1592,24 @@ const JOIN_COOKIE = (() => {
     const sp = window.__SP__;
     if (!sp || !sp.store || !sp.store.subscribe) return;
     let LIMIT = 15 * 60 * 1000;
-    // 同盟解散时间由后台配置（分钟），每 60 秒同步一次
+    // 同盟解散时间由后台配置（分钟）。数据来自合并轮询 /mm/api/pulse（见 refreshPulse），
+    // 不再自己每 5 秒打一次 /mm/api/room-ttl —— 那三个端点曾占全部请求的一半以上。
+    const applyTtl = (j) => {
+      const m = Number(j && j.minutes);
+      if (Number.isFinite(m) && m >= 1 && m <= 1440) { LIMIT = Math.round(m * 60000); window.__mmTtlMs = LIMIT; }
+    };
+    onPulse('ttl', applyTtl);
+    // 兜底：pulse 不可用（老节点）时仍走原来的端点，行为与改造前一致。
+    // 已经有一次 pulse 数据时先用它，避免"刚装好却没有值、要等 5 秒"的空窗。
     const syncTtl = async () => {
+      if (pulseOk) {
+        const have = getPulse();
+        if (have && have.ttl) applyTtl(have.ttl);
+        return;
+      }
       try {
         const r = await fetch('/mm/api/room-ttl', { cache: 'no-store' });
-        const j = await r.json();
-        const m = Number(j.minutes);
-        if (Number.isFinite(m) && m >= 1 && m <= 1440) { LIMIT = Math.round(m * 60000); window.__mmTtlMs = LIMIT; }
+        applyTtl(await r.json());
       } catch { /* ignore */ }
     };
     syncTtl(); setInterval(syncTtl, 5000);
@@ -1102,7 +1621,34 @@ const JOIN_COOKIE = (() => {
     const tick = () => {
       const s = sp.store.get();
       const room = s.room;
-      if (!room || (s.match && s.match.public)) {
+      // 只在「真的坐在同盟房间里、还没开始模拟」时显示倒计时。
+      // 这个浮层表达的是「同盟/独立模拟的等待室多久后自动销毁」，所以：
+      //   * 没进大厅（标题页）→ 不显示
+      //   * 进了对局（match.public 存在）→ 不显示（对局中不存在"销毁"这回事）
+      //   * 有结算结果 → 不显示
+      //   * 房间码不是有效的四字符 → 说明拿到的是残留数据，不显示
+      //   * **界面上没有房间容器 → 不显示**
+      //
+      // 最后一条是必须的：只靠 store 里的状态判断会漏掉「过渡/异常」中间态——
+      // 比如"正在进入模拟…"遮罩（mm-ov）挡在前面、或者被别的标签页接管后本页还留着一份
+      // 旧的 s.room。那种时候 store 看着像"在房间里"，界面却根本不是房间，
+      // 浮层就被 position:fixed 硬贴在页面顶部（实测玩家在对局/过渡画面上头看到
+      // 「管理员房 · 不自动销毁」，以为房间要没了）。
+      const entered = !!(s.session && s.session.entered);
+      const roomOk = entered && !!room && typeof room.code === 'string' && room.code.length === 4
+        && !(s.match && s.match.public) && !(s.match && s.match.result);
+      if (!roomOk) {
+        const dead = document.getElementById('mm-room-timer');
+        if (dead) dead.remove();
+        return;
+      }
+      // 真在房间界面上吗？(房间/大厅容器存在，且没有过渡遮罩挡着)
+      let onRoomScreen = false;
+      try {
+        const overlay = document.getElementById('mm-overlay') || document.getElementById('mm-back');
+        onRoomScreen = !overlay && !!document.querySelector('.room-screen');
+      } catch { /* ignore */ }
+      if (!onRoomScreen) {
         const dead = document.getElementById('mm-room-timer');
         if (dead) dead.remove();
         return;
@@ -1129,9 +1675,22 @@ const JOIN_COOKIE = (() => {
       if (!box) {
         box = document.createElement('div');
         box.id = 'mm-room-timer';
-        box.className = 'invite brackets';
+        box.className = 'mm-room-timer';
         document.body.appendChild(box);
       }
+      // 字号取自新版房间顶栏的密钥样式（.rs-key__code / .rs-key__k），取不到就用兜底值
+      const keyFontSizes = () => {
+        const codeEl = document.querySelector('.rs-key__code');
+        const labelEl = document.querySelector('.rs-key__k');
+        const cs = codeEl ? getComputedStyle(codeEl) : null;
+        const ls = labelEl ? getComputedStyle(labelEl) : null;
+        return {
+          codeSize: cs ? cs.fontSize : 'calc(.2 * var(--t, 11px))',
+          codeFamily: cs ? cs.fontFamily : 'var(--font-num, monospace)',
+          codeWeight: cs ? cs.fontWeight : '700',
+          labelSize: ls ? ls.fontSize : 'calc(.14 * var(--t, 11px))',
+        };
+      };
       const solo = !!document.querySelector('.solo-note');
       box.innerHTML = '<span class="mm-timer-time">' + timeText + '</span>'
         + '<span class="mm-timer-label">' + (adminRoom ? '管理员房 · 不自动销毁' : solo ? '后独立模拟将自动销毁' : '后同盟将自动销毁') + '</span>';
@@ -1144,78 +1703,56 @@ const JOIN_COOKIE = (() => {
         box.style.display = 'flex';
       } catch { /* ignore */ }
 
-      // 两种模式共用同一个位置：房间顶栏右侧面板左边。
-      // 不再分别给同盟密钥和独立提示做不同的定位。
-      const narrow = window.innerWidth < 720;
-      const timerW = narrow ? 210 : 260;
-      const timerH = narrow ? 88 : 104;
-      const anchor = document.querySelector('.room-screen .topbar__right');
-
-      // 密钥绿色代码 + 灰色标签的字体由 room.css 的 .invite__code/.invite__label
-      // 决定；独立模拟没有密钥面板，用隐藏探针读取同一套字号。
-      const keyFontSizes = () => {
-        if (!fontProbe) {
-          fontProbe = document.createElement('div');
-          fontProbe.className = 'invite';
-          fontProbe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;visibility:hidden;pointer-events:none';
-          fontProbe.innerHTML = '<div class="invite__label">同盟密钥</div><div class="invite__code"><span>00</span></div>';
-          document.body.appendChild(fontProbe);
-        }
-        const code = getComputedStyle(fontProbe.querySelector('.invite__code span'));
-        const label = getComputedStyle(fontProbe.querySelector('.invite__label'));
-        return {
-          codeSize: code.fontSize,
-          codeFamily: code.fontFamily,
-          codeWeight: code.fontWeight,
-          labelSize: label.fontSize,
-        };
-      };
-
-      try {
-        const rect = anchor ? anchor.getBoundingClientRect() : null;
-        if (rect && rect.width >= 80) {
-          let left = Math.round(rect.left - timerW - 16);
-          left = Math.max(8, Math.min(left, Math.round(rect.left - timerW - 8)));
-          box.style.position = 'fixed';
-          box.style.width = timerW + 'px';
-          box.style.height = timerH + 'px';
-          box.style.left = left + 'px';
-          box.style.top = Math.round(rect.top + rect.height / 2 - timerH / 2) + 'px';
-          box.style.right = 'auto';
-          box.style.transform = 'none';
-        } else {
-          box.style.position = 'fixed';
-          box.style.width = timerW + 'px';
-          box.style.height = timerH + 'px';
-          box.style.right = narrow ? '12px' : '28px';
-          box.style.top = '72px';
-          box.style.left = 'auto';
-          box.style.transform = 'none';
-        }
+      // 与新版界面一致：作为房间顶栏右侧的一格，排在「干员调配」左边，
+      // 不再用绝对定位硬算坐标。
+      const rightBar = document.querySelector('.room-screen .rs-top__right');
+      if (!rightBar) {
+        box.style.position = 'fixed';
+        box.style.left = '50%';
+        box.style.top = '12px';
+        box.style.transform = 'translateX(-50%)';
         box.style.display = 'flex';
-        box.style.flexDirection = 'column';
-        box.style.alignItems = 'center';
-        box.style.justifyContent = 'center';
-        box.style.gap = narrow ? '3px' : '5px';
-        box.style.padding = narrow ? '8px 10px' : '12px 16px';
-        box.style.boxSizing = 'border-box';
-        box.style.overflow = 'hidden';
-        box.style.zIndex = '2147482000';
-        box.style.background = 'rgba(5,16,13,.97)';
-        box.style.fontSize = '12px';
-        const fs = keyFontSizes();
+        return;
+      }
+      box.style.position = 'static';
+      box.style.left = 'auto';
+      box.style.top = 'auto';
+      box.style.right = 'auto';
+      box.style.transform = 'none';
+      box.style.zIndex = 'auto';
+      box.style.width = 'auto';
+      box.style.height = 'auto';
+      box.style.flexDirection = 'column';
+      box.style.alignItems = 'center';
+      box.style.justifyContent = 'center';
+      box.style.gap = '2px';
+      box.style.padding = '.06rem .14rem';
+      box.style.boxSizing = 'border-box';
+      box.style.overflow = 'hidden';
+      box.style.flex = 'none';
+      box.style.background = 'rgba(0, 0, 0, .3)';
+      box.style.border = '1px solid var(--line-2, rgba(255,255,255,.16))';
+      box.style.borderRadius = '0';
+      const loadoutBtn = rightBar.querySelector('.rs-loadout, .room-loadout, .hub-plate--loadout');
+      if (loadoutBtn) {
+        if (box.parentElement !== rightBar || box.nextElementSibling !== loadoutBtn) {
+          rightBar.insertBefore(box, loadoutBtn);
+        }
+        // 与「干员调配」等高，视觉上成一组
+        try {
+          const lh = loadoutBtn.getBoundingClientRect().height;
+          if (lh > 0) box.style.height = Math.round(lh) + 'px';
+        } catch { /* ignore */ }
+      } else if (box.parentElement !== rightBar) {
+        rightBar.insertBefore(box, rightBar.firstElementChild);
+      }
+      box.style.display = 'flex';
+      try {
+        const fs2 = keyFontSizes();
         const tEl = box.querySelector('.mm-timer-time');
         const lEl = box.querySelector('.mm-timer-label');
-        if (tEl) {
-          tEl.style.fontSize = fs.codeSize;
-          tEl.style.fontFamily = fs.codeFamily;
-          tEl.style.fontWeight = fs.codeWeight;
-          tEl.style.whiteSpace = 'nowrap';
-        }
-        if (lEl) {
-          lEl.style.fontSize = fs.labelSize;
-          lEl.style.whiteSpace = 'nowrap';
-        }
+        if (tEl) { tEl.style.fontSize = fs2.codeSize; tEl.style.fontFamily = fs2.codeFamily; tEl.style.fontWeight = fs2.codeWeight; tEl.style.whiteSpace = 'nowrap'; }
+        if (lEl) { lEl.style.fontSize = fs2.labelSize; lEl.style.whiteSpace = 'nowrap'; }
       } catch { /* ignore */ }
     };
 
@@ -1456,7 +1993,70 @@ const JOIN_COOKIE = (() => {
   // ---------------------------------------------------------------- 临时公告
 
 
-  
+  /* @sp-strip-icp:start */
+  // ---------------------------------------------------------------- ICP 备案号（页脚）
+
+  function installIcpBadge() {
+    const ICP = '鲁ICP备2026010707号-1';
+    let busy = false;
+
+    const findLeaf = () => {
+      let best = null;
+      for (const el of document.querySelectorAll('div,span,p')) {
+        if (el.childElementCount !== 0) continue;
+        const txt = (el.textContent || '').trim();
+        if (!/非官方同人/.test(txt)) continue;
+        if (txt.length > 80) continue;
+        if (!best || txt.length < best.txt.length) best = { el, txt };
+      }
+      return best;
+    };
+
+    const apply = () => {
+      if (busy) return;
+      const leaf = findLeaf();
+      if (!leaf) return;
+      busy = true;
+      try {
+        const { el, txt } = leaf;
+        // 原地定位，不搬动元素，字体继承关系保持不变
+        el.style.position = 'fixed';
+        el.style.left = '50%';
+        el.style.bottom = '22px';
+        el.style.transform = 'translateX(-50%)';
+        el.style.zIndex = '60';
+        el.style.whiteSpace = 'nowrap';
+        el.style.textAlign = 'center';
+        el.style.pointerEvents = 'auto';
+        // mm-align-right：与右下角「项目仓库」那一行保持同一水平高度
+        try {
+          const rightEl = [...document.querySelectorAll('div,span,p')]
+            .find((n) => n.childElementCount === 0 && /WEB SIMULATION/i.test((n.textContent || '').trim()));
+          if (rightEl) {
+            const r = rightEl.getBoundingClientRect();
+            const myH = el.getBoundingClientRect().height || 16;
+            const bottom = Math.max(6, Math.round(window.innerHeight - (r.top + r.height / 2) - myH / 2));
+            el.style.bottom = bottom + 'px';
+          }
+        } catch { /* ignore */ }
+        if (!el.querySelector('.mm-icp')) {
+          const a = document.createElement('a');
+          a.className = 'mm-icp';
+          a.href = 'https://beian.miit.gov.cn/';
+          a.target = '_blank';
+          a.rel = 'noreferrer noopener';
+          a.textContent = ICP;
+          a.style.cssText = 'color:inherit;text-decoration:none';
+          el.textContent = '· ' + txt;
+          el.insertBefore(a, el.firstChild);
+        }
+      } finally { busy = false; }
+    };
+
+    apply();
+    try { new MutationObserver(apply).observe(document.body, { childList: true, subtree: true }); } catch { /* ignore */ }
+  }
+  /* @sp-strip-icp:end */
 
 
 
@@ -1470,25 +2070,107 @@ const JOIN_COOKIE = (() => {
     const stat = document.querySelector('button.title-stats')
       || (allowLobby ? [...document.querySelectorAll('button')].find((b) => !b.id.startsWith('mm-') && /S\.W\.E\.E\.P/i.test((b.textContent || '').trim())) : null);
     const existing = document.getElementById(id);
-    if (!stat) { if (existing) existing.style.display = 'none'; return null; }
-    if (existing) { existing.style.display = ''; return existing; }
+    // 标题页容器还在就不要因为「按钮暂时查不到」而隐藏它：页面渲染中途 stat 可能短暂缺失，
+    // 这一隐藏/恢复就是右上角闪一下的来源。
+    if (!stat && !document.querySelector('.title-screen')) { if (existing) existing.style.display = 'none'; return null; }
+    if (!stat && existing && existing.isConnected) return existing;
     const onTitle = !!document.querySelector('.title-screen');
+    const ver = !onTitle ? document.querySelector('.verchip-wrap, button.verchip[data-testid="version-switch"]') : null;
+    if (existing) {
+      // 只有「结构不对」才重建：有版本按钮时必须套用 verchip 样式。
+      // 标题页没有 verchip（ver 为 null），此时按钮用的是另一套外观，
+      // 不能再拿 verchip 当判据 —— 否则每轮都判定错误、删掉重建，
+      // 表现为右上角公告按钮每 1.2 秒消失再出现。
+      const wrongClass = !!ver && !existing.classList.contains('verchip');
+      if (!wrongClass) {
+        existing.style.display = '';
+        // 位置不对就挪过去，不重建
+        if (ver) {
+          const slot = ver.closest('.verchip-wrap') || ver;
+          const parent = slot.parentElement;
+          if (parent && existing.parentElement !== parent) {
+            const before = beforeId ? document.getElementById(beforeId) : null;
+            parent.insertBefore(existing, before && before.parentElement === parent ? before : slot);
+          }
+        }
+        return existing;
+      }
+      existing.remove();
+    }
     let btn;
+    if (ver) {
+      // 与右上角版本切换按钮（verchip）同款同尺寸，排在版本按钮左侧。
+      // beforeId 指定时插到该按钮之前，维持「管理后台 → 公告 → 版本」的顺序。
+      const verBtn = ver.matches('button') ? ver : ver.querySelector('button.verchip') || ver;
+      btn = verBtn.cloneNode(true);
+      btn.id = id;
+      btn.type = 'button';
+      btn.disabled = false;
+      btn.removeAttribute('data-testid');
+      btn.removeAttribute('data-version');
+      btn.removeAttribute('aria-haspopup');
+      btn.removeAttribute('aria-busy');
+      btn.className = 'verchip';
+      btn.style.marginRight = '';
+      btn.replaceChildren();
+      // 图标沿用版本按钮自己的那个 svg，保证与相邻按钮同一套描边/尺寸
+      const icon = verBtn.querySelector('svg');
+      if (icon) {
+        const s = icon.cloneNode(true);
+        const path = s.querySelector('path');
+        if (path) path.setAttribute('d', iconPath);
+        btn.appendChild(s);
+      }
+      const span = document.createElement('span');
+      span.className = 'verchip__label';
+      span.textContent = label;
+      btn.appendChild(span);
+      btn.onclick = onClick;
+      const slot = ver.closest('.verchip-wrap') || ver;
+      const anchor = beforeId ? document.getElementById(beforeId) : null;
+      // 首次构建时页面的 Preact 顶栏可能还没渲染出版本按钮；此时先不插，
+      // 由下一轮 ensure（1~1.5s 内）插到正确位置，避免先出现在 S.W.E.E.P. 那一列再跳走。
+      const place = anchor && anchor.parentElement === slot.parentElement ? anchor : slot;
+      if (!place.parentElement || !place.isConnected) return existing || null;
+      place.parentElement.insertBefore(btn, place);
+      return btn;
+    }
     if (!onTitle) {
-      // 大厅：直接克隆 S.W.E.E.P. 按钮，尺寸/内边距/间距与相邻按钮完全一致
+      // 大厅：按钮必须是 verchip 胶囊并排在右上角版本按钮左侧。
+      // 如果版本按钮还没渲染出来（页面刚加载），本轮先不创建，等下一轮再插 ——
+      // 否则会被回退逻辑插到右侧的 S.W.E.E.P. 面板里，表现为「刷新后公告按钮跑到右边栏」。
+      if (!ver) return existing || null;
+      // 大厅：沿用 S.W.E.E.P. 那块浅色按钮的外框/尺寸/内边距，但内容必须整体重建。
+      // 直接克隆会把原按钮的图标框（hub-plate__glyph）、标题文字和 REPORT 小字一起带过来，
+      // 结果就是我们新增的按钮里同时出现「管理」「公告」和「S.W.E.E.P.报告」。
       btn = stat.cloneNode(true);
       btn.id = id;
       btn.type = 'button';
       btn.disabled = false;
       btn.style.marginRight = '0px';
-      const lbl = btn.querySelector('.btn__label') || btn.querySelector('span');
-      if (lbl) lbl.textContent = label;
-      else btn.textContent = label;
-      const svgClone = btn.querySelector('svg');
-      if (svgClone) {
-        const path = svgClone.querySelector('path');
-        if (path) path.setAttribute('d', iconPath);
+      // 清掉所有子节点与残留状态，再按版式重建
+      btn.replaceChildren();
+      btn.removeAttribute('data-testid');
+      const glyphSlot = stat.querySelector('.hub-plate__glyph');
+      if (glyphSlot) {
+        // 保留图标框本身（它的边框/尺寸是版式的一部分），只换里面的图标
+        const box = document.createElement('span');
+        box.className = glyphSlot.className;
+        const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        s.setAttribute('viewBox', '0 0 24 24');
+        s.setAttribute('aria-hidden', 'true');
+        s.setAttribute('focusable', 'false');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', iconPath);
+        path.setAttribute('fill', 'currentColor');
+        s.appendChild(path);
+        box.appendChild(s);
+        btn.appendChild(box);
       }
+      const name = document.createElement('span');
+      name.className = 'hub-plate__name';
+      name.textContent = label;
+      btn.appendChild(name);
       btn.onclick = onClick;
       const before0 = beforeId ? document.getElementById(beforeId) : null;
       stat.parentElement.insertBefore(btn, before0 || stat);
@@ -1512,7 +2194,10 @@ const JOIN_COOKIE = (() => {
     btn.appendChild(span);
     btn.onclick = onClick;
     const before = beforeId ? document.getElementById(beforeId) : null;
-    stat.parentElement.insertBefore(btn, before || stat);
+    // 模板节点可能已被 Preact 卸载（parentElement 为 null），此时跳过本轮，等下一轮 ensure 再插，
+    // 否则会抛异常并中断后面所有注入（历史 bug：公告/管理/Q群按钮一起消失）。
+    if (!stat.parentElement || !stat.isConnected) return null;
+    stat.parentElement.insertBefore(btn, before && before.parentElement === stat.parentElement ? before : stat);
     return btn;
   }
 
@@ -1545,7 +2230,10 @@ const JOIN_COOKIE = (() => {
 
   // mm-clean-top：非标题页时移除我们插入的按钮
   function cleanTopExtras() {
-    const onTitle = !!document.querySelector('button.title-stats');
+    // 判定「在标题页」不能只看 button.title-stats：那个按钮在标题页渲染过程中可能短暂消失，
+    // 一旦查不到就会把公告按钮删掉，下一轮 ensure 再建回来 —— 表现为右上角每几秒闪一下。
+    // 用 .title-screen 容器作为主判据（它才是标题页本身），按钮只是辅助。
+    const onTitle = !!document.querySelector('.title-screen') || !!document.querySelector('button.title-stats');
     const inLobby = [...document.querySelectorAll('button')].some((b) => !b.id.startsWith('mm-') && /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
     const qq = document.getElementById('mm-qq');
     if (!onTitle && qq) qq.remove();
@@ -1572,60 +2260,227 @@ const JOIN_COOKIE = (() => {
         const st = document.createElement('style');
         st.id = 'mm-qq-css';
         st.textContent = `
+          /* ★ 标题屏：Q群按钮放在左下角「添加到桌面」的正上方。
+             要求（维护者）：页脚原有布局不能变（版本号/项目仓库保持它本来的位置），
+             只是把 Q群按钮叠加在「添加到桌面」上面一行。
+             做法：按钮绝对定位在 .title-foot 内，**不参与 flex 排版**
+             （不撑高页脚、不推开任何原有元素）。
+             left / bottom 由脚本按「添加到桌面」的实际位置写进行内样式——
+             所以这里**不能**用 !important 锁死这两个值，否则会盖掉测量结果。 */
+          .title-foot > .mm-qq-row{position:absolute!important;right:auto!important;top:auto!important;flex:0 0 auto!important;width:auto!important;display:flex!important;justify-content:flex-start!important;align-items:flex-end!important;line-height:0!important;margin:0 0 .06rem 0!important;padding:0!important;pointer-events:none!important;left:0;bottom:100%}
+          .title-foot .mm-qq-row > #mm-qq{position:static!important;flex:0 0 auto!important;width:auto!important;max-width:fit-content!important;align-self:center!important;margin:0!important;padding:.05rem .2rem!important;height:max(.3rem,1.75em)!important;font-size:calc(.13 * var(--t))!important;line-height:1!important;box-sizing:border-box!important;justify-content:flex-start!important;pointer-events:auto!important}
+          .title-foot .mm-qq-row > #mm-qq .mm-qq-penguin{width:1.05em!important;height:1.05em!important}
+          /* 兜底：万一按钮没进 .mm-qq-row（页脚结构缺失），退回 body 固定定位，
+             并把 bottom 抬到页脚之上，绝不压住「添加到桌面」。 */
+          body > #mm-qq{position:fixed;left:max(18px,env(safe-area-inset-left,0px));bottom:calc(112px + env(safe-area-inset-bottom,0px));z-index:2147482000}
           #mm-qq{position:fixed;left:max(18px,env(safe-area-inset-left,0px));bottom:calc(82px + env(safe-area-inset-bottom,0px));z-index:2147482000;display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px solid #7ff0cf;border-radius:0;background:#35c79b;color:#061611;box-shadow:0 0 0 1px rgba(78,216,175,.18),0 4px 16px rgba(0,0,0,.28);letter-spacing:0;cursor:pointer;white-space:nowrap}
           #mm-qq:hover{background:#5ee0b9;border-color:#b6ffe9;color:#03110c}
-          #mm-qq .mm-qq-penguin{display:inline-flex;align-items:center;justify-content:center;width:2em;height:2em;line-height:1;font-size:1em;flex:none}
+          #mm-qq .mm-qq-penguin{display:inline-flex;align-items:center;justify-content:center;width:1.15em;height:1.15em;line-height:1;font-size:1em;flex:none}
           #mm-qq .mm-qq-penguin svg,#mm-qq .mm-qq-penguin svg path{display:block;width:100%;height:100%;fill:currentColor!important;stroke:none!important}
-          #mm-qq-lobby .mm-qq-penguin{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;line-height:1;font-size:1em}
-          #mm-qq-lobby .mm-qq-penguin svg,#mm-qq-lobby .mm-qq-penguin svg path{display:block;width:100%;height:100%;fill:currentColor!important;stroke:none!important}
-          #mm-qq-room .mm-qq-penguin{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;line-height:1;font-size:1em;color:#8ff5d5}
-          #mm-qq-room .mm-qq-penguin svg,#mm-qq-room .mm-qq-penguin svg path{display:block;width:100%;height:100%;fill:currentColor!important;stroke:none!important}
-          #mm-qq-lobby{color:#8ff5d5!important;border-color:rgba(78,216,175,.55)!important;background:rgba(78,216,175,.08)!important}
-          #mm-qq-lobby:hover{background:rgba(78,216,175,.18)!important;border-color:#7ff0cf!important}
-          #mm-qq-lobby svg{width:1.1em;height:1.1em;fill:none;stroke:currentColor;stroke-width:1.8}
+          /* 三处 Q 群按钮（标题页 / 大厅 / 模拟弹窗）统一为绿色实心 */
+          #mm-qq,#mm-qq-lobby,#mm-qq-room{background:#35c79b!important;border:1px solid #7ff0cf!important;color:#061611!important;border-radius:0!important}
+          #mm-qq:hover,#mm-qq-lobby:hover,#mm-qq-room:hover{background:#5ee0b9!important;border-color:#b6ffe9!important;color:#03110c!important}
+          /* 大厅 / 同盟模拟 / 独立模拟：只显示企鹅图标的方形按钮。
+             尺寸不写死 —— 由脚本量取紧邻其右侧的那个按钮，复制它的宽高/内边距/字号，
+             保证各界面与其他工具栏按钮完全一致。 */
+          #mm-qq-lobby,#mm-qq-room{display:inline-flex!important;align-items:center!important;justify-content:center!important;flex:none!important;letter-spacing:0!important;border-radius:0!important;box-sizing:border-box!important}
+          #mm-qq-lobby .mm-qq-penguin,#mm-qq-room .mm-qq-penguin{display:inline-flex!important;align-items:center!important;justify-content:center!important;line-height:1!important;margin:0!important;flex:none!important;font-size:1em!important;color:currentColor!important}
+          #mm-qq-lobby .mm-qq-penguin svg,#mm-qq-room .mm-qq-penguin svg,
+          #mm-qq-lobby .mm-qq-penguin svg path,#mm-qq-room .mm-qq-penguin svg path{display:block!important;width:100%!important;height:100%!important;fill:currentColor!important;stroke:none!important}
         `;
         (document.head || document.documentElement).appendChild(st);
       }
 
-      // Lobby (选择模拟协议): a normal square button in the top-left tool group.
+      // 三处界面（大厅 / 同盟模拟 / 独立模拟）共用同一个构造：只有企鹅图标，不显示群号文字。
+      const QQTEXT = '<span class="mm-qq-penguin" aria-hidden="true">' + PENGUIN + '</span>';
+      const makeQqBtn = (id, cls) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.id = id;
+        b.className = 'btn btn--secondary btn--sm btn--square ' + (cls || '');
+        b.title = '加入官方Q群';
+        b.setAttribute('aria-label', '加入官方Q群：' + QQ);
+        b.innerHTML = QQTEXT;
+        b.onclick = open;
+        return b;
+      };
+      const syncQqBtn = (b) => {
+        if (b.dataset.mmQqText !== '3') { b.innerHTML = QQTEXT; b.dataset.mmQqText = '3'; }
+        return b;
+      };
+      /**
+       * 让按钮与给定的参照按钮同尺寸（宽、高、内边距、字号、圆角、边框宽度），
+       * 图标尺寸也对齐参照按钮里的图标。比按“相邻元素”猜测更可靠。
+       */
+      const matchNeighbourTo = (b, ref) => {
+        try {
+          if (!b || !ref || !ref.isConnected) return;
+          const cs = getComputedStyle(ref);
+          const r = ref.getBoundingClientRect();
+          if (r.width > 0) { b.style.setProperty('width', r.width + 'px', 'important'); b.style.setProperty('min-width', r.width + 'px', 'important'); }
+          if (r.height > 0) { b.style.setProperty('height', r.height + 'px', 'important'); b.style.setProperty('min-height', r.height + 'px', 'important'); }
+          b.style.setProperty('padding', cs.padding, 'important');
+          b.style.setProperty('font-size', cs.fontSize, 'important');
+          b.style.setProperty('border-radius', cs.borderRadius, 'important');
+          b.style.setProperty('border-width', cs.borderWidth, 'important');
+          const refIcon = ref.querySelector('svg');
+          const icon = b.querySelector('.mm-qq-penguin');
+          if (refIcon && icon) {
+            const ir = refIcon.getBoundingClientRect();
+            if (ir.width > 0) {
+              icon.style.setProperty('width', ir.width + 'px', 'important');
+              icon.style.setProperty('height', ir.height + 'px', 'important');
+            }
+          }
+        } catch { /* 量不到就沿用默认尺寸 */ }
+      };
+
+      /**
+       * 让 Q 群按钮与它右侧紧邻的那个按钮同尺寸（宽、高、内边距、字号、圆角、边框宽度）。
+       * 各界面工具栏按钮规格不同（大厅 42px、弹窗顶栏可能不同），所以量取而不是写死。
+       */
+      const matchNeighbour = (b) => {
+        try {
+          // 右侧紧邻可能不是按钮（大厅这里是分隔线 + 工具组），向后找到第一个真正的按钮
+          let next = b.nextElementSibling;
+          let guard = 0;
+          while (next && !next.matches('button') && guard++ < 6) {
+            next = next.matches('.topbar__tools') || next.querySelector?.('button')
+              ? (next.matches('button') ? next : next.querySelector('button'))
+              : next.nextElementSibling;
+          }
+          if (!next || !next.matches('button')) return;
+          const cs = getComputedStyle(next);
+          const r = next.getBoundingClientRect();
+          // 用计算后的固定像素值，避免不同父容器下的 rem 解析差异
+          if (r.width > 0) { b.style.setProperty('width', r.width + 'px', 'important'); b.style.setProperty('min-width', r.width + 'px', 'important'); }
+          if (r.height > 0) { b.style.setProperty('height', r.height + 'px', 'important'); b.style.setProperty('min-height', r.height + 'px', 'important'); }
+          b.style.setProperty('padding', cs.padding, 'important');
+          b.style.setProperty('font-size', cs.fontSize, 'important');
+          b.style.setProperty('border-radius', cs.borderRadius, 'important');
+          b.style.setProperty('border-width', cs.borderWidth, 'important');
+          // 图标尺寸对齐右侧按钮里的图标（而不是写死 28px）
+          const nbIcon = next.querySelector('svg');
+          if (nbIcon) {
+            const ir = nbIcon.getBoundingClientRect();
+            const icon = b.querySelector('.mm-qq-penguin');
+            if (icon && ir.width > 0) {
+              icon.style.setProperty('width', ir.width + 'px', 'important');
+              icon.style.setProperty('height', ir.height + 'px', 'important');
+            }
+          }
+        } catch { /* 量不到就沿用默认尺寸 */ }
+      };
+
+      // 大厅顶栏顺序（维护者指定）：
+      //   [返回] [延迟] [节点状态] | [Q群] [统计][设置][玩法说明]… [版本]
+      // 节点状态留在延迟旁边（原位置），Q群放在工具组最前面。
       const lobbyBtn = document.getElementById('mm-qq-lobby');
-      if (!tools) {
+      const lobbyBar = document.querySelector('.lobby-screen .topbar__left') || tools;
+      if (!lobbyBar) {
         if (lobbyBtn) lobbyBtn.remove();
       } else {
-        let b = lobbyBtn;
-        if (!b) {
-          b = document.createElement('button');
-          b.type = 'button';
-          b.id = 'mm-qq-lobby';
-          b.className = 'btn btn--secondary btn--sm btn--square';
-          b.title = '加入官方Q群';
-          b.setAttribute('aria-label', '加入官方Q群：' + QQ);
-          b.innerHTML = '<span class="mm-qq-penguin" aria-hidden="true">' + PENGUIN + '</span>';
-          b.onclick = open;
+        const b = syncQqBtn(lobbyBtn || makeQqBtn('mm-qq-lobby'));
+        const toolsBox = lobbyBar.querySelector('.topbar__tools');
+        if (toolsBox) {
+          // Q群：工具组第一位
+          if (b.parentElement !== toolsBox || b !== toolsBox.firstElementChild) {
+            toolsBox.insertBefore(b, toolsBox.firstElementChild);
+          }
         }
-        if (b.parentElement !== tools || b !== tools.firstElementChild) tools.insertBefore(b, tools.firstElementChild);
+        // 节点状态：放回延迟之后（分隔线之前），保持原位置。
+        // 注意：这里绝对不能无条件抢回来——同盟模拟 / 独立模拟 弹窗打开时，
+        // place() 会把它移进弹窗自己的顶栏；本函数每 1.5s 跑一次，
+        // 若无条件搬回大厅就会和 place() 互相抢占（表现为闪烁在大厅/弹窗之间）。
+        // 所以只在“当前没有全屏弹窗在显示”时才归位。
+        const nodesEl = document.getElementById('mm-nodes');
+        const sep = lobbyBar.querySelector('.topbar__sep');
+        const rsClock = document.querySelector('.room-screen .rs-clock') || document.querySelector('.rs-top__left .rs-clock');
+        if (nodesEl && !rsClock && nodesEl.parentElement !== lobbyBar) {
+          lobbyBar.insertBefore(nodesEl, sep || null);
+        }
+        // 分隔线紧跟节点状态之后，再往右才是工具组，避免出现一条孤立的竖线和大片空白
+        if (sep && nodesEl && !rsClock && sep.previousElementSibling !== nodesEl) {
+          nodesEl.insertAdjacentElement('afterend', sep);
+        }
+        if (!toolsBox && b.parentElement !== lobbyBar) {
+          const anchor = sep || null;
+          if (anchor) lobbyBar.insertBefore(b, anchor); else lobbyBar.appendChild(b);
+        }
+        // 尺寸对齐它右侧紧邻的按钮（这里就是「设置」）
+        matchNeighbourTo(b, toolsBox ? toolsBox.querySelector('button') : null);
+        matchNeighbour(b);
+        // 统一为绿色实心（matchNeighbour 会复制相邻按钮的深色底，这里覆盖回来）
+        try {
+          const h = parseFloat(getComputedStyle(b).height) || 42;
+          b.style.setProperty('background', '#35c79b', 'important');
+          b.style.setProperty('border', '1px solid #7ff0cf', 'important');
+          b.style.setProperty('color', '#061611', 'important');
+          b.style.setProperty('border-radius', '0', 'important');
+          b.style.setProperty('width', h + 'px', 'important');
+          b.style.setProperty('min-width', h + 'px', 'important');
+          const ic = b.querySelector('.mm-qq-penguin');
+          if (ic) {
+            const px = Math.round(h * 0.55);
+            ic.style.setProperty('width', px + 'px', 'important');
+            ic.style.setProperty('height', px + 'px', 'important');
+            ic.style.setProperty('color', 'inherit', 'important');
+          }
+        } catch { /* ignore */ }
       }
 
-      // Alliance room (同盟模拟): a labelled button next to 统计 / 设置 / 玩法说明.
-      const roomBtn = document.getElementById('mm-qq-room');
-      if (!roomTools) {
-        if (roomBtn) roomBtn.remove();
+      // 房间页（同盟模拟 / 独立模拟 房间）：顶栏的「柱状图 / 齿轮 / 书本」属于 .rs-tools，
+      // Q群按钮放在这一排的最前面，即「统计数据」左边。
+      const roomBarQq = document.getElementById('mm-qq-roombar');
+      const rsTools = document.querySelector('.room-screen .rs-tools');
+      if (!rsTools) {
+        if (roomBarQq) roomBarQq.remove();
       } else {
-        let b = roomBtn;
-        if (!b) {
-          b = document.createElement('button');
-          b.type = 'button';
-          b.id = 'mm-qq-room';
-          b.className = 'btn btn--secondary btn--sm';
-          b.title = '加入官方Q群';
-          b.setAttribute('aria-label', '加入官方Q群：' + QQ);
-          b.innerHTML = '<span class="mm-qq-penguin" aria-hidden="true">' + PENGUIN + '</span><span>官方Q群</span>';
-          b.onclick = open;
+        const q = syncQqBtn(roomBarQq || makeQqBtn('mm-qq-roombar'));
+        if (q.parentElement !== rsTools || q !== rsTools.firstElementChild) {
+          rsTools.insertBefore(q, rsTools.firstElementChild);
         }
-        const guide = roomTools.querySelector('.room-guide');
-        if (b.parentElement !== roomTools || b.previousElementSibling !== guide) {
-          roomTools.insertBefore(b, guide ? guide.nextSibling : null);
-        }
+        const ref = rsTools.querySelector('.stats-entry') || rsTools.querySelector('button');
+        try {
+          const rr = ref ? ref.getBoundingClientRect() : null;
+          const side = rr && rr.height > 0 ? Math.round(rr.height) : 42;
+          q.style.setProperty('height', side + 'px', 'important');
+          q.style.setProperty('min-height', side + 'px', 'important');
+          q.style.setProperty('width', side + 'px', 'important');
+          q.style.setProperty('min-width', side + 'px', 'important');
+          q.style.setProperty('border-radius', '0', 'important');
+          q.style.setProperty('margin', '0', 'important');
+          q.style.setProperty('padding', '0', 'important');
+          q.style.setProperty('display', 'inline-flex', 'important');
+          q.style.setProperty('align-items', 'center', 'important');
+          q.style.setProperty('justify-content', 'center', 'important');
+          q.style.setProperty('background', '#35c79b', 'important');
+          q.style.setProperty('border', '1px solid #7ff0cf', 'important');
+          q.style.setProperty('color', '#061611', 'important');
+          const ic = q.querySelector('.mm-qq-penguin');
+          if (ic) {
+            const px = Math.round(side * 0.55);
+            ic.style.setProperty('width', px + 'px', 'important');
+            ic.style.setProperty('height', px + 'px', 'important');
+            ic.style.setProperty('color', 'inherit', 'important');
+            ic.style.setProperty('display', 'inline-flex', 'important');
+            const svg = ic.querySelector('svg');
+            if (svg) { svg.style.setProperty('width', '100%', 'important'); svg.style.setProperty('height', '100%', 'important'); }
+          }
+        } catch { /* ignore */ }
+      }
+
+      // 同盟模拟 / 独立模拟：弹窗是全屏覆盖层，不需要再放一份按钮 ——
+      // 大厅顶栏工具组里已经有一个（Q群在设置左侧），弹窗关闭后就能看到。
+      // 这里只清理历史遗留的弹窗内按钮。
+      const staleRoomBtn = document.getElementById('mm-qq-room');
+      if (staleRoomBtn) staleRoomBtn.remove();
+      const staleRow = document.querySelector('.mm-proto-right');
+      if (staleRow) {
+        // 把被包进容器的标题还原回 .proto-top，避免影响弹窗自身布局
+        const titleEl = staleRow.querySelector('.proto-title');
+        if (titleEl && staleRow.parentElement) staleRow.parentElement.insertBefore(titleEl, staleRow);
+        if (!staleRow.children.length) staleRow.remove();
       }
 
       // Title screen: put the QQ button in the footer flow instead of a fixed overlay, so it
@@ -1633,12 +2488,17 @@ const JOIN_COOKIE = (() => {
       const titleBtn = document.getElementById('mm-qq');
       if (!onTitle) {
         if (titleBtn) titleBtn.remove();
+        const staleRow = document.querySelector('.title-foot > .mm-qq-row');
+        if (staleRow) staleRow.remove();
         return;
       }
       // On phones the title footer is cramped; the lobby/room top bars still carry the QQ
       // entry, so remove this one instead of letting it cover 游客访问.
-      const phoneTitle = window.matchMedia?.('(pointer: coarse), (max-width: 900px)').matches
-        || (Number(globalThis.navigator?.maxTouchPoints) || 0) > 0;
+      // NB 0.3.3: do NOT treat maxTouchPoints>0 as "phone" — touch-screen laptops/desktop
+      // Edge report 10 touch points, which used to hide the button on real desktops.
+      const phoneTitle = window.matchMedia?.('(max-width: 900px)').matches
+        || (window.matchMedia?.('(pointer: coarse)').matches
+          && (window.matchMedia?.('(hover: none)').matches));
       if (phoneTitle) {
         if (titleBtn) titleBtn.remove();
         return;
@@ -1656,14 +2516,49 @@ const JOIN_COOKIE = (() => {
       }
       const foot = document.querySelector('.title-foot');
       if (foot) {
-        if (btn.parentElement !== foot) foot.insertBefore(btn, foot.firstElementChild);
+        // 标题屏：Q群按钮放在左下角「添加到桌面」的**正上方**。
+        //
+        // 页脚原有布局必须保持不动（版本号在右下角、「添加到桌面」在原位），
+        // 所以按钮绝对定位在 .title-foot 内，**不参与 flex 排版**：
+        // 量出「添加到桌面」按钮的实际矩形，把 Q群按钮贴到它的正上方（左对齐、留一行间距）。
+        // 用测量而不是猜像素，各屏幕尺寸 / 缩放 / 手机端都能对齐。
+        let row = foot.querySelector('.mm-qq-row');
+        if (!row) {
+          row = document.createElement('span');
+          row.className = 'mm-qq-row';
+          row.setAttribute('aria-hidden', 'false');
+        }
+        if (row.parentElement !== foot) foot.appendChild(row);
+        if (btn.parentElement !== row) row.appendChild(btn);
+        // 清掉 fixed 定位留下的行内样式，位置改由下面按实际布局算出
         btn.style.position = 'static';
         btn.style.left = '';
+        btn.style.right = '';
+        btn.style.top = '';
         btn.style.bottom = '';
+        btn.style.transform = '';
+        btn.style.zIndex = '';
+        // 量「添加到桌面」的位置，把 Q群那一行放到它上方
+        try {
+          const install = foot.querySelector('[data-testid="pwa-install"]')
+            || [...foot.querySelectorAll('button')].find((b) => /添加到桌面|Add to Home|ホーム/.test(b.textContent || ''));
+          const footRect = foot.getBoundingClientRect();
+          if (install && footRect.height > 0) {
+            const ir = install.getBoundingClientRect();
+            const qr = row.getBoundingClientRect();
+            // 左对齐到「添加到桌面」的左缘，垂直方向贴到它的上边再留 6px
+            const left = Math.max(0, Math.round(ir.left - footRect.left));
+            const bottom = Math.round(footRect.bottom - ir.top + 6);
+            if (row.style.left !== left + 'px') row.style.left = left + 'px';
+            if (row.style.bottom !== bottom + 'px') row.style.bottom = bottom + 'px';
+            void qr;
+          }
+        } catch { /* 测量失败：保持 CSS 的默认位置（页脚上方），也不会遮挡 */ }
         return;
       }
+      // 页脚结构不存在（极少数情况）：退回 body 固定定位，但 CSS 已把 bottom 抬到
+      // 112px 以上，不会压住页脚里的「添加到桌面」。
       if (btn.parentElement !== document.body) document.body.appendChild(btn);
-      btn.style.position = '';
       btn.style.left = '';
       btn.style.bottom = '';
     };
@@ -1832,7 +2727,8 @@ const JOIN_COOKIE = (() => {
       showNext();
     };
 
-    const poll = () => fetch('/mm/api/announcement', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+    // 公告数据来自合并轮询 /mm/api/pulse（见 refreshPulse），不再单独每 5 秒轮询。
+    const applyAnnouncement = (d) => {
       const enabled = !!(d && d.enabled && d.text);
       if (!enabled) {
         // 关闭公告：停止当前这条并清空排队，不再显示
@@ -1847,7 +2743,19 @@ const JOIN_COOKIE = (() => {
       // New content replaces the previous reminder; the player can close each one.
       if (showing) closeTicker();
       enqueue(lines, key);
-    }).catch(() => {});
+    };
+    onPulse('announcement', applyAnnouncement);
+    // 兜底：pulse 不可用（老节点）时仍走原来的端点。
+    // 已有 pulse 数据时先用它，避免首次安装时的空窗（onPulse 的补发已经覆盖这种情况）。
+    const poll = () => {
+      if (pulseOk) {
+        const have = getPulse();
+        if (have && have.announcement) applyAnnouncement(have.announcement);
+        return;
+      }
+      fetch('/mm/api/announcement', { cache: 'no-store' })
+        .then((r) => r.json()).then(applyAnnouncement).catch(() => {});
+    };
     startOverlayGuard();
     poll();
     setInterval(poll, 5000);
@@ -1954,7 +2862,7 @@ const JOIN_COOKIE = (() => {
     };
 
     const ensure = () => {
-      const btn = ensureTopButton('mm-notice-btn', '公告', ICON, open, null, true);
+      const btn = ensureTopButton('mm-notice-btn', '公告', ICON, open, 'mm-admin-btn', true);
       if (!btn) return;
       let dot = btn.querySelector('.mm-dot');
       if (dotPending && !dot) {
@@ -1999,6 +2907,125 @@ const JOIN_COOKIE = (() => {
     setInterval(maybeAutoOpen, 800);
     load();
     setInterval(load, 60000);
+  }
+
+  // ---------------------------------------------------------------- 「恢复对局」按钮（标题页 / 大厅）
+  // 账号在别的节点还有一场进行中的对局时（例如换了网络、换了设备、页面被关掉又打开），
+  // 自动恢复并不一定成功：它只在能拿到账号令牌、且房间还没被判定结束时才会跳转。
+  // 这里额外给一个**手动入口**：只要有可恢复的对局就显示「恢复对局」，排在「公告」右边。
+  // 点它 = 带着 accountResume=1 跳到 /r/CODE，由 accountObserver 接管座位。
+  function installResumeButton() {
+    const ID = 'mm-resume-btn';
+    const existing = () => document.getElementById(ID);
+    const removeBtn = () => { const b = existing(); if (b) b.remove(); };
+    // 已经在目标对局里（并且连着）才不需要入口。
+    //
+    // ⚠ 不能只看 store 里有没有 room：玩家**掉线**时 socket 已经断了，但 store 里的
+    // room 还在（resume 失败或还没完成时也留着），于是这里会以为「他还在房间里」，
+    // 把「恢复对局」按钮移除掉 —— 玩家就再也找不到回对局的路了。
+    // 判据：socket 在线 **且** 服务端确实把对局状态推过来过（m.public）。
+    // 只是还残留一个房间号（掉线遗留）不算「在房间里」，恰恰是需要显示按钮的时候。
+    const inRoom = () => {
+      try {
+        const sp = window.__SP__;
+        if (!sp || !sp.store || !sp.store.get) return false;
+        const s = sp.store.get();
+        const room = s && s.room;
+        if (!room || !room.code) return false;
+        const online = !!(sp.net && sp.net.status === 'online');
+        const inMatch = !!(s.match && (s.match.phase || s.match.public));
+        // 在线 + 确实在对局中 → 不需要恢复入口；其余情况都该显示
+        return online && inMatch;
+      } catch { return false; }
+    };
+    // 账号观察者已经在自动恢复中：别抢。
+    // 但要加时间保护：__SP_ACCOUNT_RESUME_PENDING 如果因为异常没被清掉（比如页面
+    // 在自动恢复途中被切走），这个标记会让按钮永远不出现。超过 12s（自动恢复的
+    // 正常上限）就当作已结束，照常显示按钮 —— 手动入口本来就该是最后一道保底。
+    let pendingSince = 0;
+    const autoBusy = () => {
+      const pending = window.__SP_ACCOUNT_RESUME_PENDING === true;
+      if (!pending) { pendingSince = 0; return false; }
+      if (!pendingSince) pendingSince = Date.now();
+      if (Date.now() - pendingSince > 12000) { pendingSince = 0; return false; }
+      return true;
+    };
+    let lastCode = null;
+    let lastCheck = 0;
+
+    const probe = async () => {
+      const role = window.__SP_ACCOUNT_ROLE || '';
+      if (!window.__SP_ACCOUNT_TOKEN || !role || role === 'guest') { removeBtn(); return; }
+      if (inRoom() || autoBusy()) { removeBtn(); return; }
+      // 主动退出对局后的一段时间内不显示（与自动恢复同一套闸）
+      try {
+        const now = Date.now();
+        const a = Number(sessionStorage.getItem('sp.matchExitAt') || 0);
+        const b2 = Number(localStorage.getItem('sp.matchExitAtShared') || 0);
+        if ((a && now - a < 120000) || (b2 && now - b2 < 120000)) { removeBtn(); return; }
+      } catch { /* ignore */ }
+      if (Date.now() - lastCheck < 15000 && (lastCode || !existing())) return;   // 15 秒最多查一次
+      lastCheck = Date.now();
+      let code = null;
+      try {
+        const r = await fetch('/mm/api/account/room', { credentials: 'same-origin', cache: 'no-store' });
+        if (r.ok) {
+          const j = await r.json();
+          code = j && j.room && typeof j.room.code === 'string' ? j.room.code : null;
+        }
+      } catch { code = null; }
+      lastCode = code;
+      if (!code) { removeBtn(); return; }
+      if (existing()) return;
+      // 锚点：**只在联厅显示**（维护者明确要求：标题界面不要「恢复对局」）。
+      //   1) 大厅：公告按钮（恢复对局排在它左边）
+      //   2) 大厅：版本按钮 / SWEEP 文字按钮
+      const notice = document.getElementById('mm-notice-btn');
+      // ★ 标题界面一律不显示「恢复对局」（维护者 2026-10-26 明确要求）。
+      if (document.querySelector('.title-screen')) { removeBtn(); return; }
+      // ★ MAINTENANCE.md §9.21 + §9.36：只认大厅「公告」按钮当锚点，拿不到就**不显示**。
+      //   §9.21 删掉过下面这段浮动按钮降级（mm-resume-fallback），它正是
+      //   「房间页 / 对局中 / 结算页也冒出恢复对局」的源头；那次修复后来被整份覆盖冲掉了，
+      //   2026-10-31 按 §9.36 的规矩（精确替换 + 校验命中数 + 字节差合理）重做。
+      //   判据用「公告按钮是否可见」：非大厅界面它会被 display:none 或移除，
+      //   比判断屏幕类名 / 路由更抗改版。
+      if (!notice || !notice.isConnected || notice.style.display === 'none') { removeBtn(); return; }
+      if (notice.getClientRects().length === 0) { removeBtn(); return; }
+      const anchor = notice;   // 锚点只认公告按钮，恢复对局永远排在它左边
+      const btn = (notice || anchor).cloneNode(true);
+      btn.id = ID;
+      btn.type = 'button';
+      btn.disabled = false;
+      btn.replaceChildren();
+      const dot = btn.querySelector('.mm-dot');
+      if (dot) dot.remove();
+      // 图标：返回箭头，和「公告」同一套描边
+      const icon = (notice || anchor).querySelector('svg');
+      if (icon) {
+        const s = icon.cloneNode(true);
+        const path = s.querySelector('path');
+        if (path) path.setAttribute('d', 'M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6m0 0v6m0-6L10 14');
+        btn.appendChild(s);
+      }
+      const label = document.createElement('span');
+      label.className = 'verchip__label';
+      label.textContent = '恢复对局';
+      btn.appendChild(label);
+      btn.title = `返回进行中的对局（${code}）`;
+      btn.onclick = () => {
+        try { sessionStorage.setItem('sp.accountResume', '1'); } catch { /* ignore */ }
+        window.location.assign('/r/' + encodeURIComponent(code) + '?accountResume=1');
+      };
+      // 排在锚点左边
+      anchor.parentElement.insertBefore(btn, anchor);
+    };
+
+    // 页面刚起来时账号令牌/角色可能还没到，多试几轮
+    setTimeout(probe, 1500);
+    setTimeout(probe, 4000);
+    setTimeout(probe, 8000);
+    setInterval(probe, 6000);
+    window.addEventListener('sp:account-changed', () => { lastCheck = 0; setTimeout(probe, 300); });
   }
 
 
@@ -2104,8 +3131,40 @@ const JOIN_COOKIE = (() => {
 .server-status__table tr.off td{color:#c98b8b}
 `;
   // 管理员账号：仅在大厅（选择模拟协议）的「公告」旁加「管理后台」按钮
+  // 管理员/服主角色的缓存：不再只依赖 account-title.js 异步写的 window.__SP_ACCOUNT_ROLE。
+  // 那个变量由另一个脚本的 render() 赋值，时机/是否执行都不受这里控 —— 它一旦是空，
+  // 「管理后台」按钮就永远不出现（玩家反馈「我的管理后台按钮不见了，我变普通玩家了吗」，
+  // 而数据库里 role 一直是 owner）。这里改为：
+  //   1) 先用已知变量（若已有值）
+  //   2) 否则主动 GET /mm/api/auth/me 拿真实角色，缓存起来
+  // 两者都不会改变服务端权限，只是把入口正确地显示出来。
+  let __spRoleCache = null;      // 已确认的角色（'owner' / 'admin' / 'player' …）
+  let __spRoleProbe = null;      // 进行中的探测 Promise
+  function currentRole() {
+    const known = (typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE) || '';
+    if (known) return known;
+    if (__spRoleCache) return __spRoleCache;
+    if (!__spRoleProbe) {
+      __spRoleProbe = (async () => {
+        try {
+          const r = await fetch('/mm/api/auth/me', { credentials: 'same-origin', cache: 'no-store' });
+          if (!r.ok) return '';
+          const j = await r.json();
+          const role = (j && j.user && j.user.role) || '';
+          if (role) {
+            __spRoleCache = role;
+            // 顺手补回全局变量，让依赖它的其它逻辑也能用
+            try { if (!window.__SP_ACCOUNT_ROLE) window.__SP_ACCOUNT_ROLE = role; } catch { /* ignore */ }
+          }
+          return role;
+        } catch { return ''; }
+      })().finally(() => { __spRoleProbe = null; });
+    }
+    return '';   // 本次先用空，下一轮（1.5s 后）缓存就绪
+  }
+
   function installAdminEntry() {
-    const role = (typeof window !== 'undefined' && window.__SP_ACCOUNT_ROLE) || '';
+    const role = currentRole();
     const notice = document.getElementById('mm-notice-btn');
     const old = document.getElementById('mm-admin-btn');
     const onTitle = !!document.querySelector('.title-screen');
@@ -2115,18 +3174,22 @@ const JOIN_COOKIE = (() => {
     btn.id = 'mm-admin-btn';
     btn.type = 'button';
     btn.disabled = false;
-    btn.style.marginRight = '0px';
+    btn.replaceChildren();
     const dot = btn.querySelector('.mm-dot');
     if (dot) dot.remove();
-    const svg = btn.querySelector('svg');
-    if (svg) {
-      const path = svg.querySelector('path');
+    // 与相邻的公告/版本按钮同一套胶囊样式：图标 + 文字，排在公告左侧。
+    const icon = notice.querySelector('svg');
+    if (icon) {
+      const s = icon.cloneNode(true);
+      const path = s.querySelector('path');
       // 盾牌图标，与管理权限语义一致
       if (path) path.setAttribute('d', 'M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3zm0 5.5 3 2.6v3.3c0 2.3-1.3 4.4-3 5.3-1.7-.9-3-3-3-5.3V10l3-2.5z');
+      btn.appendChild(s);
     }
-    const label = btn.querySelector('.btn__label') || btn.querySelector('span');
-    if (label) label.textContent = '管理后台';
-    else btn.textContent = '管理后台';
+    const name = document.createElement('span');
+    name.className = 'verchip__label';
+    name.textContent = '管理后台';
+    btn.appendChild(name);
     btn.onclick = () => window.open('/mm/admin.html?v=20261021', '_blank');
     notice.parentElement.insertBefore(btn, notice);
   }
@@ -2183,8 +3246,33 @@ const JOIN_COOKIE = (() => {
       #mm-nodes .chip i{width:7px;height:7px;border-radius:50%;background:#4ed8af;box-shadow:0 0 6px #4ed8af}
       #mm-nodes[data-state=busy] .chip i{background:#e8b25a;box-shadow:0 0 6px #e8b25a}
       #mm-nodes[data-state=down] .chip i{background:#d9534f;box-shadow:0 0 6px #d9534f}
+
       #mm-nodes .chip b{font-weight:700;color:#e6fff7}
       #mm-nodes.match .chip i{background:#e8b25a;box-shadow:0 0 6px #e8b25a}
+      /* 对局中：管理员与普通玩家必须逐像素一致。
+         锁定盒高与内边距，图标固定 14px、圆点固定 7px 全部隐藏 ——
+         这样无论 topbar 分支有没有给它插过柱状图图标，最终盒子都一样大、位置一样。 */
+      #mm-nodes.match .chip{box-sizing:border-box;
+        height:var(--gtop-pill-h, calc(.32rem + 2px));min-height:var(--gtop-pill-h, calc(.32rem + 2px));max-height:var(--gtop-pill-h, calc(.32rem + 2px));
+        padding:0 .14rem 0 .11rem;gap:.05rem;display:inline-flex;align-items:center;line-height:1}
+      #mm-nodes.match .chip i{display:none!important;width:0!important;height:0!important;margin:0!important}
+      #mm-nodes.match .chip svg{display:block;flex:none;width:14px;height:14px;margin-right:6px}
+      #mm-nodes.match .chip svg.mm-chip-icon{margin-right:6px}
+      #mm-nodes.match #mm-nodes-text{display:inline-block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      /* 手机（1rem 被钳到 40px）上 .16 × --t 只有 6px，字几乎看不见；
+         高度 .32rem 也只有 12.8px，和旁边动辄 30px 的按钮不成比例。
+         这里给字号和高度都加一个像素下限：小屏上反而要略微变小、但不能小到看不清。
+         （玩家反馈「手机左上角节点状态按钮显示有点大」—— 实际是比例失衡，
+         大屏 36px 高、小屏只有 14px 却字更小，看起来又大又糊。） */
+      @media (max-width: 1100px) {
+        #mm-nodes:not(.topbar) .chip{
+          height: max(.28rem, 18px);
+          padding: 0 max(.1rem, 8px) 0 max(.08rem, 6px);
+          gap: max(.04rem, 3px);
+          font-size: max(calc(.13 * var(--t)), 11px);
+        }
+        #mm-nodes .chip i{width: max(5px, .5vw); height: max(5px, .5vw)}
+      }
       #mm-nodes .panel{position:absolute;top:calc(100% + 8px);left:0;z-index:60;min-width:360px;max-height:min(calc(100vh - 120px),920px);overflow:auto;background:rgba(0,0,0,.62);border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 10px 30px rgba(0,0,0,.5);backdrop-filter:blur(6px);color:var(--text-hi);font:calc(.15 * var(--t))/1.5 "Noto Sans SC",system-ui,sans-serif}
       #mm-nodes .panel[hidden]{display:none}
       #mm-nodes .head{display:grid;grid-template-columns:14px 1fr 56px 56px 56px;gap:6px;padding:2px 4px 8px;color:var(--text-dim);font-size:calc(.12 * var(--t));border-bottom:1px solid var(--line);margin-bottom:6px}
@@ -2221,23 +3309,104 @@ const JOIN_COOKIE = (() => {
       const ping = document.querySelector('.ping');
       // 标题页登录态会隐藏「开始」按钮，这里改用标题页本身判断，避免节点状态被一起藏掉
       const onTitle = !!document.querySelector('.title-screen');
-      if (onTitle || (start && start.getClientRects().length)) {
-        // 标题页：放进右上角工具条，排在「公告」按钮左边，样式与按钮一致
-        const notice = document.getElementById('mm-notice-btn');
-        const hostBtn = notice || document.querySelector('button.title-stats')
-          || [...document.querySelectorAll('button')].find((b) => /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
-        if (hostBtn && hostBtn.parentElement) {
-          if (el.parentElement !== hostBtn.parentElement || el.nextElementSibling !== hostBtn) {
-            hostBtn.parentElement.insertBefore(el, hostBtn);
+      // 同盟模拟 / 独立模拟 的【房间】顶栏：.rs-top__left > .rs-clock 里有
+      // 「当前延迟 <PingPill>」，节点状态要作为同款药丸紧跟在它右边。
+      // 注意：不是协议选择弹窗（.proto-top），那是另外一屏。
+      const rsClock = document.querySelector('.room-screen .rs-clock') || document.querySelector('.rs-top__left .rs-clock');
+      if (!onTitle && rsClock) {
+        const pingRow = rsClock.querySelector('.rs-clock__ping');
+        if (pingRow) {
+          // 每轮都确认归属：房间顶栏会随状态重渲染，节点状态可能被挪走，这里重新挂上
+          if (el.parentElement !== pingRow) pingRow.appendChild(el);
+          const force = (elm, props) => { for (const [k, v] of Object.entries(props)) elm.style.setProperty(k, v, 'important'); };
+          // 外观交给全局规则 `#mm-nodes:not(.topbar) .chip`（黑底 + 薄荷绿描边 + 99px 圆角），
+          // 这里只做定位。以前在 .chip 上内联写了 padding/background/border/字号，
+          // 等于给房间顶栏另做一套外观，和标题页/大厅不一致。
+          el.classList.remove('topbar');
+          force(el, {
+            display: 'inline-flex', 'align-items': 'center', position: 'static',
+            left: 'auto', right: 'auto', top: 'auto', transform: 'none',
+            'z-index': 'auto',                 // 清掉全局的 46，别盖住上层的返回键
+            height: 'auto',
+            'border-radius': '99px', background: 'transparent',
+            border: '0', 'align-self': 'center', flex: 'none',
+            margin: '0',
+          });
+          const chipEl = el.querySelector('.chip');
+          if (chipEl) {
+            // 清掉历史遗留的内联覆盖，让全局 .chip 规则重新生效
+            for (const k of ['padding', 'font-size', 'font-weight', 'background', 'border',
+              'border-radius', 'box-sizing', 'line-height', 'color', 'white-space', 'justify-content', 'min-height']) {
+              chipEl.style.removeProperty(k);
+            }
+            for (const dot of chipEl.querySelectorAll('i')) {
+              dot.style.removeProperty('width');
+              dot.style.removeProperty('height');
+              dot.style.removeProperty('margin-right');
+              dot.style.removeProperty('border-radius');
+            }
           }
-          el.style.display = 'inline-flex';
-          el.style.position = 'static';
-          el.style.left = 'auto';
-          el.style.right = 'auto';
-          el.style.top = 'auto';
-          el.style.transform = 'none';
-          el.style.margin = '0 8px 0 0';
-          el.classList.add('topbar');
+          // 药丸之间的间距交给 .rs-clock__ping 的 gap，这里不留外边距
+          // ★ 防遮挡：顶栏被塞进第三个药丸后，窄屏（手机横屏）会把它挤到
+          // 「回合 / LP / 兵力」那一栏上面去。这里让它可收缩、可裁切，
+          // 永远不撑破所在的行；同时给父行加 flex-wrap:nowrap + min-width:0。
+          force(el, { 'max-width': 'min(24rem, 38vw)', overflow: 'hidden', 'flex-shrink': '1' });
+          if (pingRow) force(pingRow, { 'flex-wrap': 'nowrap', 'min-width': '0', 'max-width': '100%' });
+          if (!pingRow.dataset.mmCal) {
+            pingRow.dataset.mmCal = '1';
+            setTimeout(place, 120);
+            setTimeout(place, 400);
+          }
+          return;
+        }
+      }
+      // 离开房间后清理临时容器
+      const staleMeter = document.querySelector('.mm-proto-meter');
+      if (staleMeter) staleMeter.remove();
+      el.classList.remove('ping');
+      for (const k of ['min-height', 'max-height', 'padding-top', 'padding-bottom', 'border-radius',
+        'background', 'border', 'font-family', 'font-weight', 'font-size',
+        'z-index', 'max-width', 'overflow', 'flex-shrink']) {
+        el.style.removeProperty(k);
+      }
+      // .chip 上的药丸样式也要撤掉，否则回到大厅/标题页时会带着对局的框和底色
+      {
+        const c = el.querySelector('.chip');
+        if (c) {
+          for (const k of ['background', 'border', 'border-radius', 'padding', 'min-height', 'box-sizing']) {
+            c.style.removeProperty(k);
+          }
+        }
+      }
+
+      if (onTitle || (start && start.getClientRects().length)) {
+        // 标题页：放进右上角工具条，排在「公告」按钮左边，样式与按钮一致。
+        // 锚点必须是「不会自我重建」的元素：公告按钮 mm-notice-btn 由另一处定时器维护，
+        // 偶尔会被移除重建，用它当 insertBefore 锚点会让节点状态在 984/1087 两个位置来回跳。
+        // 这里优先用稳定的 .title-stats / 语言选择器，退而求其次才用公告按钮。
+        const notice = document.getElementById('mm-notice-btn');
+        const hostBtn = document.querySelector('button.title-stats')
+          || document.querySelector('.title-corner__tools .title-lang')
+          || notice
+          || [...document.querySelectorAll('button')].find((b) => /S\.W\.E\.E\.P/i.test((b.textContent || '').trim()));
+        // 真正要排在左边的那个按钮（视觉上与「公告」相邻）
+        const anchor = notice && notice.parentElement === hostBtn?.parentElement ? notice : hostBtn;
+        if (anchor && anchor.parentElement) {
+          // 只在顺序真的不对时才移动：位置正确就一个 DOM 操作都不做
+          if (el.parentElement !== anchor.parentElement || el.nextElementSibling !== anchor) {
+            anchor.parentElement.insertBefore(el, anchor);
+          }
+          // 只在值真的变化时才写：place() 每 1.2s 跑一次，无条件赋值 style/class 会让浏览器
+          // 反复重排重绘，表现为右上角按钮持续「抖一下」的刷新感。
+          const setIf = (k, v) => { if (el.style.getPropertyValue(k) !== v) el.style.setProperty(k, v); };
+          setIf('display', 'inline-flex');
+          setIf('position', 'static');
+          setIf('left', 'auto');
+          setIf('right', 'auto');
+          setIf('top', 'auto');
+          setIf('transform', 'none');
+          setIf('margin', '0 8px 0 0');
+          if (!el.classList.contains('topbar')) el.classList.add('topbar');
           // 直接沿用「公告」按钮的图标与文字排版，保证同款
           try {
             const chipEl = el.querySelector('.chip');
@@ -2245,8 +3414,8 @@ const JOIN_COOKIE = (() => {
               const dot = chipEl.querySelector('i');
               if (dot) dot.style.display = 'none';
               let icon = chipEl.querySelector('svg.mm-chip-icon');
-              if (!icon && hostBtn.querySelector('svg')) {
-                icon = hostBtn.querySelector('svg').cloneNode(true);
+              if (!icon && anchor.querySelector('svg')) {
+                icon = anchor.querySelector('svg').cloneNode(true);
                 icon.classList.add('mm-chip-icon');
                 icon.style.marginRight = '6px';
                 chipEl.insertBefore(icon, chipEl.firstChild);
@@ -2255,16 +3424,31 @@ const JOIN_COOKIE = (() => {
           } catch { /* ignore */ }
           // 外观与「公告」按钮完全一致：直接套用它自己的 class（含 hover 效果）
           try {
-            el.style.color = '#ffffff';
-            el.style.background = 'transparent';
+            // 注意：CSSStyleDeclaration 读回的是「计算后的规范值」——颜色变 rgb()、
+            // margin 变 "0px 10px 0px 0px"，拿写进去的字面量去比对永远不等，
+            // 于是每轮都重写一遍 style，浏览器就一直重排重绘（右键头闪的来源）。
+            // 这里统一用「解析后的规范值」比较，或干脆按已存在就跳过。
+            const setStyleOnce = (elm, prop, canon) => {
+              const cur = elm.style.getPropertyValue(prop);
+              if (cur === canon) return;
+              // 把写进去的值交给浏览器解析一次，再读回规范形式来比
+              const probe = document.createElement('div');
+              probe.style.setProperty(prop, canon);
+              if (cur === probe.style.getPropertyValue(prop)) return;
+              elm.style.setProperty(prop, canon);
+            };
+            setStyleOnce(el, 'color', '#ffffff');
+            setStyleOnce(el, 'background', 'transparent');
             const chipEl = el.querySelector('.chip');
             if (chipEl) {
-              chipEl.className = hostBtn.className + ' chip';
-              chipEl.style.cssText = 'cursor:pointer';
+              // className 整体赋值会重建所有 class 触发重绘：值没变就不要写
+              const want = anchor.className + ' chip';
+              if (chipEl.className !== want) chipEl.className = want;
+              setStyleOnce(chipEl, 'cursor', 'pointer');
               // 与公告/统计等按钮使用同一套间距（克隆按钮自带 10px 右边距）
-              el.style.margin = '0 10px 0 0';
-              el.style.padding = '0';
-              el.style.height = 'auto';
+              setStyleOnce(el, 'margin', '0 10px 0 0');
+              setStyleOnce(el, 'padding', '0');
+              setStyleOnce(el, 'height', 'auto');
             }
           } catch { /* ignore */ }
           return;
@@ -2280,16 +3464,108 @@ const JOIN_COOKIE = (() => {
         setTimeout(place, 500);
         return;
       }
-      if (!ping || !ping.getClientRects().length) { el.style.display = 'none'; return; }
-      // 其它界面：插到延迟后面作为行内元素，让按钮自动右移，避免遮挡
-      el.style.position = 'relative';
-      el.style.left = 'auto';
-      el.style.right = 'auto';
-      el.style.top = 'auto';
-      el.style.transform = 'none';
-      el.style.margin = '0 0 0 10px';
-      el.style.display = 'inline-flex';
-      el.classList.remove('topbar');
+      if (!ping || !ping.getClientRects().length) { if (el.style.display !== 'none') el.style.display = 'none'; return; }
+
+      // ★ 对局中（.gtop 顶栏）：只作为一个安静的小药丸待在延迟旁边，
+      //   **绝不改动它父容器的布局**。
+      //   以前这里会无条件把父容器设成 display:flex + gap:10px，
+      //   而 .gtop__net 里除了延迟还并排放着 .gtop__meta 下的「难度标签」（截图里的「维多利亚 正常」）。
+      // ★ 对局中（.gtop 顶栏）：**只做定位，不改外观**。
+      //   胶囊的外观由 `#mm-nodes:not(.topbar) .chip` 这条全局规则统一决定
+      //   （黑底、薄荷绿 1px 描边、99px 圆角）—— 标题页、大厅、房间、对局中
+      //   应该是同一个样子，只有里面的字在不同界面显示不同内容
+      //   （大厅显示「30/30 · 正常 · N 人在线」，对局中显示「当前节点名 · 状态」）。
+      //
+      //   之前这里写死了 padding / font-size / background / border / color，
+      //   等于给对局中另做了一套外观，和别处不一致 —— 玩家反馈
+      //   「电脑端的节点状态按钮外观直接跟原来不一样了」。
+      //
+      //   真正需要修的只有布局：以前无条件把父容器改成 display:flex + gap:10px，
+      //   把「难度标签」挤到了右边、压住「回合」进度条。现在只把胶囊放进
+      //   .gtop__net，不动父容器，并清掉 #mm-nodes 全局的 position:fixed / z-index:46
+      //   残留（否则会盖住顶栏按钮）。
+      if (ping.closest('.gtop')) {
+        const net = ping.parentElement;                 // .gtop__net
+        if (net && el.parentElement !== net) net.appendChild(el);
+        const s = (k, v) => { if (el.style.getPropertyValue(k) !== v) el.style.setProperty(k, v); };
+        s('position', 'static');
+        s('left', 'auto'); s('right', 'auto'); s('top', 'auto');
+        s('transform', 'none');
+        s('display', 'inline-flex');
+        s('align-items', 'center');
+        s('z-index', 'auto');                            // 清掉全局的 46，别盖住顶栏
+        s('margin', '0 0 0 8px');                        // 与延迟药丸的间距
+        s('flex', '0 1 auto');
+        s('max-width', 'min(24rem, 42vw)');              // 窄屏不撑破那一行
+        s('overflow', 'hidden');
+        // 用非 topbar 的那套统一外观（和标题页/大厅/房间一致）
+        if (el.classList.contains('topbar')) el.classList.remove('topbar');
+        // ★ 清掉历史上可能残留的内联覆盖（旧版本写过 padding/background/border/字号），
+        //   让全局规则重新生效。只清这几个，不动布局相关的。
+        {
+          const chipEl = el.querySelector('.chip');
+          if (chipEl) {
+            for (const k of ['padding', 'font-size', 'font-weight', 'background', 'border', 'border-radius', 'box-sizing', 'line-height', 'color', 'white-space', 'justify-content']) {
+              chipEl.style.removeProperty(k);
+            }
+            // 内部小圆点也交回全局规则
+            for (const dot of chipEl.querySelectorAll('i')) {
+              dot.style.removeProperty('width');
+              dot.style.removeProperty('height');
+              dot.style.removeProperty('margin-right');
+              dot.style.removeProperty('border-radius');
+              // ★ 对局中一律显示柱状图图标、隐藏圆点，与普通玩家看到的完全一致。
+              //   （维护者确认：有柱状图图标的才是标准外观；圆点是另一套，必须消掉。）
+              dot.style.setProperty('display', 'none', 'important');
+            }
+            // 确保图标存在：普通玩家的胶囊里是柱状图 svg，管理员也必须有**同一个**。
+            // 直接从 topbar 分支用的同一个来源（公告/统计按钮的 svg）克隆，避免手画走样。
+            if (chipEl && !chipEl.querySelector('svg.mm-chip-icon')) {
+              const src = document.querySelector('#mm-notice-btn svg')
+                || document.querySelector('button.title-stats svg')
+                || [...document.querySelectorAll('button svg')].find((s) => {
+                  const b = s.closest('button');
+                  return b && /公告|统计/.test((b.textContent || '').trim());
+                });
+              let svg = null;
+              if (src) {
+                svg = src.cloneNode(true);
+                svg.classList.add('mm-chip-icon');
+                svg.style.marginRight = '6px';
+              } else {
+                // 找不到来源时才退到内置柱状图，保证至少有图标且宽度一致
+                const NS = 'http://www.w3.org/2000/svg';
+                svg = document.createElementNS(NS, 'svg');
+                svg.setAttribute('viewBox', '0 0 24 24');
+                svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+                svg.classList.add('mm-chip-icon');
+                svg.style.cssText = 'margin-right:6px;flex:none';
+                const p1 = document.createElementNS(NS, 'path');
+                p1.setAttribute('fill', 'currentColor');
+                p1.setAttribute('d', 'M4 20h4V10H4v10zm6 0h4V4h-4v16zm6 0h4v-7h-4v7z');
+                svg.appendChild(p1);
+              }
+              chipEl.insertBefore(svg, chipEl.firstChild);
+            }
+          }
+        }
+        return;
+      }
+
+      // 其它界面：插到延迟后面作为行内元素。大厅里 Q群按钮和节点状态同处一行，
+      // 顺序固定为 [延迟] [Q群] [节点状态] | [工具组]；
+      // 注意不能每轮都把节点状态硬插到 ping 后面 —— 那会把 Q群挤到后面，
+      // 两个元素互相抢位置，表现出来就是「一跳一跳」。
+      // 同理，style 只在值变化时才写，否则每 1.2s 的无条件赋值本身就是一次重绘。
+      const setIf2 = (k, v) => { if (el.style.getPropertyValue(k) !== v) el.style.setProperty(k, v); };
+      setIf2('position', 'relative');
+      setIf2('left', 'auto');
+      setIf2('right', 'auto');
+      setIf2('top', 'auto');
+      setIf2('transform', 'none');
+      setIf2('margin', '0 0 0 10px');
+      setIf2('display', 'inline-flex');
+      if (el.classList.contains('topbar')) el.classList.remove('topbar');
       // 把“延迟 + 角标”强制排成一行（与选择模拟协议界面一致）
       let host = ping.parentElement;
       for (let k = 0; k < 3 && host && host.getBoundingClientRect().width < 60; k++) host = host.parentElement;
@@ -2301,16 +3577,29 @@ const JOIN_COOKIE = (() => {
           host.style.alignItems = 'center';
           host.style.gap = '10px';
         }
-        if (el.previousElementSibling !== ping) ping.insertAdjacentElement('afterend', el);
-      } else if (ping.nextElementSibling !== el) {
+        // 期望顺序：ping → 本节点状态（大厅里 Q群在右侧工具组，不参与这里）
+        const qq = document.getElementById('mm-qq-lobby');
+        const inTools = qq && qq.parentElement && qq.parentElement.classList.contains('topbar__tools');
+        const wantPrev = inTools ? ping : ((qq && qq.parentElement === host && qq.isConnected) ? qq : ping);
+        // 只有「位置确实不对」时才动 DOM，且只动一次，避免周期性重排造成的跳动
+        if (el.parentElement !== host) host.appendChild(el);
+        if (el.previousElementSibling !== wantPrev) {
+          wantPrev.insertAdjacentElement('afterend', el);
+        }
+      } else if (ping.nextElementSibling !== el && ping.parentElement) {
         ping.insertAdjacentElement('afterend', el);
       }
     };
     const attach = () => {
       if (!el.isConnected) document.body.appendChild(el);
       place();
-    setInterval(place, 1200);
-    window.addEventListener('resize', place);
+      // 定时器只注册一次：attach 会被 render() 每秒调用，若在这里 setInterval，
+      // 会不断叠加定时器，多个 place() 同时抢位置 —— 界面就会「一跳一跳」。
+      if (!attach.__timers) {
+        attach.__timers = true;
+        setInterval(place, 1200);
+        window.addEventListener('resize', place);
+      }
     };
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
@@ -2349,9 +3638,52 @@ const JOIN_COOKIE = (() => {
       document.body.appendChild(veil);
     };
 
+    // 能不能打开「游戏内管理员工具」——2026-10-31 维护者定的规则：
+    //   **只有在自己参与的对局里才能打开**；观战、隐身观战一律不能。
+    //
+    // 判据本体在 /js/ui/adminGate.js（ui/hud.js 监听事件时也调它），这里只做一层
+    // 「注入脚本够不到 React 状态」的适配。★ 此处是**同步**判断：需要立刻知道结果，
+    // 所以用同步的 XMLHttpRequest 拉一次源文件是不行的 —— 改为把同样的规则再写一遍，
+    // 并靠 test/ui/adminGate.test.js 保证两边语义一致（见该测试的注释）。
+    //   · 必须已经是管理员（adminId）
+    //   · 必须已经在自己的对局里（match.public 存在）
+    //   · 不能是观战者：room.spectators 里有我（普通观战 + 隐身观战都在这里）
+    //   · 必须自己坐在 seats 里（没席位 = 在看别人打）
+    function canOpenAdminTools(st) {
+      if (!st || st.adminId !== true) return false;
+      const s = window.__SP__ && window.__SP__.store ? window.__SP__.store.get() : null;
+      if (!s || !s.match || !s.match.public) return false;
+      const room = s.room;
+      const myId = s.me && s.me.playerId;
+      if (!room || myId == null) return false;
+      if ((room.spectators || []).some((x) => x && x.playerId === myId)) return false;
+      return (room.seats || []).some((x) => x && x.playerId === myId);
+    }
+
     chip.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (el.classList.contains('match') || !data) return;
+      // 对局中：这颗胶囊是「游戏内管理员工具」的入口。
+      // 只对「正在自己参与的对局里」的管理员有效（见 canOpenAdminTools）。
+      // 普通玩家、观战者、隐身观战者点它仍然什么都不发生（下面原有的 return 保持不变）。
+      if (el.classList.contains('match')) {
+        const st = window.__SP__ && window.__SP__.store && window.__SP__.store.get();
+        // ★ 判据用 adminId（身份门）而不是 adminTools（两道门都过）。
+        //   退出授权后 adminTools 会变 false，若继续用它判断，管理员连面板都打不开，
+        //   也就没有地方重新输码了 —— 2026-10-31 实测出来的死锁。
+        //   普通玩家 adminId 也是 false，所以权限没有放宽。
+        if (canOpenAdminTools(st)) {
+          try {
+            // 把胶囊的屏幕位置一并传出：面板要开在它**正下方**，
+            // 而不是固定在屏幕角落（维护者要求「就地打开，不用去别处找」）。
+            const r = el.getBoundingClientRect();
+            window.dispatchEvent(new CustomEvent('sp-open-admin-tools', {
+              detail: { left: r.left, top: r.bottom + 8, width: r.width },
+            }));
+          } catch { /* ignore */ }
+        }
+        return;
+      }
+      if (!data) return;
       // 标题页只显示在线人数，不提供节点状态面板
       if (document.querySelector('.title-screen')) return;
       openStatusModal();
@@ -2390,27 +3722,52 @@ const JOIN_COOKIE = (() => {
       const s = window.__SP__ && window.__SP__.store.get();
       const inMatch = !!(s && s.match && s.match.public);
       const sum = summary();
-      el.dataset.state = inMatch ? 'normal' : sum.state;
+      // 只在值变化时写：tick 每 1.2s 跑一次，无条件写 dataset / classList / innerHTML
+      // 会让浏览器不断重排重绘，右上角就表现为持续「刷新感」。
+      const wantState = inMatch ? 'normal' : sum.state;
+      if (el.dataset.state !== wantState) el.dataset.state = wantState;
+      const setHtml = (node, html) => { if (node.innerHTML !== html) node.innerHTML = html; };
       if (inMatch) {
-        el.classList.add('match');
+        if (!el.classList.contains('match')) el.classList.add('match');
+        // 管理员：这颗胶囊可以点开工具面板。外观保持不变（维护者要求），
+        // 只加 cursor:pointer 与 title 作为「可点」的唯一提示。
+        // 管理员：这颗胶囊可以点开工具面板。
+        // ★ 不设 title、不加任何可见标记 —— 维护者要求「管理员和普通玩家看到的完全一致」。
+        //   普通玩家点它没有任何反应（下面 click 里会判 adminTools），
+        //   但不能靠悬停提示、光标、颜色等任何东西暴露「这是管理入口」。
+        const isAdmin = !!(s && s.adminId === true);
+        if (isAdmin) { chip.style.cursor = 'pointer'; }
+        else { chip.style.removeProperty('cursor'); }
+        chip.removeAttribute('title');
         const n = nodeOf();
         const node = data && data.nodes.find((x) => x.n === n);
-        text.textContent = node ? node.name + ' · ' + (node.ok ? '正常' : '离线') : '当前节点';
+        const label = node ? node.name + ' · ' + (node.ok ? '正常' : '离线') : '当前节点';
+        if (text.textContent !== label) text.textContent = label;
         panel.hidden = true;
         open = false;
         return;
       }
-      el.classList.remove('match');
+      if (el.classList.contains('match')) el.classList.remove('match');
       if (!data) return;
       // 标题页只显示「服务器在线总人数」，其它界面仍显示节点概览
       if (document.querySelector('.title-screen')) {
-        text.innerHTML = '在线 <span class="num">' + sum.humans + '</span> 人';
+        setHtml(text, '在线 <span class="num">' + sum.humans + '</span> 人');
         return;
       }
-      text.innerHTML = '<span class="num">' + sum.ready + '/' + sum.total + '</span> · ' + LOAD_TEXT[sum.state] + ' · <span class="num">' + sum.humans + '</span> 人在线';
+      setHtml(text, '<span class="num">' + sum.ready + '/' + sum.total + '</span> · ' + LOAD_TEXT[sum.state] + ' · <span class="num">' + sum.humans + '</span> 人在线');
     };
 
-    const load = () => fetch('/mm/api/node-status').then((r) => r.json()).then((d) => { data = d; render(); }).catch(() => {});
+    // 数据没变化就不重渲染：render() 每秒跑一次，无谓的 DOM 写入会让右上角一直「刷新」。
+    let lastSig = '';
+    const load = () => fetch('/mm/api/node-status')
+      .then((r) => r.json())
+      .then((d) => {
+        data = d;
+        let sig = '';
+        try { sig = JSON.stringify(d); } catch { sig = String(Date.now()); }
+        if (sig !== lastSig) { lastSig = sig; render(); }
+      })
+      .catch(() => {});
     attach();
     load();
     setInterval(load, 15000);
@@ -2421,15 +3778,12 @@ const JOIN_COOKIE = (() => {
 
   // 大厅「同盟模拟」卡片上加一句匹配提示，告诉玩家房间里可以匹配队友
   function installModeHint() {
-    const card = [...document.querySelectorAll('.mode-card')].find((c) => /同盟模拟/.test(c.textContent || ''));
-    if (!card || card.querySelector('.mm-mode-hint')) return;
-    const host = card.querySelector('.mode-card__points') || card;
-    // 直接作为 .mode-card__points 的子项，沿用和其它两条一样的字号/加粗/菱形标记，只把颜色改成绿色
-    const hint = document.createElement('span');
-    hint.className = 'mm-mode-hint';
-    hint.textContent = '支持「匹配队友」· 与等待中的博士组队';
-    hint.style.color = '#4ed8af';
-    host.appendChild(hint);
+    // 「支持匹配队友 / 可调整人数」这两句已经移到卡片**上方**的说明行
+    // （public/js/screens/lobby.js 的 pointExtra，按语序排列），
+    // 卡片内部不再额外塞一行 —— 以前压在里面既和标题挤在一起，又把卡片撑宽。
+    // 这里只负责把旧版本残留在卡片里的 .mm-mode-hint 清掉。
+    const stale = document.querySelector('.hub-entry--coop .mm-mode-hint');
+    if (stale) stale.remove();
   }
 
   function addFoundBack() {
@@ -2588,28 +3942,143 @@ const JOIN_COOKIE = (() => {
   }
 
   function joinFlow(sp, code, spectate) {
+    // 诊断：玩家反馈「跨节点后还要再输一次房间号」。每次调用都留痕，便于事后从控制台定位。
+    try {
+      console.info('[mm-debug] joinFlow', { code, spectate, route: (document.cookie.match(/sp_route=(\d+)/) || [])[1] });
+    } catch { /* ignore */ }
     // Hidden admin watch is not a player deep-link: joining as a player would fail
     // with ROOM_FULL on a full room. A tab opened just after the watch closes must
     // discard its stale deep-link/pending join instead of surfacing an error.
     if (adminWatchActive() || watchExitRecent()) {
+      try { console.info('[mm-debug] joinFlow 放弃：adminWatch 或刚退出观战'); } catch { /* ignore */ }
       try { sp.store.patch('ui', { pendingJoin: null, pendingSpectate: false }); } catch { /* ignore */ }
       try { sessionStorage.removeItem('mm.pendingRoom'); } catch { /* ignore */ }
       return;
     }
     const { store, net } = sp;
-    let inFlight = false, joined = false;
+    let inFlight = false, joined = false, retries = 0;
+    // 刷新页面重连时，服务端会先在 hello 的 resume 里把玩家送回原房间/对局（lobby.onHello → resync
+    // → 对局 match.onReconnect），这条路径**不需要** room.join。
+    // 以前这里一 tick 就抢发 room.join：若此时 room.state 还没到、或服务端已按别的路径处理了会话，
+    // 已开局的对局就回 ROOM_STARTED，于是提示「加入失败：模拟已开始」并把房间痕迹全清掉
+    // —— 玩家看到的就是「掉线刷新后回不到对局」。
+    // 现在先给 resume 一个宽限窗口：这段时间内若 room.state 到达并显示已在房间里，就静默完成。
+    const startedAt = Date.now();
+    const RESUME_GRACE_MS = 5000;
+    // 给「恢复账号对局」让路的上限：accountObserver 的自动恢复含 4 次重试（每次间隔 700ms）
+    // 与 3.5s 超时，正常 5s 内必出结果；留到 12s 只是防止标记异常残留把玩家永久挡在门外。
+    const ACCOUNT_RESUME_YIELD_MS = 12000;
     try { store.patch('ui', { pendingJoin: null }); } catch (e) { /* ignore */ }
     const tick = () => {
       if (adminWatchActive() || watchExitRecent()) { joined = true; return; }
+      // 「恢复账号对局」正在接管（ui/accountObserver.js 的 requestAccountResume）：
+      // 它会把旧设备的座位 token 换到本机，这时若我们抢先发 room.join，
+      // 服务端可能给本机新开一个座位（同一账号两个座位），而 resumeAccount
+      // 随后又要把座位换过来 —— 两边打架。
+      // accountObserver 用 window.__SP_ACCOUNT_RESUME_PENDING 标记这段窗口，
+      // joinFlow 必须让路，等它结束（成功或失败都会清掉这个标记）。
+      // 兜底：标记若因异常没清掉，最多让路 ACCOUNT_RESUME_YIELD_MS，之后照常加入，
+      // 不能因为一个残留标记让玩家永远进不去房间。
+      if (window.__SP_ACCOUNT_RESUME_PENDING === true
+        && Date.now() - startedAt < ACCOUNT_RESUME_YIELD_MS) return;
       const s = store.get();
-      if (joined || inFlight || !s.session.entered || net.status !== 'online') return;
-      if (s.room) { joined = true; return; }
+      // 跨节点跳转后不要卡在 `session.entered` 上：
+      // entered 由 localStorage 里的「本机进入过」标记决定，跳到一个新节点后页面是全新上下文，
+      // 它可能是 false，于是这里一直 return，room.join / room.spectate 一条都不发，
+      // 玩家看到的就是「跳到新节点后又得重输一次房间号」。
+      // 只要 socket 已连上（net.status === 'online'）就允许发请求；服务端会按会话状态自行处理。
+      if (joined || inFlight || net.status !== 'online') return;
+      // 已经在**目标房间**里才算加入完成。以前这里只判 `if (s.room)`：
+      // 玩家手输密钥 → 跨节点刷新 → store 里还留着刷新前的房间（或另一个房间），
+      // 于是立刻 joined = true，room.join 根本没发出去，表现为「要输第二次密钥才能进」。
+      //
+      // 观战还要看**席位**：自己已经在同一个房间里当玩家时，房间号相同，
+      // 但 room.spectate 必须照发（否则点「观战」没有任何反应）。
+      // 已经在这个房间的观战席上才算完成。
+      const roomCode = s.room ? String(s.room.code).toUpperCase() : '';
+      const targetCode = String(code).toUpperCase();
+      const sameRoom = roomCode === targetCode;
+      // 观战席的判定与游戏本体一致（store.js isSpectating）：room.spectators 里有自己
+      const myId = (s.session && s.session.playerId) || null;
+      const onSpectatorSeat = !!s.room && myId != null && Array.isArray(s.room.spectators)
+        && s.room.spectators.some((x) => x && x.playerId === myId);
+      if (sameRoom && (!spectate || onSpectatorSeat)) { joined = true; cleanUrl(); return; }
+      // 服务端的 resume 已经把我放回这个房间了（对局中），只是 room.state 还没到或还在路上：
+      // 等它一帧，不要抢发 room.join 去撞 ROOM_STARTED。
+      const inMatchNow = !!(s.match && (s.match.phase || s.match.public));
+      if (inMatchNow && Date.now() - startedAt < RESUME_GRACE_MS) return;
+      // 刚刷新：给 resume 一个宽限窗口（服务端 onHello → resync 可能比第一个 tick 慢）
+      const freshPage = Date.now() - startedAt < RESUME_GRACE_MS;
+      const sessionResumed = !!(s.session && s.session.entered);
+      if (freshPage && !sessionResumed) return;
       inFlight = true;
+      try {
+        console.info('[mm-debug] joinFlow 发请求', {
+          api: spectate ? 'room.spectate' : 'room.join', code,
+          sameRoom, onSpectatorSeat, myId, roomCode,
+        });
+      } catch { /* ignore */ }
       net.request(spectate ? 'room.spectate' : 'room.join', { code })
         .then(() => { joined = true; cleanUrl(); })
         .catch((e) => {
+          const msg = String((e && e.message) || '');
+          const code2 = String((e && e.code) || '');
+          try { console.warn('[mm-debug] joinFlow 失败', { api: spectate ? 'room.spectate' : 'room.join', code2, msg, retries }); } catch { /* ignore */ }
+          // 确定性失败：重试多少次结果都一样，而且继续留着房号只会让玩家反复被弹提示。
+          //   ROOM_STARTED  对局已经打起来了
+          //   ROOM_FULL     房间满了
+          //   ROOM_NOT_FOUND 房间根本不存在（已解散 / 换房 / 账号残留的旧房号）
+          //
+          // ⚠ ROOM_STARTED 不能像另外两个那样清场：房间还在、对局还在跑，玩家很可能是
+          //   掉线刷新后由 resume 送回对局的（服务端 lobby.onHello → resync → match.onReconnect）。
+          //   以前这里把它当终态，清掉 mm.pendingRoom / sp_join / URL 并弹「模拟已开始」，
+          //   结果玩家明明该自动回到对局，却被踢回大厅。现在只提示一次，保留一切可能
+          //   让服务端继续完成 resume 的痕迹。
+          const startedCode = code2 === 'ROOM_STARTED' || /模拟已开始|已开始|Simulation already started/i.test(msg);
+          const terminal = !startedCode && (code2 === 'ROOM_FULL' || code2 === 'ROOM_NOT_FOUND'
+            || /房间已满|未找到该同盟密钥|不存在|Room full|room is full|not found/i.test(msg));
+          // 非终态失败（跨节点跳转后 socket 刚连上、会话还没就绪之类）先重试几次，
+          // 不要一次失败就放弃 —— 那会让玩家以为「还得再输一次房间号」。
+          if (!terminal && !startedCode && retries < 6) {
+            retries++;
+            return; // 交给下面的 setInterval 再 tick 一次
+          }
+          if (startedCode) {
+            // 对局进行中：不再反复发 room.join，也不清痕迹。房间状态由 resume 推过来。
+            joined = true;
+            // 主动要一次完整重同步（服务端 lobby 的 state.resync → resyncNow →
+            // 对局中走 match.onReconnect），把玩家自己拉回对局，而不是干等 resume。
+            try { net.request('state.resync', {}).catch(() => {}); } catch { /* ignore */ }
+            const tagKey2 = 'mm.joinStarted:' + code;
+            let shown2 = false;
+            try { shown2 = sessionStorage.getItem(tagKey2) === '1'; sessionStorage.setItem(tagKey2, '1'); } catch { /* ignore */ }
+            if (!shown2) showStyledToast('该同盟的对局已经开始；正在把你送回对局…');
+            return;
+          }
           joined = true;
-          showStyledToast((spectate ? '观战失败：' : '加入失败：') + ((e && e.message) || '未知错误'));
+          if (terminal) {
+            try { store.patch('ui', { pendingJoin: null, pendingSpectate: false }); } catch { /* ignore */ }
+            // 清空所有可能让页面再次尝试加入的痕迹
+            try { sessionStorage.removeItem('mm.pendingRoom'); } catch { /* ignore */ }
+            try { sessionStorage.removeItem('sp.accountResume'); } catch { /* ignore */ }
+            try { sessionStorage.removeItem('sp.accountResumeSilent'); } catch { /* ignore */ }
+            try { localStorage.removeItem('sp.lastRoom'); } catch { /* ignore */ }
+            try { document.cookie = 'sp_join=; Path=/; Max-Age=0; SameSite=Lax'; } catch { /* ignore */ }
+            try {
+              if (/^\/(r|room)\//i.test(location.pathname)) {
+                history.replaceState(history.state, '', '/' );
+              } else {
+                cleanUrl();
+              }
+            } catch { /* ignore */ }
+            // 同一对局只提示一次，避免玩家在大厅里被反复打扰
+            const tagKey = 'mm.joinFail:' + code;
+            let shown = false;
+            try { shown = sessionStorage.getItem(tagKey) === '1'; sessionStorage.setItem(tagKey, '1'); } catch { /* ignore */ }
+            if (!shown) showStyledToast((spectate ? '观战失败：' : '加入失败：') + msg);
+          } else {
+            showStyledToast((spectate ? '观战失败：' : '加入失败：') + (msg || '未知错误'));
+          }
           console.warn('[mm] 加入房间失败', e && e.message);
         })
         .finally(() => { inFlight = false; });

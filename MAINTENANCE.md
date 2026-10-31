@@ -1605,6 +1605,53 @@ curl.exe -k -s -o NUL -D - -H "Cookie: sp_route=6" https://127.0.0.1/healthz | S
 
 ---
 
+### 9.34c 管理员工具只能在自己参与的对局里打开（2026-10-31）
+
+维护者的规则：
+> 设置成观战和隐身观战时不能打开管理员工具。只有在自己游玩对局中才可以。
+
+#### 判据（唯一一处实现：`public/js/ui/adminGate.js`）
+
+`canOpenAdminTools(store.get())` 必须**全部满足**才返回 true：
+
+| # | 条件 | 不满足的例子 |
+|---|---|---|
+| ① | `adminId === true` | 普通玩家、以及「登录了但不是 owner/admin」 |
+| ② | `match.public` 存在 | 大厅、房间等待室里（还没开局） |
+| ③ | 有 `room` 且知道自己的 `playerId` | 状态未就绪 |
+| ④ | `room.spectators` 里**没有**自己 | **普通观战、隐身观战** |
+| ⑤ | `room.seats` 里**有**自己 | 没席位却在对局里 = 在看别人打 |
+
+④ 是最关键的一条：隐身观战（`?adminWatch=1&adminNode=N`）会把管理员加进 `room.spectators`，
+所以它和普通观战走同一个判据，不需要单独识别。
+
+#### 两道拦截，缺一不可
+
+1. **点击层**：`mm/client.js` 的节点状态胶囊 click 里判 `canOpenAdminTools` 才派发事件。
+   ⚠ `mm/client.js` 是注入的 IIFE，**import 不了 ES 模块**，又要同步判断，
+   所以那里有一份**等价副本**。改判据时两边都要改 ——
+   `test/ui/adminGate.test.js` 的最后一条测试会去源码里核对四条条件是否还在。
+2. **事件层**：`public/js/ui/hud.js` 监听 `sp-open-admin-tools` 时**再判一次**。
+   派发方已经挡了一层，但如果被绕过（或有人手动 `dispatchEvent`），这是唯一防线。
+
+#### 为什么不用「观战者在 seats 里」来放行
+
+换座位的瞬间可能出现「既在 seats 又在 spectators」的状态。
+这时**按观战处理**（拒绝）—— 保守一侧永远不会让不该改场子的人改到别人的局。
+
+#### 已验证（真实浏览器 + 真实模块）
+
+| 场景 | 判据 | 面板 |
+|---|---|---|
+| 管理员在大厅 | false | 不出现 |
+| 管理员在房间里（未开局） | false | 不出现 |
+| **管理员在自己参与的对局中** | **true** | **出现**（`.admintools-host` innerHTML 708 字节） |
+| 同一局里被标记成观战者 | false | 不出现（len 0） |
+
+单元测试：`cd repo-sync && node --test test/ui/adminGate.test.js`（12 项）。
+
+---
+
 ### 9.35 含中文的 `.ps1` 必须带 UTF-8 BOM（2026-10-31 踩到）
 
 PowerShell 5.1 **无 BOM 时按 GBK 解析脚本**，含中文的脚本会直接解析失败：
